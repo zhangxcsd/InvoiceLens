@@ -1,0 +1,41 @@
+# =============================================================================
+# Sheet 名 -> 稳定英文 data_type（ODS 分区 `表类型=...`）
+#
+# 维护原则（请遵守）
+# - 后续以本文件为准做扩充；新增 sheet 映射请追加条目。
+# - 不要随意删除已有键：历史批次、ODS 目录、manifest 可能仍引用旧 data_type。
+# - 若某类型不再使用：可保留键，将 value 旁用行注释标注 Deprecated，或注明替代 data_type。
+# =============================================================================
+
+{
+  "发票基础信息": "inv_header", #单张发票的详细记录，包含发票号码、开票日期、购销方信息、金额、税额等核心要素
+  "信息汇总表": "inv_detail", #货物或服务的详细清单，提供更全面的发票数据概览，可能包含红字发票统计
+  "货物清单": "inv_detail", #货物或服务的详细清单，提供更全面的发票数据概览。老版本金税系统中会使用，与发票信息表不会同时出现
+  "不动产销售": "spc_estate", #房地产销售类
+  "机动车销售": "spc_vehicle", #机动车销售
+  "二手车销售": "spc_used_vehicle", #二手车
+  "拖拉机": "spc_agri_machinery", #拖拉机和联合收割机，农机购置补贴相关
+  "成品油": "spc_oil", #成品油采购与销售
+  "稀土": "spc_rare_earth",
+  "农产品收购": "spc_agri_acquisition", #农产品收购
+  "自产农产品": "spc_agri_self_produced", #自产农产品销售
+  "光伏": "spc_pv_acquisition", #光伏收购
+  "报废产品收购": "spc_scrap_acquisition", #资源回收行业
+  "无形资产": "spc_intangible", #专利、商标、著作权等
+  "建筑服务": "spc_construction", #建筑安装工程类
+  "金融服务": "spc_finance", #金融保险类
+  "现代服务": "spc_modern_service", #研发、信息技术、文化创意等
+  "生活服务": "spc_life_service", #餐饮、住宿、旅游等服务
+  "医疗服务": "spc_medical", #医疗机构开票专用
+  "通行费": "spc_toll", #高速公路等通行费
+  "不动产经营租赁": "spc_estate_lease", #房屋租赁类
+  "有形动产租赁": "spc_tangible_lease", #设备租赁等
+  "货物运输服务": "spc_freight", #货物运输服务类
+  "旅客运输服务": "spc_passenger_transport", #出租车、网约车服务
+  "铁路电子客票": "spc_rail_eticket",  #2024年11月1日前为“铁路客票”（纸质报销凭证）
+  "铁路客票": "spc_rail_ticket",
+  "航空运输": "spc_air_transport", #航空运输电子客票、航空运输行程单
+  "车船税": "spc_vehicle_vessel_tax", #代收车船税
+  "差额征税": "spc_diff_taxation",
+  "代开发票": "spc_agency_invoice", #税务机关代开场景
+}

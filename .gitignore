@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+
+# Runtime data
+data/input_excel/*
+data/ods/*
+data/database/*
+data/tmp/*
+output/*
+
+# Keep directory placeholders
+!data/input_excel/.gitkeep
+!data/ods/.gitkeep
+!data/database/.gitkeep
+!data/tmp/.gitkeep
+!output/.gitkeep
+
+# OS / IDE
+.DS_Store
+Thumbs.db

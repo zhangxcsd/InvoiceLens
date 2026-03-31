@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-03-24T17:32:30.3899925+08:00",
+  "source_scope": "Invoice profiling JSON migrated from workspace root",
+  "files": [
+    "cols_peek_0.json",
+    "cols_peek_01.json",
+    "cols_peek_sales.json",
+    "fppz_unique_all.json",
+    "invoice_date_peek.json",
+    "neg_rows_peek.json",
+    "note_relation_hit.json",
+    "peek_red_fields.json",
+    "red_amount_peek.json",
+    "red_note_pattern_hit.json",
+    "red_row_detail.json",
+    "red_sfzsfp_amount.json",
+    "status_hits.json",
+    "tax_rate_peek.json",
+    "values_peek.json"
+  ],
+  "note": "This manifest records a planning-stage directory normalization only. No data transformation was performed."
+}

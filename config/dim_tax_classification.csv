@@ -1,0 +1,3 @@
+tax_code,tax_name,parent_code,level
+1001,示例一级分类,,1
+100101,示例二级分类,1001,2

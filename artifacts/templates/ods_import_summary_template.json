@@ -1,0 +1,20 @@
+{
+  "batch_id": "",
+  "generated_at": "",
+  "timezone": "Asia/Shanghai",
+  "rules_version": "",
+  "mapping_version": "",
+  "input_file_count": 0,
+  "success_file_count": 0,
+  "failed_file_count": 0,
+  "warn_file_count": 0,
+  "total_rows_read": 0,
+  "total_rows_written_ods": 0,
+  "reject_rows_count": 0,
+  "special_sheet_degrade_count": 0,
+  "dedup_merged_count": 0,
+  "elapsed_seconds": 0.0,
+  "status": "success",
+  "top_warning_codes": [],
+  "note": ""
+}

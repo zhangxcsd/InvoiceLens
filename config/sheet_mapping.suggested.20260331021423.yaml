@@ -1,0 +1,4 @@
+# sheet_mapping.suggested：未知 sheet 的建议合并条目（仅建议，不会自动覆盖原 YAML）。
+# 你可以把这里的 key/value 追加到 config/sheet_mapping.yaml 中。
+
+未知sheet: x

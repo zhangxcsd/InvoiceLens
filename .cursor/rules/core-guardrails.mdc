@@ -1,0 +1,38 @@
+---
+description: Core guardrails: Excel stability, SQL explainability, offline assets
+alwaysApply: true
+---
+
+# InvoiceLens 默认工程规则（必须遵守）
+
+本规则为 **默认规则**，对本项目所有实现与改动 **始终生效**。
+
+## 1) 稳定性：Excel 读取必须“可跳过、可追踪、不中断”
+
+- 所有 Excel 读取与解析必须包含 `try/except`，任何异常 **不得导致程序崩溃**。
+- 必须区分两类失败，并写入日志：
+  - **文件级阻断（file_blocking=true）**：文件损坏/无法打开/引擎错误/无法识别关键元数据，停止处理该文件，但程序继续处理其他文件/任务。
+  - **行级拒收（file_blocking=false）**：单行解析失败（金额/日期/税号/编码等），该行必须 **跳过**，并记录到拒收清单，其余行继续处理。
+- 行级拒收必须记录（至少）：
+  - `source_excel_file`、`sheet`、`seq_no`（优先使用 Excel 列 `序号` 作为定位基准）
+  - `field`（若可定位到字段）、`reason`（面向用户的原因）、`exception_type`（便于排查）
+- 日志输出必须支持 UI 展示与回溯，推荐形状与字段：
+  - `reject_row_ranges`: `[{seq_no_start, seq_no_end, reason}]`
+  - `reject_row_samples`: `[{seq_no, sheet, field, reason}]`
+
+## 2) 可解释性：审计规则 SQL 必须保留注释并解释“审计含义”
+
+- 审计规则的 SQL 逻辑必须保留注释，禁止在加载/执行前剥离、压缩或删除注释。
+- 每条规则至少包含：
+  - **规则头注释**：规则目的、风险解释、适用范围、主要输出字段含义
+  - **条件注释**：每个关键筛选条件（尤其是 `WHERE`/`JOIN` 的过滤条件）必须在其上方用注释解释“该条件的审计含义/为什么要筛”
+- SQL 注释格式使用 `--` 或 `/* ... */`，以便后续导出报告/复核时可直接引用。
+
+## 3) 离线能力：所有第三方前端资源必须本地加载（禁止外网 CDN）
+
+- 禁止任何外网依赖：不得请求 `cdn.*`、`cdnjs`、`jsdelivr`、`unpkg` 等 CDN 资源。
+- Plotly 等可视化必须离线：
+  - 优先：导出/嵌入 HTML 使用 `include_plotlyjs="inline"`（JS 内联，最稳）。
+  - 或：使用 `include_plotlyjs="directory"`，并将 `plotly.min.js` 放入项目 `assets/` 下的本地目录引用。
+- 打包（如 PyInstaller）必须包含所有静态资源（例如 `assets/`），确保在无网络环境可运行与渲染。
+

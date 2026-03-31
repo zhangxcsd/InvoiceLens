@@ -1,0 +1,9 @@
+streamlit
+duckdb
+polars
+pandas
+plotly
+python-docx
+openpyxl
+xlrd
+PyYAML

@@ -1,0 +1,30 @@
+SCOPE = {
+    "scope_root_id": "ROOT_PROV_SD",
+    "scope_level": "PROV",
+    "scope_sys_id": "PROV_SD",
+    "instance_name": "InvoiceLens",
+}
+
+LICENSE = {
+    "tier": "trial",
+    "customer": "local-user",
+    "expires_at": "2099-12-31",
+    "max_entities": 3,
+    "max_invoices": 50000,
+    "max_years": 1,
+    "export_report": False,
+    "cross_group": False,
+}
+
+SETTINGS = {
+    "cr1_warn": 0.30,
+    "cr1_high": 0.50,
+    "min_graph_amount": 10000.0,
+}
+
+IMPORT_SETTINGS = {
+    # 并发 worker 默认值：min(4, max(1, os.cpu_count()-1))
+    "import_workers": None,
+    "parquet_compression": "zstd",
+    "timezone": "Asia/Shanghai",
+}

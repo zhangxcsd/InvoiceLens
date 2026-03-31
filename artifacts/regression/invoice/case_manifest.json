@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-03-24T18:15:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "rules_version": "v1.0.0",
+  "mapping_version": "v1.0.0",
+  "cases": [
+    {
+      "case_id": "normal_basic",
+      "type": "normal",
+      "description": "基础正常样例，验证全流程可通过",
+      "input_files": []
+    },
+    {
+      "case_id": "abnormal_missing_keys",
+      "type": "abnormal",
+      "description": "关键字段缺失样例，验证阻断/告警",
+      "input_files": []
+    },
+    {
+      "case_id": "special_sheet_match",
+      "type": "special",
+      "description": "专项sheet匹配与降级样例",
+      "input_files": []
+    }
+  ],
+  "note": "Populate input_files with actual sample paths before running regression."
+}
