@@ -10,6 +10,7 @@ venv/
 # Runtime data
 data/input_excel/*
 data/ods/*
+data/ods_raw/*
 data/database/*
 data/tmp/*
 output/*
@@ -17,6 +18,7 @@ output/*
 # Keep directory placeholders
 !data/input_excel/.gitkeep
 !data/ods/.gitkeep
+!data/ods_raw/.gitkeep
 !data/database/.gitkeep
 !data/tmp/.gitkeep
 !output/.gitkeep
