@@ -1,0 +1,381 @@
+version: 1
+
+tables:
+  dwd_inv_detail:
+    label_zh: 全局发票明细表
+    from_table_types:
+      - inv_detail
+    sheet_labels_zh:
+      - 信息汇总表
+      - 货物清单
+    target_ddl: config/ddl/dwd.sql
+    primary_key:
+      - detail_uuid
+    columns:
+      detail_uuid:
+        layer: C
+        rule_zh: 主键派生；规范化票键 + logic_line_no（不含 sheet）；跨 sheet 同键后写丢弃，见 docs/dwd_inv_detail_multi_sheet_dedup.md
+        type: varchar
+        nullable: false
+        comment: 主键；MD5(规范化 fpdm||fphm||sdfphm||logic_line_no)
+        source:
+          ods_fields: [invoice_code, invoice_no, sdfphm, seq_no]
+        expr: "md5_hex(norm_fpdm||norm_fphm||norm_sdfphm||logic_line_no)"
+
+      header_uuid:
+        layer: C
+        rule_zh: 关联键派生；与主表 header_uuid 同规则（不含行号）
+        type: varchar
+        nullable: false
+        comment: 外键，与主表 header_uuid 生成规则一致（不含行号）
+        source:
+          ods_fields: [invoice_code, invoice_no, sdfphm]
+        expr: "md5_hex(norm_fpdm||norm_fphm||norm_sdfphm)"
+
+      stat_year:
+        layer: C
+        rule_zh: 由 ODS kprq 解析为日期后取年份（用于分区/过滤）
+        type: smallint
+        nullable: false
+        comment: 冗余年度，便于按年过滤
+        source:
+          ods_fields: [kprq]
+        expr: "year(try_cast(kprq as date))"
+
+      stat_month:
+        layer: C
+        rule_zh: 由 ODS kprq 解析为日期后取月份 1-12（用于按月统计/索引）
+        type: smallint
+        nullable: false
+        comment: 与 stat_year 同源于本行开票日期
+        source:
+          ods_fields: [kprq]
+        expr: "month(try_cast(kprq as date))"
+
+      logic_line_no:
+        layer: C
+        rule_zh: 在「同一发票键 + 同一 source_scope_key」分区内按 ODS 序号排序编号；source_scope_key=md5(import_session_id+normalized(source_excel_file)+source_sheet)
+        type: integer
+        nullable: false
+        comment: 行号；同 source_scope_key 内从 1 递增，汇总参考行可为 0（规则见 dwd.sql / cleaner）
+        source:
+          ods_fields: [seq_no, 序号]
+        expr: "try_cast(seq_no as integer)"
+
+      fpdm:
+        layer: A
+        rule_zh: 行级冗余发票代码，trim（货物清单可能空）
+        type: varchar
+        comment: 行级冗余发票代码（货物清单可能空）
+        source:
+          ods_fields: [invoice_code, 发票代码]
+        expr: "trim(invoice_code)"
+
+      fphm:
+        layer: A
+        rule_zh: 行级冗余发票号码，trim
+        type: varchar
+        source:
+          ods_fields: [invoice_no, 发票号码]
+        expr: "trim(invoice_no)"
+
+      sdfphm:
+        layer: A
+        rule_zh: 行级冗余数电票号码，trim
+        type: varchar
+        source:
+          ods_fields: [sdfphm, 数电发票号码]
+        expr: "trim(sdfphm)"
+
+      kprq:
+        layer: A
+        rule_zh: 行级冗余开票日期原串（ODS kprq），trim
+        type: varchar
+        comment: 开票日期原始串；ODS 标准列 kprq
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期, invoice_date, 日期]
+        expr: "trim(cast(kprq as varchar))"
+
+      invoice_date:
+        layer: B
+        rule_zh: 将 ODS kprq 解析为 DATE（DWD 强类型日期）
+        type: date
+        comment: 开票日期（解析后）；源于 ODS kprq
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期, invoice_date, 日期]
+        expr: "try_cast(kprq as date)"
+
+      special_business_type:
+        layer: A
+        rule_zh: 直接映射特定业务类型，trim（信息汇总表常见）
+        type: varchar
+        comment: 特定业务类型；信息汇总表常见，货物清单常空
+        source:
+          ods_fields: [special_business_type, 特定业务类型]
+        expr: "trim(cast(special_business_type as varchar))"
+
+      xfsbh:
+        layer: A
+        rule_zh: 行级冗余销方税号，trim
+        type: varchar
+        source:
+          ods_fields: [seller_tax_no, 销方识别号, 销方税号]
+        expr: "trim(seller_tax_no)"
+
+      xfmc:
+        layer: A
+        rule_zh: 行级冗余销方名称，trim
+        type: varchar
+        source:
+          ods_fields: [seller_name, 销方名称]
+        expr: "trim(seller_name)"
+
+      gfsbh:
+        layer: A
+        rule_zh: 行级冗余购方税号，trim
+        type: varchar
+        source:
+          ods_fields: [buyer_tax_no, 购方识别号, 购方税号]
+        expr: "trim(buyer_tax_no)"
+
+      gfmc:
+        layer: A
+        rule_zh: 行级冗余购方名称，trim
+        type: varchar
+        source:
+          ods_fields: [buyer_name, 购买方名称, 购方名称]
+        expr: "trim(buyer_name)"
+
+      fply:
+        layer: A
+        rule_zh: 行级冗余发票来源，trim
+        type: varchar
+        source:
+          ods_fields: [invoice_source, 发票来源]
+        expr: "trim(invoice_source)"
+
+      fppz:
+        layer: A
+        rule_zh: 行级冗余发票票种/类型，trim
+        type: varchar
+        source:
+          ods_fields: [invoice_type, 发票票种]
+        expr: "trim(invoice_type)"
+
+      fpzt:
+        layer: A
+        rule_zh: 行级冗余发票状态，trim
+        type: varchar
+        source:
+          ods_fields: [invoice_status, 发票状态]
+        expr: "trim(invoice_status)"
+
+      sfzsfp:
+        layer: A
+        rule_zh: 行级冗余是否正数发票等标志，转字符串后 trim
+        type: varchar
+        source:
+          ods_fields: [is_positive_invoice, 是否正数发票]
+        expr: "trim(cast(is_positive_invoice as varchar))"
+
+      fpfxdj:
+        layer: A
+        rule_zh: 行级冗余风险等级，trim
+        type: varchar
+        source:
+          ods_fields: [invoice_risk_level, 发票风险等级]
+        expr: "trim(invoice_risk_level)"
+
+      kpr:
+        layer: A
+        rule_zh: 行级冗余开票人，trim
+        type: varchar
+        source:
+          ods_fields: [drawer, 开票人, kpr]
+        expr: "trim(drawer)"
+
+      bz:
+        layer: A
+        rule_zh: 行级冗余备注，trim
+        type: varchar
+        source:
+          ods_fields: [remark, 备注, bz]
+        expr: "trim(remark)"
+
+      ssflbm:
+        layer: A
+        rule_zh: 直接映射税收分类编码，trim
+        type: varchar
+        comment: 税收分类编码
+        source:
+          ods_fields: [tax_category_code, 税收分类编码]
+        expr: "trim(tax_category_code)"
+
+      hwlwmc:
+        layer: A
+        rule_zh: 直接映射货物/劳务名称，trim
+        type: varchar
+        comment: 货物或应税劳务名称
+        source:
+          ods_fields: [goods_name, 货物或应税劳务名称]
+        expr: "trim(goods_name)"
+
+      ggxh:
+        layer: A
+        rule_zh: 直接映射规格型号，trim
+        type: varchar
+        source:
+          ods_fields: [spec_model, 规格型号]
+        expr: "trim(spec_model)"
+
+      dw:
+        layer: A
+        rule_zh: 直接映射单位，trim
+        type: varchar
+        source:
+          ods_fields: [unit, 单位]
+        expr: "trim(unit)"
+
+      sl:
+        layer: B
+        rule_zh: 数量清洗并转 DECIMAL(18,8)
+        type: decimal
+        precision: 18
+        scale: 8
+        comment: 数量
+        source:
+          ods_fields: [quantity, 数量]
+        expr: "try_cast(quantity as decimal(18,8))"
+
+      dj:
+        layer: B
+        rule_zh: 单价清洗并转 DECIMAL(18,8)
+        type: decimal
+        precision: 18
+        scale: 8
+        comment: 单价
+        source:
+          ods_fields: [unit_price, 单价]
+        expr: "try_cast(unit_price as decimal(18,8))"
+
+      je:
+        layer: B
+        rule_zh: 明细金额清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        source:
+          ods_fields: [amount, 金额, 不含税金额]
+        expr: "try_cast(amount as decimal(18,2))"
+
+      slv:
+        layer: B
+        rule_zh: 税率原串规范化（trim）
+        type: varchar
+        comment: 税率原始字符串
+        source:
+          ods_fields: [tax_rate, 税率]
+        expr: "trim(cast(tax_rate as varchar))"
+
+      slv_num:
+        layer: B
+        rule_zh: 税率解析为数值（如 13% -> 0.13；免税/零税率 -> 0）
+        type: decimal
+        precision: 10
+        scale: 6
+        comment: 税率数值化
+        source:
+          ods_fields: [tax_rate, 税率]
+        expr: "parse_tax_rate_to_decimal(tax_rate)"
+
+      se:
+        layer: B
+        rule_zh: 明细税额清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        source:
+          ods_fields: [tax_amount, 税额]
+        expr: "try_cast(tax_amount as decimal(18,2))"
+
+      jshj:
+        layer: B
+        rule_zh: 明细价税合计清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        source:
+          ods_fields: [total_amount, 价税合计, 含税金额]
+        expr: "try_cast(total_amount as decimal(18,2))"
+
+      # --- 【D】统一血缘 ---
+      import_batch_id:
+        layer: D
+        rule_zh: 血缘；来自 hive 分区列「批次」
+        type: varchar
+        source:
+          ods_fields: [批次]
+        expr: "cast(批次 as varchar)"
+
+      import_session_id:
+        layer: D
+        rule_zh: 血缘；导入会话 ID（ODS 行内列）
+        type: varchar
+        source:
+          ods_fields: [import_session_id]
+        expr: "trim(cast(import_session_id as varchar))"
+
+      ods_file_seq:
+        layer: D
+        rule_zh: 血缘；来自 hive 分区 ods_file_seq
+        type: integer
+        source:
+          ods_fields: [ods_file_seq]
+        expr: "try_cast(ods_file_seq as integer)"
+
+      source_excel_file:
+        layer: D
+        rule_zh: 血缘；来源 Excel 路径（ODS 行内列）
+        type: varchar
+        source:
+          ods_fields: [source_excel_file]
+        expr: "trim(cast(source_excel_file as varchar))"
+
+      source_parquet_file:
+        layer: D
+        rule_zh: 血缘；来源 ODS Parquet 路径（ODS 行内列）
+        type: varchar
+        source:
+          ods_fields: [source_parquet_file]
+        expr: "trim(cast(source_parquet_file as varchar))"
+
+      source_sheet:
+        layer: D
+        rule_zh: 血缘；来源工作表名（ODS 行内列）
+        type: varchar
+        source:
+          ods_fields: [source_sheet]
+        expr: "trim(cast(source_sheet as varchar))"
+
+      ingest_ts:
+        layer: D
+        rule_zh: 血缘；进入 ODS 链路的采集时间（ODS 行内列）
+        type: timestamp
+        source:
+          ods_fields: [ingest_ts]
+        expr: "try_cast(ingest_ts as timestamp)"
+
+      dwd_build_ts:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建时间（ETL 生成）
+        populate: dwd_lineage
+
+      dwd_build_id:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建任务 ID（ETL 生成）
+        populate: dwd_lineage
+
+    checks:
+      - id: dtl_line_positive
+        type: sql_placeholder
+        message: 下游聚合应排除 logic_line_no=0 的汇总参考行（规则见 dwd.sql）

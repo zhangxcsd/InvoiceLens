@@ -1,0 +1,19 @@
+{
+  "batch_id": "20260414",
+  "import_session_id": "s_20260414_170350_f71d6b58",
+  "table_type": "spc_estate_lease",
+  "entries": [
+    {
+      "batch_id": "20260414",
+      "import_session_id": "s_20260414_170350_f71d6b58",
+      "table_type": "spc_estate_lease",
+      "seq_no_1": 1,
+      "seq_no_2": 1,
+      "source_excel_file": "D:\\PythonCode\\InvoiceLens\\data\\input_excel\\uploaded\\批次=20260414\\session=s_20260414_170350_f71d6b58\\001_全量发票查询导出结果-25取得-有航空.xlsx",
+      "source_sheet": "不动产经营租赁服务1",
+      "file_hash": "sha256:e5ef88c1b0e07d1d38dc83b78d586b0db50f974706d84625098ff76a79482b2d",
+      "parquet_path": "D:\\PythonCode\\InvoiceLens\\data\\ods_raw\\批次=20260414\\表类型=spc_estate_lease\\ods_file_seq=5\\20260414170351_spc_estate_lease_e45b245859e34717b1be095525b836d7.parquet",
+      "rows_written_ods": 21
+    }
+  ]
+}

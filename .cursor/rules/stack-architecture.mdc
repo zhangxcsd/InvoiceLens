@@ -1,0 +1,20 @@
+---
+description: 主技术栈为 React + 本地 API + excel_to_ods；Streamlit 仅历史参考
+alwaysApply: true
+---
+
+# InvoiceLens 主架构（新功能以此为准）
+
+## 交付与演进默认栈
+
+- **前端**：`frontend/`（React / Vite），含导入向导、格式预审、与本地 API 交互。
+- **本机 HTTP 服务**：`src/local_api/`（如 `sheet_mapping_server`），负责上传会话、`start-import`、事件轮询等。
+- **Excel→ODS 落盘与领域逻辑**：`src/ingestion/excel_to_ods.py` 中 **`load_excel_batch_to_ods`**（Parquet、manifest、DuckDB 元数据、`target_sheet_keys`、事件回调等）。
+
+新需求、新接口、新配置应 **优先接在上述链路上**，保持单一路径，避免双轨实现。
+
+## Streamlit（`src/ui/` 等）
+
+- **不作为主架构**：默认 **不为** Streamlit 页面新增或并行实现业务功能，以免干扰主线与维护成本。
+- **可参考可舍弃**：其中目录扫描、ZIP、工具函数等若与主链路重复，可 **按需抽取/复用** 到 `src/services/` 或本地 API；无法对齐或增加负担则 **不必保留引用**。
+- 除非用户明确要求，**不要**将新特性绑定到 Streamlit 入口。

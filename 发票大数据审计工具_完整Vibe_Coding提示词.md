@@ -97,6 +97,7 @@ DWD/DWS 为 **单表 + `stat_year` 列**（决策九）。**`group_id` 不在 DW
 ```sql
 -- 索引示例（以实际 schema 为准）
 CREATE INDEX IF NOT EXISTS idx_dwd_header_year_date ON dwd_inv_header (stat_year, invoice_date);
+CREATE INDEX IF NOT EXISTS idx_dwd_header_ym ON dwd_inv_header (stat_year, stat_month);
 
 -- 单年 + 按销方税号范围（示例：与维度或参数表结合，非 group_id 列）
 SELECT *
@@ -482,7 +483,7 @@ conn.execute("""
     FROM (
         SELECT header_uuid, SUM(jshj) AS detail_sum
         FROM dwd_inv_detail
-        WHERE logic_line_no > 0          -- 排除 hwlwmc 含"详见"的汇总参考行
+        WHERE logic_line_no > 0          -- 排除 hwlwmc 含「详见销货清单」等汇总参考行
         GROUP BY header_uuid
     ) sub
     WHERE dwd_inv_header.header_uuid = sub.header_uuid
@@ -1163,7 +1164,7 @@ CREATE TABLE IF NOT EXISTS jiuqi_financial_stub (
 |---|---|
 | `invoice_code` | 发票代码、票据代码 |
 | `invoice_no` | 发票号码、票号 |
-| `invoice_date` | 开票日期、发票日期、开具日期 |
+| `kprq` | **ODS 开票日期标准列**（存原值字符串）；Excel 表头常见：开票日期、发票日期、开具日期、日期 |
 | `buyer_name` | 购方名称、购买方名称、购买方、客户名称 |
 | `buyer_tax_no` | 购方税号、购买方税号、购方纳税人识别号 |
 | `seller_name` | 销方名称、销售方名称、销售方、供应商名称 |
@@ -1175,6 +1176,11 @@ CREATE TABLE IF NOT EXISTS jiuqi_financial_stub (
 | `invoice_type` | 发票类型、票据类型 |
 | `invoice_status` | 发票状态、票据状态 |
 | `goods_name` | 商品名称、货物或应税劳务名称、品目名称 |
+
+**分层口径（须与 `config/field_mapping.yaml`、实际 ETL 一致）：**
+
+- **ODS Parquet**：开票日期列名统一为 **`kprq`**（字符串/原样；不做强类型 DATE 落盘）。
+- **DWD**（如 `dwd_inv_header` / `dwd_inv_detail`）：**`kprq`** 保留原串；**`invoice_date`** 为 **`DATE`**，由 ODS→DWD 清洗阶段从 **`kprq`** 解析写入；**`stat_year` / `stat_month`** 由 `invoice_date` 派生。
 
 ---
 
@@ -1237,10 +1243,10 @@ def clean_invoices(df: pd.DataFrame) -> pd.DataFrame
 - 转为 float64
 - 负数发票（红冲）保留负号，不做绝对值处理
 
-**日期字段（invoice_date）：**
-- 统一转为 pandas datetime 格式
-- 兼容格式：`2024-01-15`、`2024/01/15`、`20240115`、`2024年01月15日`
-- 无法解析的填充 NaT，在清洗日志中记录
+**开票日期（ODS：`kprq` → DWD：`invoice_date`）：**
+- **ODS**：列名 **`kprq`**，保留 Excel 读出原值（字符串优先）；与全文「ODS 仅原始字符串」策略一致。
+- **DWD 清洗**：将 **`kprq`** 解析为 **`invoice_date`（DATE）**；兼容格式示例：`2024-01-15`、`2024/01/15`、`20240115`、`2024年01月15日`（以 DuckDB/实现为准）。
+- **缺失或无法解析**：拒收或记清洗日志（与当前 `cleaner.py` 拒收形状对齐）；DWD 不写无效 `invoice_date`。
 
 **发票状态字段（invoice_status）：**
 统一映射为三个标准值：
@@ -2259,10 +2265,10 @@ def import_tax_code(xls_path: str, conn) -> dict:
 def load_invoice_excel(excel_path: str, invoice_dir: str,
                        import_batch_id: str, conn) -> dict:
     """
-    步骤一：识别金税版本（三期/四期），选择对应字段映射
+    步骤一：识别金税版本（三期/四期），选择对应字段映射（`field_mapping.yaml`；开票日期 ODS 标准列名为 **kprq**）
     步骤二：全角→半角（括号、横杠、空格），统一清洗
-    步骤三：从发票日期解析 stat_year，写入每行记录（单表无需建年度表）
-    步骤四：保存 ODS Parquet（路径：data/ods/批次={YYYYMMDD}/表类型={Sheet}/序号={0001}/，文件名 {YYYYMMDDHHMMSS}_{表类型}_{UUID}.parquet）
+    步骤三：ODS 落盘 **kprq**（原值）；DWD 阶段由 cleaner 将 **kprq** 解析为 **invoice_date（DATE）**，并派生 **stat_year / stat_month**
+    步骤四：保存 ODS Parquet（路径：data/ods/批次={YYYYMMDD}/表类型={Sheet}/ods_file_seq={n}/，文件名 {YYYYMMDDHHMMSS}_{表类型}_{UUID}.parquet；目录键名以仓库 `excel_to_ods` 为准）
     步骤五：触发 cleaner.py 执行 ODS→DWD
     返回：导入统计（成功/失败/警告数量）
     """
@@ -2271,14 +2277,15 @@ def load_invoice_excel(excel_path: str, invoice_dir: str,
 **cleaner.py 核心逻辑：**
 
 ```python
-# ① 主表（dwd_inv_header，单表 + stat_year）
+# ① 主表（dwd_inv_header，单表 + stat_year + stat_month）
+# - ODS 读 **kprq**；写入 DWD：**kprq**（原串）+ **invoice_date**（DATE）+ stat_year/stat_month
 # - header_uuid = MD5(全角转半角后的 fpdm || fphm || sdfphm)
 # - 先到先得去重：相同 header_uuid 只保留第一条
 # - 若已存在且 jshj 差异 > 0.01 元：映射表 clean_status 标记"金额与主表存在差异"
 
 # ② 明细表（dwd_inv_detail，单表 + stat_year）
 # - logic_line_no 规则：数电票按 sdfphm 分组，纸票按 fpdm+fphm 分组
-# - hwlwmc 含"详见"且同票明细≥2条的汇总参考行赋值 0，正常行从 1 起编
+# - hwlwmc 含「详见销货清单」等且同票明细≥2条的汇总参考行赋值 0，正常行从 1 起编
 # - 下游聚合必须 WHERE logic_line_no > 0
 
 # ③ 映射表（dwd_inv_map，单表 + stat_year；无 group_id）
@@ -2706,7 +2713,7 @@ AI 修改代码时最常见的隐性破坏：
 
 ---
 
-*提示词版本：v9.6.4 | 核心变更：① **久其占位表去掉 `group_id`**；② `ods_load_log` 支持同批次多会话（日志粒度按会话）；③ `dwd_inv_map` 展示字段用途补充；④ UI 增加“技术/排障入口”建议；⑤ 继续保持 SQLite【遗留】与 ODS/DWD 允许查询的边界 | 适用场景：省属国有企业集团发票大数据审计工具*
+*提示词版本：v9.6.5 | 核心变更：① **ODS 开票日期标准列统一为 `kprq`**，DWD 保留解析列 **`invoice_date`（DATE）**；② 字段映射表 §2.2 与 cleaner 口径对齐；③ 索引示例补充 **`(stat_year, stat_month)`** | 历史：v9.6.4 久其/`ods_load_log`/dwd_inv_map/UI 排障等 | 适用场景：省属国有企业集团发票大数据审计工具*
 
 ---
 

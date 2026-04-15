@@ -1,0 +1,39 @@
+# =============================================================================
+# DWD 映射配置（示例 + 可执行规范草案）
+#
+# 与下列文件配合阅读：
+# - config/sheet_mapping.yaml     Sheet 中文名 → ODS table_type
+# - config/field_mapping.yaml     Sheet → ODS 标准字段（蛇形英文名，写入 Parquet）
+# - config/ddl/dwd.sql            DWD 目标表结构
+#
+# 当前仓库 sheet_mapping 约定（请勿与旧版 sheet_mapping.py 混淆）：
+# - 「发票基础信息」→ inv_header   → 本文件示例 dwd_inv_header
+# - 「信息汇总表」   → inv_detail   → 本文件示例 dwd_inv_detail（与「货物清单」同属 inv_detail）
+#
+# 说明：
+# - source.ods_fields：ODS Parquet 中的列名（与 field_mapping 字段键一致，多为蛇形英文）
+# - expr：建议为声明式占位；真正 DuckDB/SQL 表达式在实现 ETL 时落地，此处用于对齐语义
+# - 未列出的 DWD 列：若 DDL 中存在，可在后续迭代补全；平账/净额/红冲等多为导入后批量回填
+# =============================================================================
+
+version: 1
+
+meta:
+  description: >
+    ODS（按 table_type 分区的 Parquet，列名对齐 field_mapping）到 DWD 表的字段级映射。
+    本文件为入口（索引）；具体表映射拆分在 config/dwd_mapping/*.yaml，并由 includes 引入。
+
+defaults:
+  # 血缘：建议在 DWD 层统一追加（可与 ODS 溯源列并存；具体列名以实现为准）
+  lineage:
+    ods_table_type_column: table_type
+    partition_batch: 批次
+    partition_ods_file_seq: ods_file_seq
+
+includes:
+  - config/dwd_mapping/dwd_inv_header.yaml
+  - config/dwd_mapping/dwd_inv_detail.yaml
+  - config/dwd_mapping/dwd_spc_transport_passenger.yaml
+  - config/dwd_mapping/dwd_spc_transport_freight.yaml
+
+tables: {}

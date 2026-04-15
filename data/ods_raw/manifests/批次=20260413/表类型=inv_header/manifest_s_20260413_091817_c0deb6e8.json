@@ -1,0 +1,19 @@
+{
+  "batch_id": "20260413",
+  "import_session_id": "s_20260413_091817_c0deb6e8",
+  "table_type": "inv_header",
+  "entries": [
+    {
+      "batch_id": "20260413",
+      "import_session_id": "s_20260413_091817_c0deb6e8",
+      "table_type": "inv_header",
+      "seq_no_1": 1,
+      "seq_no_2": 1,
+      "source_excel_file": "D:\\PythonCode\\InvoiceLens\\data\\input_excel\\uploaded\\批次=20260413\\session=s_20260413_091817_c0deb6e8\\018_天诚25年取得发票全量发票查询导出结果_49_.xlsx",
+      "source_sheet": "发票基础信息",
+      "file_hash": "sha256:e6e8784b0f7b7d71738d5baab5fb02611876a8d52241f10471a91563f84b469c",
+      "parquet_path": "D:\\PythonCode\\InvoiceLens\\data\\ods_raw\\批次=20260413\\表类型=inv_header\\ods_file_seq=18\\20260413091826_inv_header_c1e16770852a4b7291d302292c92d18c.parquet",
+      "rows_written_ods": 436
+    }
+  ]
+}

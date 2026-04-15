@@ -8,11 +8,16 @@ DuckDB 连接管理（单例模式）。
 
 import duckdb
 import os
+import threading
+import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "database" / "warehouse.duckdb"
+_DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "database" / "warehouse.duckdb"
+DB_PATH = Path(os.getenv("INVOICELENS_DB_PATH") or _DEFAULT_DB_PATH)
 
-_conn: duckdb.DuckDBPyConnection | None = None
+# ThreadingHTTPServer 会并发处理请求；DuckDB 连接对象不保证跨线程安全。
+# 这里改为“每线程一个连接”（thread-local），避免首屏并发请求导致偶发异常。
+_tls = threading.local()
 
 
 def get_db_mode() -> str:
@@ -31,24 +36,42 @@ def get_conn() -> duckdb.DuckDBPyConnection:
     获取全局 DuckDB 连接（单例）。
     首次调用时自动创建 data/database/ 目录和数据库文件。
     """
-    global _conn
-    if _conn is None:
+    conn = getattr(_tls, "conn", None)
+    if conn is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _conn = duckdb.connect(str(DB_PATH))
-        _conn.execute("SET threads TO 4")
-        _conn.execute("SET memory_limit = '4GB'")
+        # Windows 上若有其它进程（例如 DB GUI / 另一份服务）占用 duckdb 文件，会报
+        # "File is already open ..."。这里做轻量重试，降低“刚启动/刚重启”时的偶发失败。
+        last_exc: Exception | None = None
+        for i in range(15):
+            try:
+                conn = duckdb.connect(str(DB_PATH))
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                msg = str(exc)
+                if "File is already open" in msg or "another process" in msg or "进程无法访问" in msg:
+                    time.sleep(0.15 * (i + 1))
+                    continue
+                raise
+        if conn is None:
+            assert last_exc is not None
+            raise last_exc
+        conn.execute("SET threads TO 4")
+        conn.execute("SET memory_limit = '4GB'")
         tmp_dir = DB_PATH.parent / "tmp"
         tmp_dir.mkdir(exist_ok=True)
-        _conn.execute(f"SET temp_directory = '{tmp_dir}'")
-    return _conn
+        conn.execute(f"SET temp_directory = '{tmp_dir}'")
+        _tls.conn = conn
+    return conn
 
 
 def close_conn():
-    """关闭连接（程序退出时调用）"""
-    global _conn
-    if _conn is not None:
-        _conn.close()
-        _conn = None
+    """关闭当前线程连接（程序退出时调用）"""
+    conn = getattr(_tls, "conn", None)
+    if conn is not None:
+        conn.close()
+        _tls.conn = None
 
 
 def rebuild_database_files(*, remove_tmp: bool = False) -> dict:

@@ -1,0 +1,128 @@
+version: 1
+
+tables:
+  dwd_spc_transport_passenger:
+    label_zh: 专项运输-客运
+    from_table_types:
+      - spc_passenger_transport
+      - spc_rail_eticket
+      - spc_air_transport
+    sheet_labels_zh:
+      - 旅客运输服务
+      - 铁路电子客票
+      - 航空运输
+    target_ddl: config/ddl/dwd.sql
+    primary_key:
+      - detail_uuid
+    columns:
+      detail_uuid:
+        source:
+          ods_fields: [invoice_code, invoice_no, sdfphm, seq_no]
+      header_uuid:
+        source:
+          ods_fields: [invoice_code, invoice_no, sdfphm]
+      stat_year:
+        source:
+          ods_fields: [kprq]
+      stat_month:
+        source:
+          ods_fields: [kprq]
+      logic_line_no:
+        source:
+          ods_fields: [seq_no, 序号]
+
+      fpdm:
+        source:
+          ods_fields: [invoice_code, 发票代码]
+      fphm:
+        source:
+          ods_fields: [invoice_no, 发票号码]
+      sdfphm:
+        source:
+          ods_fields: [sdfphm, 数电发票号码]
+      kprq:
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期]
+      invoice_date:
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期]
+      fppz:
+        source:
+          ods_fields: [invoice_type, 发票票种]
+      invoice_status:
+        source:
+          ods_fields: [invoice_status, 发票状态]
+      is_positive_invoice:
+        source:
+          ods_fields: [is_positive_invoice, 是否正数发票]
+      remark:
+        source:
+          ods_fields: [remark, 备注]
+      je:
+        source:
+          ods_fields: [amount, 金额]
+      se:
+        source:
+          ods_fields: [tax_amount, 税额]
+      jshj:
+        source:
+          ods_fields: [total_amount, 价税合计]
+
+      passenger_name:
+        source:
+          ods_fields: [passenger_name, 旅客姓名]
+      traveler_id_no:
+        source:
+          ods_fields: [traveler_id_no, 有效身份证号]
+      trip_date:
+        source:
+          ods_fields: [trip_date, 出行日期, rail_journey_date, 日期]
+      trip_time:
+        source:
+          ods_fields: [rail_journey_time, 时间]
+      departure_place:
+        source:
+          ods_fields: [departure_place, 出发地]
+      arrival_place:
+        source:
+          ods_fields: [arrival_place, 到达地]
+      transport_tool_type:
+        source:
+          ods_fields: [transport_tool_type, 交通工具类型]
+      service_class:
+        source:
+          ods_fields: [service_class, 等级]
+      trip_no:
+        source:
+          ods_fields: [train_or_flight_no, 出行车次, hang_ban_hao, 航班号]
+
+      source_table_type:
+        source:
+          ods_fields: [table_type]
+      source_scope_key:
+        source:
+          ods_fields: [import_session_id, source_excel_file, source_sheet]
+      is_business_in_scope:
+        source:
+          ods_fields: [invoice_status, is_positive_invoice]
+      import_batch_id:
+        source:
+          ods_fields: [批次]
+      import_session_id:
+        source:
+          ods_fields: [import_session_id]
+      ods_file_seq:
+        source:
+          ods_fields: [ods_file_seq]
+      source_excel_file:
+        source:
+          ods_fields: [source_excel_file]
+      source_parquet_file:
+        source:
+          ods_fields: [source_parquet_file]
+      source_sheet:
+        source:
+          ods_fields: [source_sheet]
+      ingest_ts:
+        source:
+          ods_fields: [ingest_ts]

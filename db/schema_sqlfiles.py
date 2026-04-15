@@ -69,14 +69,124 @@ DDL_DIM = _load_ddl_file("dim.sql")
 DDL_DWD = _load_ddl_file("dwd.sql")
 DDL_DWS = _load_ddl_file("dws.sql")
 DDL_DM = _load_ddl_file("dm.sql")
+DDL_AUTH = _load_ddl_file("auth.sql")
 DDL_ADS = _load_ddl_file("ads.sql")
 
 
 def get_all_ddl() -> str:
-    return "\n".join([DDL_ODS, DDL_DIM, DDL_DWD, DDL_DWS, DDL_DM, DDL_ADS])
+    return "\n".join([DDL_ODS, DDL_DIM, DDL_DWD, DDL_DWS, DDL_DM, DDL_AUTH, DDL_ADS])
+
+
+def _table_exists(conn, name: str) -> bool:
+    # DuckDB information_schema 中 table_name 大小写可能与 DDL 不一致，用 lower 比较
+    n = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = 'main' AND table_type = 'BASE TABLE' AND lower(table_name) = lower(?)",
+        [name],
+    ).fetchone()[0]
+    return int(n or 0) > 0
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    n = conn.execute(
+        "SELECT COUNT(*) FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND lower(table_name) = lower(?) AND lower(column_name) = lower(?)",
+        [table, column],
+    ).fetchone()[0]
+    return int(n or 0) > 0
+
+
+def _duckdb_table_columns_lower(conn, table: str) -> set[str]:
+    """用 DESCRIBE 取列名（不依赖 information_schema 大小写），用于迁移补列。"""
+    try:
+        rows = conn.execute(f"DESCRIBE {table}").fetchall()
+        return {str(r[0]).lower() for r in rows}
+    except Exception:
+        return set()
+
+
+def migrate_legacy_dwd_schema(conn) -> None:
+    """
+    旧版 warehouse.duckdb 中 dwd_* 可能早于当前 DDL（缺 stat_month 等）。
+    CREATE TABLE IF NOT EXISTS 不会补列，后续 CREATE INDEX 引用新列会 Binder Error。
+    在跑完整 DDL 前补列并尽量从 invoice_date 回填。
+    """
+    if _table_exists(conn, "dwd_inv_header") and not _column_exists(conn, "dwd_inv_header", "invoice_time"):
+        conn.execute("ALTER TABLE dwd_inv_header ADD COLUMN invoice_time TIME")
+        logger.info("已迁移：dwd_inv_header.invoice_time")
+    if _table_exists(conn, "dwd_inv_header") and not _column_exists(conn, "dwd_inv_header", "stat_month"):
+        conn.execute("ALTER TABLE dwd_inv_header ADD COLUMN stat_month SMALLINT")
+        conn.execute(
+            """
+            UPDATE dwd_inv_header
+            SET stat_month = CAST(EXTRACT(month FROM invoice_date) AS SMALLINT)
+            WHERE invoice_date IS NOT NULL
+            """
+        )
+    if _table_exists(conn, "dwd_inv_detail") and not _column_exists(conn, "dwd_inv_detail", "stat_month"):
+        conn.execute("ALTER TABLE dwd_inv_detail ADD COLUMN stat_month SMALLINT")
+        conn.execute(
+            """
+            UPDATE dwd_inv_detail
+            SET stat_month = CAST(EXTRACT(month FROM invoice_date) AS SMALLINT)
+            WHERE invoice_date IS NOT NULL
+            """
+        )
+
+
+def migrate_ods_load_log_dwd_watermark(conn) -> None:
+    """为 ods_load_log 补 DWD 处理水位列（旧库 CREATE TABLE IF NOT EXISTS 不会自动加列）。"""
+    if not _table_exists(conn, "ods_load_log"):
+        return
+    cols = _duckdb_table_columns_lower(conn, "ods_load_log")
+    if "dwd_session_processed_at" in cols:
+        return
+    conn.execute("ALTER TABLE ods_load_log ADD COLUMN dwd_session_processed_at TIMESTAMP")
+    logger.info("已迁移：ods_load_log.dwd_session_processed_at")
+
+
+def migrate_dwd_inv_detail_unique_header_line(conn) -> None:
+    """
+    旧库若曾不含 UNIQUE(header_uuid, logic_line_no)，在表已存在且数据无重复时补约束。
+    若 (header_uuid, logic_line_no) 已有多行（例如历史「detail_uuid 含 sheet」策略），则跳过并打日志；见 docs/dwd_inv_detail_multi_sheet_dedup.md。
+    """
+    if not _table_exists(conn, "dwd_inv_detail"):
+        return
+    try:
+        dup = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT 1 FROM dwd_inv_detail
+              GROUP BY header_uuid, logic_line_no
+              HAVING COUNT(*) > 1
+            ) t
+            """
+        ).fetchone()[0]
+        if int(dup or 0) > 0:
+            logger.warning(
+                "dwd_inv_detail 存在重复 (header_uuid, logic_line_no)，跳过 ADD UNIQUE；"
+                "请清理或重建库后再对齐 docs/dwd_inv_detail_multi_sheet_dedup.md"
+            )
+            return
+    except Exception as exc:
+        logger.debug("检查 dwd_inv_detail 重复键时跳过: %s", exc)
+        return
+    try:
+        conn.execute(
+            "ALTER TABLE dwd_inv_detail "
+            "ADD CONSTRAINT dwd_inv_detail_hdr_line_uq UNIQUE (header_uuid, logic_line_no)"
+        )
+        logger.info("已迁移：dwd_inv_detail UNIQUE(header_uuid, logic_line_no)")
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "already exists" in msg or "duplicate" in msg:
+            return
+        logger.debug("dwd_inv_detail UNIQUE 迁移跳过（可能已存在）: %s", exc)
 
 
 def init_all_tables(conn) -> dict:
+    migrate_legacy_dwd_schema(conn)
+    migrate_ods_load_log_dwd_watermark(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]
 
@@ -119,7 +229,7 @@ def init_all_tables(conn) -> dict:
                 # 若 parquet 已存在，则需要覆盖掉此前可能创建的“占位视图”
                 # DDL 文件中是 CREATE VIEW IF NOT EXISTS，这里提升为 OR REPLACE 以确保切换到真实视图
                 replace_stmt = re.sub(
-                    r"^CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\b",
+                    r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\b",
                     "CREATE OR REPLACE VIEW",
                     stmt,
                     count=1,
@@ -162,6 +272,8 @@ def init_all_tables(conn) -> dict:
                     )
                     continue
                 raise
+
+    migrate_dwd_inv_detail_unique_header_line(conn)
 
     def count_tables(prefix: str) -> int:
         return conn.execute(

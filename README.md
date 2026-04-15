@@ -27,9 +27,20 @@
 - **DDL/配置外置**：表类型映射、建表 SQL、规则 SQL 不写死在 `.py`。
 - **离线优先**：禁止依赖外网 CDN；需要打包时要把 `assets/` 等静态资源一起带上。
 
-### 启动 UI（快捷方式）
+### 开发启动（Windows）
 
-- Windows 双击：`start_ui.bat`
-- PowerShell 执行：`.\start_ui.ps1`
-- 或命令行：`python main.py`
+根目录 **`dev.bat`** 合并了原 `start_dev.bat` / `start_local_api.bat` / `start_ui.bat` / `restart_frontend_dev.bat`（脚本内 **`chcp 65001`** + **UTF-8 BOM**，`start` 窗口标题为英文，避免 CMD 默认 GBK 下乱码或把命令截断成 `rt` 等误报）：
+
+- **`dev.bat`** 或 **`dev.bat all`**：新窗口启动本地 API + 当前窗口启动 Vite（日常开发最常用）
+- **`dev.bat api`**：仅本地 API（导入写 ODS 须保持此进程）
+- **`dev.bat web`**：仅前端（需已另开 API）
+- **`dev.bat restart-web`**：结束 5173~5175 监听并新开窗口启动 Vite
+- **`dev.bat ui`**：运行 `python main.py`
+- **`dev.bat help`**：查看说明
+
+前端 **`npm run dev`** 时，未配置 `VITE_LOCAL_API_BASE` 的情况下会通过 **Vite 代理** 把浏览器里的同源路径 **`/api`** 转到 **`127.0.0.1:8765`**，减少「页面是 localhost、API 是 127.0.0.1」等跨域问题；请确保本地 API 已在 8765 监听。
+
+本地 API 已不使用标准库 **`cgi`**（Python 3.13 起已移除），可在 **Python 3.13+** 下运行；若启动仍报错，请确认在项目根目录执行且已 `pip install -r requirements.txt`。
+
+亦可直接：`python main.py`
 

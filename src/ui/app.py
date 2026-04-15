@@ -3,7 +3,13 @@ from pathlib import Path
 import streamlit as st
 
 
+from src.ui.ui_style import apply_business_style
+from src.ui.auth import logout_button
+
+
 st.set_page_config(page_title="InvoiceLens", page_icon=":bar_chart:", layout="wide")
+apply_business_style()
+logout_button(where="sidebar")
 
 st.title("InvoiceLens 本地审计工具")
 st.caption("最小可运行骨架：Streamlit + DuckDB + 规则分层结构")

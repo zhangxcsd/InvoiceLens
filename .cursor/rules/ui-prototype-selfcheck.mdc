@@ -1,0 +1,26 @@
+---
+description: Require build+visual parity checks for InvoiceLens prototype-level frontend work
+globs: frontend/**/*.{ts,tsx,css,html,js,jsx,json}
+alwaysApply: false
+---
+
+# UI 原型复刻自检约束（必须遵守）
+
+当修改 `frontend/` 下任意文件并涉及 UI（布局/样式/图标/交互）时：
+
+## 1) 禁止“未自检先宣告完成”
+- 在宣告完成前，必须先运行 `frontend/` 下的 `npm run build` 并通过。
+
+## 2) 必须做视觉核对
+- 对照 `invoicelens.html` 核对本次改动页面：
+  - 字体、字号、行高、灰阶文本色
+  - 输入框边框/背景/placeholder/focus ring
+  - 卡片圆角与阴影、间距
+  - 图标（favicon/登录/侧边栏）是否一致
+
+## 3) 图标为全局资产
+- 任何图标变更必须同步更新：
+  - `frontend/public/app-icon.svg`
+  - `frontend/index.html`（title + favicon）
+  - 登录页/侧边栏引用同一图标
+

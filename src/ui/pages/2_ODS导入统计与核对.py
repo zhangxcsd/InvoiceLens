@@ -10,8 +10,13 @@ if str(project_root) not in sys.path:
 
 from db.duckdb_conn import get_conn
 from db.schema_sqlfiles import init_all_tables
+from config.table_type_labels import table_type_display
+from src.ui.ui_style import apply_business_style
+from src.ui.auth import require_login
 
 
+apply_business_style()
+require_login(redirect=True)
 st.title("ODS 导入统计与核对")
 st.caption("用于核对各批次、各表类型的导入行数，方便与来源系统/报表比对。")
 
@@ -33,7 +38,11 @@ tab_ods, tab_files = st.tabs(["按 ODS 视图统计", "按导入日志统计"])
 
 with tab_ods:
     st.subheader("按批次 + 表类型统计 ODS 行数")
-    st.caption("数据来源：`ods_inv_header` / `ods_inv_detail` 视图（基于 Parquet 分区 `batch_id/table_type`）。")
+    st.caption(
+        "数据来源：`ods_inv_header` / `ods_inv_detail` 视图；"
+        "Parquet 目录为 `data/ods/批次=<id>/表类型=<table_type>/ods_file_seq=<n>/`，"
+        "视图内可用列 `batch_id` / `table_type`（由分区列 `批次` / `表类型` 别名而来）。"
+    )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -141,6 +150,13 @@ with tab_ods:
                 ORDER BY batch_id, table_type
                 """
                 header_df = _safe_query(header_sql, params)
+                if not header_df.empty and "table_type" in header_df.columns:
+                    header_df = header_df.copy()
+                    header_df.insert(
+                        header_df.columns.get_loc("table_type") + 1,
+                        "table_type_中文",
+                        header_df["table_type"].map(table_type_display),
+                    )
                 st.markdown("#### 发票主表 `ods_inv_header` 行数")
                 st.dataframe(header_df, use_container_width=True)
 
@@ -156,6 +172,13 @@ with tab_ods:
                 ORDER BY batch_id, table_type
                 """
                 detail_df = _safe_query(detail_sql, params)
+                if not detail_df.empty and "table_type" in detail_df.columns:
+                    detail_df = detail_df.copy()
+                    detail_df.insert(
+                        detail_df.columns.get_loc("table_type") + 1,
+                        "table_type_中文",
+                        detail_df["table_type"].map(table_type_display),
+                    )
                 st.markdown("#### 发票明细表 `ods_inv_detail` 行数")
                 st.dataframe(detail_df, use_container_width=True)
 

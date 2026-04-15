@@ -1,0 +1,33 @@
+@config "../tailwind.config.ts";
+@import "tailwindcss";
+
+:root{
+  --nav-w:240px;--top-h:52px;
+  --accent:#0072D1;--accent-mid:#185FA5;
+  --danger:#E24B4A;--warn:#BA7517;--green:#1D9E75;
+  --bg:#F5F7FA;--border:#E2E6EE;--border-light:#EEF1F6;
+  --text:#1A1D23;--text-2:#5A6070;--text-3:#9AA0AD;
+  --radius:10px;--radius-sm:7px;
+}
+
+html, body { height: 100%; }
+html { font-size: 14px; }
+body{
+  margin:0;
+  font-family: "PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",Roboto,sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 让滚动条与边距更接近原型 */
+*{ box-sizing:border-box; }
+
+/* 表单控件与原型一致：继承字体（不覆盖 Tailwind 的 text-* utilities） */
+@layer base {
+  input, select, textarea, button { font-family: inherit; }
+}
+input::placeholder, textarea::placeholder { color: var(--text-3); }

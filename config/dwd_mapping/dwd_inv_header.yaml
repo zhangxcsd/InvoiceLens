@@ -1,0 +1,404 @@
+version: 1
+
+tables:
+  dwd_inv_header:
+    label_zh: 全局发票主表
+    from_table_types:
+      - inv_header
+    sheet_labels_zh:
+      - 发票基础信息
+    target_ddl: config/ddl/dwd.sql
+    primary_key:
+      - header_uuid
+    columns:
+      header_uuid:
+        layer: C
+        rule_zh: 主键派生；对发票代码/号码/数电票号做规范化后计算 MD5
+        type: varchar
+        nullable: false
+        comment: 主键；MD5(规范化后的 fpdm||fphm||sdfphm)，与 dwd.sql 注释一致
+        source:
+          ods_fields: [invoice_code, invoice_no, sdfphm]
+        expr: "md5_hex(norm_fpdm||norm_fphm||norm_sdfphm)"
+
+      stat_year:
+        layer: C
+        rule_zh: 由 ODS kprq 解析为日期后取年份（用于分区/过滤）
+        type: smallint
+        nullable: false
+        comment: 自开票日期解析的统计年度，核心分区过滤列
+        source:
+          ods_fields: [kprq]
+        expr: "year(try_cast(kprq as date))"
+
+      stat_month:
+        layer: C
+        rule_zh: 由 ODS kprq 解析为日期后取月份 1-12（用于按月统计/索引）
+        type: smallint
+        nullable: false
+        comment: 自开票日期解析的月份 1–12；与 stat_year 同派生，便于按月汇总与索引
+        source:
+          ods_fields: [kprq]
+        expr: "month(try_cast(kprq as date))"
+
+      fpdm:
+        layer: A
+        rule_zh: 直接映射发票代码，trim
+        type: varchar
+        comment: 发票代码（数电票可能为空）
+        source:
+          ods_fields: [invoice_code, 发票代码]
+        expr: "trim(invoice_code)"
+
+      fphm:
+        layer: A
+        rule_zh: 直接映射发票号码，trim
+        type: varchar
+        comment: 发票号码
+        source:
+          ods_fields: [invoice_no, 发票号码]
+        expr: "trim(invoice_no)"
+
+      sdfphm:
+        layer: A
+        rule_zh: 直接映射数电票号码，trim
+        type: varchar
+        comment: 数电票号码
+        source:
+          ods_fields: [sdfphm, 数电发票号码]
+        expr: "trim(sdfphm)"
+
+      xfsbh:
+        layer: A
+        rule_zh: 直接映射销方税号，trim
+        type: varchar
+        comment: 销方纳税人识别号
+        source:
+          ods_fields: [seller_tax_no, 销方识别号, 销方税号]
+        expr: "trim(seller_tax_no)"
+
+      xfmc:
+        layer: A
+        rule_zh: 直接映射销方名称，trim
+        type: varchar
+        comment: 销方名称
+        source:
+          ods_fields: [seller_name, 销方名称]
+        expr: "trim(seller_name)"
+
+      gfsbh:
+        layer: A
+        rule_zh: 直接映射购方税号，trim
+        type: varchar
+        comment: 购方纳税人识别号
+        source:
+          ods_fields: [buyer_tax_no, 购方识别号, 购方税号]
+        expr: "trim(buyer_tax_no)"
+
+      gfmc:
+        layer: A
+        rule_zh: 直接映射购方名称，trim
+        type: varchar
+        comment: 购方名称
+        source:
+          ods_fields: [buyer_name, 购买方名称, 购方名称]
+        expr: "trim(buyer_name)"
+
+      kprq:
+        layer: A
+        rule_zh: 直接映射开票日期原始串（ODS 标准列 kprq），trim
+        type: varchar
+        comment: 开票日期原始串；ODS 标准列 kprq
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期, ]
+        expr: "trim(cast(kprq as varchar))"
+
+      invoice_date:
+        layer: B
+        rule_zh: 将 ODS kprq 解析为 DATE（DWD 强类型日期）
+        type: date
+        comment: 开票日期（解析后，DWD）；源于 ODS kprq
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期]
+        expr: "try_cast(kprq as date)"
+
+      invoice_time:
+        layer: B
+        rule_zh: 将 ODS kprq 中含时间的部分解析为 TIME；仅日期无时分秒时为 NULL
+        type: time
+        comment: 与 invoice_date 同源 kprq；无时间成分不写 00:00:00
+        source:
+          ods_fields: [kprq, 开票日期, 发票日期]
+        expr: "自 cleaner._sql_invoice_time_try_expr 写入"
+
+      je:
+        layer: B
+        rule_zh: 金额字段清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        comment: 金额
+        source:
+          ods_fields: [amount, 金额, 不含税金额]
+        expr: "try_cast(amount as decimal(18,2))"
+
+      se:
+        layer: B
+        rule_zh: 税额字段清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        comment: 税额
+        source:
+          ods_fields: [tax_amount, 税额]
+        expr: "try_cast(tax_amount as decimal(18,2))"
+
+      jshj:
+        layer: B
+        rule_zh: 价税合计字段清洗并转 DECIMAL(18,2)
+        type: decimal
+        precision: 18
+        scale: 2
+        comment: 价税合计
+        source:
+          ods_fields: [total_amount, 价税合计, 含税金额]
+        expr: "try_cast(total_amount as decimal(18,2))"
+
+      fply:
+        layer: A
+        rule_zh: 直接映射发票来源，trim
+        type: varchar
+        comment: 发票来源等（与 DWD 列语义对齐时按需映射）
+        source:
+          ods_fields: [invoice_source, 发票来源]
+        expr: "trim(invoice_source)"
+
+      fppz:
+        layer: A
+        rule_zh: 直接映射发票票种/类型，trim
+        type: varchar
+        comment: 发票票种/类型
+        source:
+          ods_fields: [invoice_type, 发票票种]
+        expr: "trim(invoice_type)"
+
+      fpzt:
+        layer: A
+        rule_zh: 直接映射发票状态，trim；红冲 post_etl 中 NULL/空串在计算口径上视同「正常」（不改正文列，缺失仍可做异常统计）
+        type: varchar
+        comment: 发票状态
+        source:
+          ods_fields: [invoice_status, 发票状态]
+        expr: "trim(invoice_status)"
+
+      sfzsfp:
+        layer: A
+        rule_zh: 直接映射是否正数发票等标志，转字符串后 trim
+        type: varchar
+        comment: 是否正数发票等（以业务字典为准）
+        source:
+          ods_fields: [is_positive_invoice, 是否正数发票]
+        expr: "trim(cast(is_positive_invoice as varchar))"
+
+      fpfxdj:
+        layer: A
+        rule_zh: 直接映射风险等级，trim
+        type: varchar
+        comment: 风险等级（若 ODS 有独立字段可再接）
+        source:
+          ods_fields: [invoice_risk_level, 发票风险等级]
+        expr: "trim(invoice_risk_level)"
+
+      kpr:
+        layer: A
+        rule_zh: 直接映射开票人，trim
+        type: varchar
+        comment: 开票人
+        source:
+          ods_fields: [drawer, 开票人, kpr]
+        expr: "trim(drawer)"
+
+      bz:
+        layer: A
+        rule_zh: 直接映射备注，trim
+        type: varchar
+        comment: 备注
+        source:
+          ods_fields: [remark, 备注, bz]
+        expr: "trim(remark)"
+
+      # --- 【D】统一血缘（ODS 行级；与 first_import_* 语义不同）---
+      import_batch_id:
+        layer: D
+        rule_zh: 血缘；来自 hive 分区列「批次」
+        type: varchar
+        comment: 本行映射对应的导入批次（通常等同分区列「批次」）
+        source:
+          ods_fields: [批次]
+        expr: "cast(批次 as varchar)"
+
+      import_session_id:
+        layer: D
+        rule_zh: 血缘；导入会话 ID（ODS 行内列）
+        type: varchar
+        comment: 导入会话 ID
+        source:
+          ods_fields: [import_session_id]
+        expr: "trim(cast(import_session_id as varchar))"
+
+      ods_file_seq:
+        layer: D
+        rule_zh: 血缘；来自 hive 分区 ods_file_seq
+        type: integer
+        comment: ODS 分片序号（hive 分区 ods_file_seq=）
+        source:
+          ods_fields: [ods_file_seq]
+        expr: "try_cast(ods_file_seq as integer)"
+
+      source_excel_file:
+        layer: D
+        rule_zh: 血缘；来源 Excel 路径（ODS 行内列）
+        type: varchar
+        comment: 来源 Excel 路径
+        source:
+          ods_fields: [source_excel_file]
+        expr: "trim(cast(source_excel_file as varchar))"
+
+      source_parquet_file:
+        layer: D
+        rule_zh: 血缘；来源 ODS Parquet 路径（ODS 行内列）
+        type: varchar
+        comment: 落盘 ODS Parquet 路径
+        source:
+          ods_fields: [source_parquet_file]
+        expr: "trim(cast(source_parquet_file as varchar))"
+
+      source_sheet:
+        layer: D
+        rule_zh: 血缘；来源工作表名（ODS 行内列）
+        type: varchar
+        comment: 来源工作表名
+        source:
+          ods_fields: [source_sheet]
+        expr: "trim(cast(source_sheet as varchar))"
+
+      ingest_ts:
+        layer: D
+        rule_zh: 血缘；进入 ODS 链路的采集时间（ODS 行内列）
+        type: timestamp
+        comment: 进入 ODS 链路的采集时间
+        source:
+          ods_fields: [ingest_ts]
+        expr: "try_cast(ingest_ts as timestamp)"
+
+      dwd_build_ts:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建时间（ETL 生成）
+        populate: dwd_lineage
+        comment: 写入 DWD 的时间（ETL 生成）
+
+      dwd_build_id:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建任务 ID（ETL 生成）
+        populate: dwd_lineage
+        comment: DWD 构建任务 ID（ETL 生成）
+
+      first_import_batch_id:
+        layer: C
+        rule_zh: 首次占据该 header_uuid 的批次（先到先得去重语义）
+        type: varchar
+        nullable: false
+        comment: 首次写入该 header 的批次（去重策略：先到先得）
+        source:
+          ods_fields: [批次]
+        expr: "cast(批次 as varchar)"
+
+      first_import_file:
+        layer: C
+        rule_zh: 首次占据该 header_uuid 的来源文件（先到先得去重语义）
+        type: varchar
+        nullable: false
+        comment: 首次导入来源文件（可用 source_excel_file 或 manifest）
+        source:
+          ods_fields: [source_excel_file]
+        expr: "coalesce(trim(source_excel_file), '')"
+
+      # --- 以下字段在 DDL 中存在，多为导入后批量回填；映射阶段可置默认 ---
+      detail_total_amount:
+        layer: C
+        rule_zh: 导入后回填；按 header_uuid 汇总明细 jshj（排除 logic_line_no=0）
+        populate: post_aggregate
+        comment: 由明细汇总回填
+      is_balanced:
+        layer: C
+        rule_zh: 导入后回填；按平账规则产出（未校验/平账/不平账等）
+        populate: post_aggregate
+        default: "未校验"
+      balance_diff:
+        layer: C
+        rule_zh: 导入后回填；主表 jshj 与明细汇总差异
+        populate: post_aggregate
+      related_blue_invoice_uuid:
+        layer: C
+        rule_zh: 导入后回填；红票须「发票状态视为正常」（显式正常或 fpzt 空/NULL 按迁移口径视同正常）；bz 由 UDF 多模式解析，md5 反查 dwd_inv_header（header_uuid，可跨年）；仅本批次 dwd_build_id；库中无蓝票则不填
+        populate: post_etl
+      net_je:
+        layer: C
+        rule_zh: 导入后回填；仅蓝票；蓝票.je + 全库指向该蓝票的「fpzt 视为正常」红票 je 之和（多红对一蓝分项可加）
+        populate: post_etl
+      net_se:
+        layer: C
+        rule_zh: 导入后回填；仅蓝票；蓝票.se + 全库「fpzt 视为正常」红票 se 之和
+        populate: post_etl
+      net_jshj:
+        layer: C
+        rule_zh: 导入后回填；仅蓝票；蓝票.jshj + 全库「fpzt 视为正常」红票 jshj 之和
+        populate: post_etl
+      net_calc_status:
+        layer: C
+        rule_zh: 导入后回填；红票关联成功为「蓝票已计算」；可解析但未入库匹配为「孤立红票」（fpzt 视为正常者）；蓝票侧有红冲为「蓝票已计算」或「已全额红冲」；红票不写净额列；显式已作废等不参与红冲、蓝票侧已作废状态不覆盖
+        populate: post_etl
+        default: "未计算"
+      balance_tolerance:
+        layer: C
+        rule_zh: 导入后回填；平账容差（默认 0.10）
+        populate: post_aggregate
+        default: "0.10"
+      balance_check_time:
+        layer: C
+        rule_zh: 导入后回填；平账校验时间
+        populate: post_aggregate
+      balance_notes:
+        layer: C
+        rule_zh: 导入后回填；平账备注/说明
+        populate: post_aggregate
+      red_offset_jshj:
+        layer: C
+        rule_zh: 导入后回填；全库（可跨年）related_blue 指向该蓝票且「fpzt 视为正常」（含空/NULL）的红票 SUM(jshj)；本批次触发时对触及的蓝票重算
+        populate: post_etl
+        default: "0"
+      red_invoice_count:
+        layer: C
+        rule_zh: 导入后回填；全库 related_blue 指向该蓝票且「fpzt 视为正常」（含空/NULL）的红票行数
+        populate: post_etl
+        default: "0"
+      is_fully_reversed:
+        layer: C
+        rule_zh: 导入后回填；|蓝票.jshj + red_offset_jshj| ≤ balance_tolerance（默认 0.10）时为 true
+        populate: post_etl
+        default: "false"
+      is_orphan_red:
+        layer: C
+        rule_zh: 导入后回填；「fpzt 视为正常」（含空/NULL）且 bz 可解析目标蓝票 UUID 但库中无对应 header 时为 true；已关联则 false；显式非「正常」且非空（如已作废）不参与
+        populate: post_etl
+        default: "false"
+      net_calc_time:
+        layer: C
+        rule_zh: 导入后回填；净额计算时间
+        populate: post_etl
+
+    checks:
+      - id: hdr_keys_present
+        type: not_all_null
+        fields: [invoice_code, invoice_no, sdfphm]
+        message: 发票代码/号码/数电票号码至少其一有值（与 ODS 侧主键推断一致）

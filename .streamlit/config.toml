@@ -1,0 +1,11 @@
+[theme]
+# 继承原型：浅灰背景 + 亮蓝主色
+primaryColor = "#0072D1"
+backgroundColor = "#F5F7FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1A1D23"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
+

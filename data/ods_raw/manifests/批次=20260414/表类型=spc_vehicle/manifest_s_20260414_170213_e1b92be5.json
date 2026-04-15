@@ -1,0 +1,19 @@
+{
+  "batch_id": "20260414",
+  "import_session_id": "s_20260414_170213_e1b92be5",
+  "table_type": "spc_vehicle",
+  "entries": [
+    {
+      "batch_id": "20260414",
+      "import_session_id": "s_20260414_170213_e1b92be5",
+      "table_type": "spc_vehicle",
+      "seq_no_1": 1,
+      "seq_no_2": 1,
+      "source_excel_file": "D:\\PythonCode\\InvoiceLens\\data\\input_excel\\uploaded\\批次=20260414\\session=s_20260414_170213_e1b92be5\\017_天诚22年取得发票全量发票查询导出结果_52_.xlsx",
+      "source_sheet": "机动车销售统一发票",
+      "file_hash": "sha256:8057b28cd68dea64619eac58f6959f1f97a1ec3ee72aa367b4477573f62e1e7f",
+      "parquet_path": "D:\\PythonCode\\InvoiceLens\\data\\ods_raw\\批次=20260414\\表类型=spc_vehicle\\ods_file_seq=1\\20260414170257_spc_vehicle_b292f4e86b764b1987ccca3215561639.parquet",
+      "rows_written_ods": 1
+    }
+  ]
+}

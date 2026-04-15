@@ -1,0 +1,59 @@
+export type NavKey =
+  // 导入向导（3级）
+  | 'import_wizard_upload'
+  | 'import_wizard_preview'
+  | 'import_wizard_format_check'
+  // 导入：历史/质量/映射
+  | 'ods_to_dwd_center'
+  | 'dwd_data_preview'
+  | 'import_history'
+  | 'import_quality_overview'
+  | 'import_quality_detail'
+  | 'import_quality_trend'
+  | 'import_mapping_config'
+  | 'import_mapping_templates'
+  | 'import_invoice_export'
+  // 维度管理（3级）
+  | 'dim_org_manage'
+  | 'dim_org_equity'
+  | 'dim_org_diff'
+  | 'dim_tax_lib'
+  | 'dim_tax_coverage'
+  | 'dim_dict'
+  | 'dim_version'
+  // 分析看板
+  | 'overview_summary'
+  | 'overview_trend'
+  | 'overview_tax'
+  | 'supplier_cr'
+  | 'supplier_top'
+  | 'supplier_new'
+  | 'flags_list'
+  | 'flags_rules'
+  | 'flags_track'
+  | 'related_graph'
+  | 'related_pairs'
+  | 'related_shell'
+  | 'finance_reconcile'
+  | 'finance_diff'
+  | 'compare_rank'
+  | 'compare_charts'
+  // 输出
+  | 'report_config'
+  | 'report_templates'
+  | 'report_archive'
+  // 系统
+  | 'users_list'
+  | 'users_roles'
+  | 'users_audit'
+  | 'settings_thresholds'
+  | 'settings_license'
+  | 'settings_instance'
+  | 'placeholder'
+
+export type User = {
+  username: string
+  displayName: string
+  role: string
+}
+

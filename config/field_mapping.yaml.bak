@@ -1,0 +1,1086 @@
+default:
+  invoice_no:
+    label_zh: 发票号码
+    aliases:
+    - 发票号码
+  invoice_code:
+    label_zh: 发票代码
+    aliases:
+    - 发票代码
+  sdfphm:
+    label_zh: 数电发票号码
+    aliases:
+    - 数电发票号码
+    - 数电票号码
+  invoice_date:
+    label_zh: 开票日期
+    aliases:
+    - 开票日期
+    - 开票日期2
+  seller_tax_no:
+    label_zh: 销方识别号
+    aliases:
+    - 销方识别号
+  buyer_tax_no:
+    label_zh: 购方识别号
+    aliases:
+    - 购方识别号
+  amount:
+    label_zh: 金额
+    aliases:
+    - 金额
+  tax_amount:
+    label_zh: 税额
+    aliases:
+    - 税额
+  total_amount:
+    label_zh: 价税合计
+    aliases:
+    - 价税合计
+  seq_no:
+    label_zh: 序号
+    aliases:
+    - 序号
+  seller_name:
+    label_zh: 销方名称
+    aliases:
+    - 销方名称
+  buyer_name:
+    label_zh: 购买方名称
+    aliases:
+    - 购买方名称
+  tax_category_code:
+    label_zh: 税收分类编码
+    aliases:
+    - 税收分类编码
+  special_business_type:
+    label_zh: 特定业务类型
+    aliases:
+    - 特定业务类型
+  goods_name:
+    label_zh: 货物或应税劳务名称
+    aliases:
+    - 货物或应税劳务名称
+  spec_model:
+    label_zh: 规格型号
+    aliases:
+    - 规格型号
+  unit:
+    label_zh: 单位
+    aliases:
+    - 单位
+  quantity:
+    label_zh: 数量
+    aliases:
+    - 数量
+  unit_price:
+    label_zh: 单价
+    aliases:
+    - 单价
+  tax_rate:
+    label_zh: 税率
+    aliases:
+    - 税率
+  invoice_source:
+    label_zh: 发票来源
+    aliases:
+    - 发票来源
+  invoice_type:
+    label_zh: 发票票种
+    aliases:
+    - 发票票种
+  invoice_status:
+    label_zh: 发票状态
+    aliases:
+    - 发票状态
+  is_positive_invoice:
+    label_zh: 是否正数发票
+    aliases:
+    - 是否正数发票
+  invoice_risk_level:
+    label_zh: 发票风险等级
+    aliases:
+    - 发票风险等级
+  drawer:
+    label_zh: 开票人
+    aliases:
+    - 开票人
+  remark:
+    label_zh: 备注
+    aliases:
+    - 备注
+sheet_header_slugs:
+  车辆识别代号/车架号: vin_chassis
+  合格证号: vehicle_certificate_no
+  发动机号码: engine_no
+  商检号码: commodity_inspection_no
+  商检单号: commodity_inspection_no
+  产地: place_of_origin
+  跨区域涉税事项报验管理编号: cross_region_tax_mgmt_no
+  建筑服务发生地: construction_service_location
+  建筑项目名称: construction_project_name
+  产权证书/不动产权证号: property_title_cert_no
+  车牌号: license_plate_no
+  运输工具种类: transport_means_type
+  运输工具牌号: transport_means_plate_no
+  起运地: shipping_origin
+  到达地: arrival_place
+  运输货物名称: cargo_name
+  出行人: trip_traveler
+  有效身份证号: traveler_id_no
+  出行日期: trip_date
+  出发地: departure_place
+  等级: service_class
+  交通工具类型: transport_tool_type
+  旅客姓名: passenger_name
+  出行车次: train_or_flight_no
+  日期: rail_journey_date
+  时间: rail_journey_time
+  销方地址: seller_address
+  销货方联系电话: seller_phone
+  购买方地址: buyer_address
+  购买方联系电话: buyer_phone
+  车牌照号: vehicle_plate_no
+  登记证号: registration_cert_no
+  转入地车辆管理所名称: transfer_dmv_office
+  经营/拍卖单位: auction_operator
+  经营/拍卖单位纳税人识别号: auction_operator_tax_no
+  二手车市场: used_vehicle_market
+  二手车市场纳税人识别号: used_vehicle_market_tax_no
+  承运人: cheng_yun_ren
+  航班号: hang_ban_hao
+sheets:
+  发票基础信息:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+  信息汇总表:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    tax_category_code:
+      aliases: []
+    special_business_type:
+      aliases: []
+    goods_name:
+      aliases: []
+    spec_model:
+      aliases: []
+    unit:
+      aliases: []
+    quantity:
+      aliases: []
+    unit_price:
+      aliases: []
+    amount:
+      aliases: []
+    tax_rate:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+  货物清单:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  不动产销售:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  机动车销售:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    commodity_inspection_no:
+      label_zh: 商检号码
+      aliases:
+      - 商检号码
+    engine_no:
+      label_zh: 发动机号码
+      aliases:
+      - 发动机号码
+    place_of_origin:
+      label_zh: 产地
+      aliases:
+      - 产地
+    vehicle_certificate_no:
+      label_zh: 合格证号
+      aliases:
+      - 合格证号
+    vin_chassis:
+      label_zh: 车辆识别代号/车架号
+      aliases:
+      - 车辆识别代号/车架号
+  二手车销售:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    vehicle_plate_no:
+      label_zh: 车牌照号
+      aliases:
+      - 车牌照号
+    registration_cert_no:
+      label_zh: 登记证号
+      aliases:
+      - 登记证号
+    used_vehicle_market:
+      label_zh: 二手车市场
+      aliases:
+      - 二手车市场
+    used_vehicle_market_tax_no:
+      label_zh: 二手车市场纳税人识别号
+      aliases:
+      - 二手车市场纳税人识别号
+    buyer_address:
+      label_zh: 购买方地址
+      aliases:
+      - 购买方地址
+    buyer_phone:
+      label_zh: 购买方联系电话
+      aliases:
+      - 购买方联系电话
+    auction_operator:
+      label_zh: 经营/拍卖单位
+      aliases:
+      - 经营/拍卖单位
+    auction_operator_tax_no:
+      label_zh: 经营/拍卖单位纳税人识别号
+      aliases:
+      - 经营/拍卖单位纳税人识别号
+    vin_chassis:
+      label_zh: 车辆识别代号/车架号
+      aliases:
+      - 车辆识别代号/车架号
+    seller_address:
+      label_zh: 销方地址
+      aliases:
+      - 销方地址
+    seller_phone:
+      label_zh: 销货方联系电话
+      aliases:
+      - 销货方联系电话
+    transfer_dmv_office:
+      label_zh: 转入地车辆管理所名称
+      aliases:
+      - 转入地车辆管理所名称
+  拖拉机:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  成品油:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  稀土:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  农产品收购:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  自产农产品:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  光伏:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  报废产品收购:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  无形资产:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  建筑服务:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    construction_project_name:
+      label_zh: 建筑项目名称
+      aliases:
+      - 建筑项目名称
+    construction_service_location:
+      label_zh: 建筑服务发生地
+      aliases:
+      - 建筑服务发生地
+    cross_region_tax_mgmt_no:
+      label_zh: 跨区域涉税事项报验管理编号
+      aliases:
+      - 跨区域涉税事项报验管理编号
+  金融服务:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  现代服务:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  生活服务:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  医疗服务:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  通行费:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  不动产经营租赁:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    license_plate_no:
+      label_zh: 车牌号
+      aliases:
+      - 车牌号
+    property_title_cert_no:
+      label_zh: 产权证书/不动产权证号
+      aliases:
+      - 产权证书/不动产权证号
+  有形动产租赁:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  货物运输服务:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    arrival_place:
+      label_zh: 到达地
+      aliases:
+      - 到达地
+    cargo_name:
+      label_zh: 运输货物名称
+      aliases:
+      - 运输货物名称
+    shipping_origin:
+      label_zh: 起运地
+      aliases:
+      - 起运地
+    transport_means_plate_no:
+      label_zh: 运输工具牌号
+      aliases:
+      - 运输工具牌号
+    transport_means_type:
+      label_zh: 运输工具种类
+      aliases:
+      - 运输工具种类
+  旅客运输服务:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    arrival_place:
+      label_zh: 到达地
+      aliases:
+      - 到达地
+    departure_place:
+      label_zh: 出发地
+      aliases:
+      - 出发地
+    service_class:
+      label_zh: 等级
+      aliases:
+      - 等级
+    transport_tool_type:
+      label_zh: 交通工具类型
+      aliases:
+      - 交通工具类型
+    traveler_id_no:
+      label_zh: 有效身份证号
+      aliases:
+      - 有效身份证号
+    trip_date:
+      label_zh: 出行日期
+      aliases:
+      - 出行日期
+    trip_traveler:
+      label_zh: 出行人
+      aliases:
+      - 出行人
+  铁路电子客票:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    arrival_place:
+      label_zh: 到达地
+      aliases:
+      - 到达地
+    departure_place:
+      label_zh: 出发地
+      aliases:
+      - 出发地
+    passenger_name:
+      label_zh: 旅客姓名
+      aliases:
+      - 旅客姓名
+    rail_journey_date:
+      label_zh: 日期
+      aliases:
+      - 日期
+    rail_journey_time:
+      label_zh: 时间
+      aliases:
+      - 时间
+    train_or_flight_no:
+      label_zh: 出行车次
+      aliases:
+      - 出行车次
+    traveler_id_no:
+      label_zh: 有效身份证号
+      aliases:
+      - 有效身份证号
+  铁路客票:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  航空运输:
+    seq_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    invoice_no:
+      aliases: []
+    sdfphm:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    seller_name:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    buyer_name:
+      aliases: []
+    invoice_date:
+      aliases: []
+    invoice_source:
+      aliases: []
+    invoice_type:
+      aliases: []
+    invoice_status:
+      aliases: []
+    is_positive_invoice:
+      aliases: []
+    invoice_risk_level:
+      aliases: []
+    drawer:
+      aliases: []
+    remark:
+      aliases: []
+    arrival_place:
+      label_zh: 到达地
+      aliases:
+      - 到达地
+    cheng_yun_ren:
+      label_zh: 承运人
+      aliases:
+      - 承运人
+    departure_place:
+      label_zh: 出发地
+      aliases:
+      - 出发地
+    hang_ban_hao:
+      label_zh: 航班号
+      aliases:
+      - 航班号
+    passenger_name:
+      label_zh: 旅客姓名
+      aliases:
+      - 旅客姓名
+    rail_journey_date:
+      label_zh: 日期
+      aliases:
+      - 日期
+    rail_journey_time:
+      label_zh: 时间
+      aliases:
+      - 时间
+    traveler_id_no:
+      label_zh: 有效身份证号
+      aliases:
+      - 有效身份证号
+  车船税:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  差额征税:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []
+  代开发票:
+    invoice_no:
+      aliases: []
+    invoice_code:
+      aliases: []
+    sdfphm:
+      aliases: []
+    invoice_date:
+      aliases: []
+    seller_tax_no:
+      aliases: []
+    buyer_tax_no:
+      aliases: []
+    amount:
+      aliases: []
+    tax_amount:
+      aliases: []
+    total_amount:
+      aliases: []

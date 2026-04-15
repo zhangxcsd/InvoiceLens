@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>InvoiceLens · 票鉴</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --nav-w:240px;--top-h:52px;
+  --accent:#0072D1;--accent-mid:#185FA5;
+  --danger:#E24B4A;--warn:#BA7517;--green:#1D9E75;
+  --bg:#F5F7FA;--border:#E2E6EE;--border-light:#EEF1F6;
+  --text:#1A1D23;--text-2:#5A6070;--text-3:#9AA0AD;
+  --radius:10px;--radius-sm:7px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+
+/* ===== LOGIN ===== */
+#login-screen{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f6ff,#e8f0fe 50%,#dceeff)}
+.login-shapes{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.ls{position:absolute;border-radius:50%;opacity:.07;background:#0066cc}
+.ls1{width:480px;height:480px;top:-100px;right:-80px}
+.ls2{width:320px;height:320px;bottom:-60px;left:-60px}
+.ls3{width:180px;height:180px;top:40%;left:20%}
+.login-card{position:relative;background:white;border-radius:20px;box-shadow:0 20px 60px rgba(0,102,204,.12);padding:44px 44px 36px;width:420px;max-width:calc(100vw - 32px)}
+.login-logo{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+.ll-icon{width:54px;height:54px;flex-shrink:0}
+.ll-en{font-size:22px;font-weight:700;color:var(--accent);letter-spacing:-.3px}
+.ll-cn{font-size:12px;color:var(--text-2);margin-top:1px}
+.login-sep{font-size:12px;color:var(--text-3);margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid var(--border-light)}
+.demo-tip{background:#f0f7ff;border:1px solid #c8dff7;border-radius:6px;padding:9px 13px;font-size:12px;color:var(--accent-mid);margin-bottom:16px}
+.demo-tip b{font-weight:600}
+.fg{margin-bottom:13px}
+.fg label{display:block;font-size:12px;font-weight:500;color:var(--text-2);margin-bottom:4px}
+.fg input{width:100%;padding:9px 13px;font-size:14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fafbfc;color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s}
+.fg input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,114,209,.1);background:white}
+.login-opts{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;font-size:12px;color:var(--text-2)}
+.login-opts label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.login-opts a{color:var(--accent);text-decoration:none}
+.btn-login{width:100%;padding:11px;font-size:15px;font-weight:600;background:linear-gradient(135deg,#0088ff,#0055cc);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;transition:opacity .15s}
+.btn-login:hover{opacity:.9}
+.login-foot{text-align:center;font-size:11px;color:var(--text-3);margin-top:18px}
+
+/* ===== APP SHELL ===== */
+#app{display:none;height:100vh;overflow:hidden}
+#app.show{display:flex;flex-direction:column}
+#shell{display:flex;flex:1;overflow:hidden}
+
+/* ===== SIDEBAR ===== */
+#sidebar{
+  width:var(--nav-w);flex-shrink:0;
+  background:white;border-right:1px solid var(--border-light);
+  display:flex;flex-direction:column;overflow:hidden;
+  transition:width .22s ease;
+}
+#sidebar.collapsed{width:48px}
+.sb-logo{padding:12px 12px 10px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:9px;overflow:hidden;min-width:0}
+.sb-logo-icon{width:30px;height:30px;flex-shrink:0}
+.sb-logo-text{overflow:hidden;white-space:nowrap;transition:opacity .15s}
+#sidebar.collapsed .sb-logo-text{opacity:0;width:0}
+.lt-en{font-size:13px;font-weight:700;color:var(--accent)}
+.lt-cn{font-size:10px;color:var(--text-3);margin-top:1px}
+
+/* 收起按钮 */
+.collapse-btn{
+  position:absolute;right:-11px;top:50%;transform:translateY(-50%);
+  width:22px;height:22px;border-radius:50%;
+  background:white;border:1px solid var(--border);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:var(--text-2);z-index:10;
+  transition:transform .2s;
+}
+#sidebar:not(.collapsed) .collapse-btn{transform:translateY(-50%)}
+#sidebar.collapsed .collapse-btn .arrow{transform:rotate(180deg);display:inline-block}
+#sidebar-wrap{position:relative;flex-shrink:0}
+
+.nav-scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 0}
+#sidebar.collapsed .nav-scroll{overflow:hidden}
+
+/* section label */
+.nav-section-label{
+  font-size:10px;font-weight:600;letter-spacing:.07em;color:var(--text-3);
+  padding:6px 14px 3px;text-transform:uppercase;white-space:nowrap;
+  overflow:hidden;transition:opacity .15s;
+}
+#sidebar.collapsed .nav-section-label{opacity:0}
+.nav-divider{border:none;border-top:1px solid var(--border-light);margin:3px 0}
+
+/* ── 1级父菜单 ── */
+.nav-parent{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 10px 7px 12px;cursor:pointer;
+  font-size:13px;color:var(--text-2);
+  border-left:2px solid transparent;
+  white-space:nowrap;overflow:hidden;
+  transition:background .1s,color .1s;user-select:none;
+}
+.nav-parent:hover{background:#f5f7ff;color:var(--text)}
+.nav-parent.open{color:var(--text);font-weight:500}
+.nav-parent-label{flex:1;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s,width .15s}
+#sidebar.collapsed .nav-parent-label{opacity:0;width:0;flex:none}
+.np-arrow{width:12px;height:12px;flex-shrink:0;opacity:.45;transition:transform .2s,opacity .15s}
+.nav-parent.open .np-arrow{transform:rotate(90deg)}
+#sidebar.collapsed .np-arrow{opacity:0;width:0}
+.nav-icon{width:15px;height:15px;flex-shrink:0;opacity:.6}
+.nav-parent.open .nav-icon{opacity:1}
+.nav-badge{font-size:9px;font-weight:600;background:var(--danger);color:white;padding:1px 5px;border-radius:10px;transition:opacity .15s}
+.nav-badge.warn{background:var(--warn)}
+.nav-badge.info{background:var(--accent)}
+#sidebar.collapsed .nav-badge{opacity:0;width:0;padding:0}
+
+/* ── 普通1级菜单 ── */
+.nav-item{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 10px 7px 12px;cursor:pointer;
+  font-size:13px;color:var(--text-2);
+  border-left:2px solid transparent;
+  white-space:nowrap;overflow:hidden;
+  transition:background .1s,color .1s;
+}
+.nav-item:hover{background:#f5f7ff;color:var(--text)}
+.nav-item.active{background:#EBF4FF;color:var(--accent);border-left-color:var(--accent);font-weight:500}
+.nav-item.active .nav-icon{opacity:1}
+.nav-item-label{flex:1;overflow:hidden;text-overflow:ellipsis;transition:opacity .15s}
+#sidebar.collapsed .nav-item-label{opacity:0;width:0;flex:none}
+#sidebar.collapsed .nav-item .nav-badge{opacity:0;width:0;padding:0}
+
+/* ── 2级菜单 ── */
+.nav-children{overflow:hidden;max-height:0;transition:max-height .22s ease}
+.nav-children.open{max-height:500px}
+#sidebar.collapsed .nav-children{max-height:0!important}
+
+.nav-child{
+  display:flex;align-items:center;gap:6px;
+  padding:6px 10px 6px 32px;cursor:pointer;
+  font-size:12px;color:var(--text-3);
+  border-left:2px solid transparent;
+  white-space:nowrap;overflow:hidden;
+  transition:background .1s,color .1s;
+  position:relative;
+}
+.nav-child::before{content:'';position:absolute;left:20px;top:50%;width:6px;height:1px;background:var(--border-light)}
+.nav-child:hover{background:#f5f7ff;color:var(--text-2)}
+.nav-child.active{background:#EBF4FF;color:var(--accent);border-left-color:var(--accent);font-weight:500}
+.nav-child.active::before{background:var(--accent)}
+.nc-arrow{width:10px;height:10px;flex-shrink:0;opacity:.4;margin-left:auto;transition:transform .18s}
+.nav-child.c-open .nc-arrow{transform:rotate(90deg)}
+.nc-label{flex:1;overflow:hidden;text-overflow:ellipsis}
+
+/* ── 3级菜单 ── */
+.nav-grandchildren{overflow:hidden;max-height:0;transition:max-height .2s ease}
+.nav-grandchildren.open{max-height:300px}
+#sidebar.collapsed .nav-grandchildren{max-height:0!important}
+
+.nav-grandchild{
+  display:flex;align-items:center;
+  padding:5px 10px 5px 46px;cursor:pointer;
+  font-size:11px;color:var(--text-3);
+  border-left:2px solid transparent;
+  white-space:nowrap;overflow:hidden;
+  transition:background .1s,color .1s;
+  position:relative;
+}
+.nav-grandchild::before{content:'·';position:absolute;left:38px;color:var(--border)}
+.nav-grandchild:hover{background:#f5f7ff;color:var(--text-2)}
+.nav-grandchild.active{background:#EBF4FF;color:var(--accent);border-left-color:var(--accent);font-weight:500}
+.nav-grandchild-label{flex:1;overflow:hidden;text-overflow:ellipsis}
+.ngc-soon{font-size:9px;color:var(--text-3);border:1px solid var(--border-light);border-radius:3px;padding:0 4px;margin-left:4px;flex-shrink:0}
+
+/* Tooltip for collapsed */
+#sidebar.collapsed .nav-parent{justify-content:center;padding:8px 0}
+#sidebar.collapsed .nav-item{justify-content:center;padding:8px 0}
+
+/* ===== TOPBAR ===== */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#topbar{height:var(--top-h);flex-shrink:0;background:white;border-bottom:1px solid var(--border-light);display:flex;align-items:center;padding:0 20px;gap:12px}
+.breadcrumb{font-size:13px;color:var(--text-2);flex:1}
+.breadcrumb b{color:var(--text);font-weight:500}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.license-tag{font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;background:#EBF4FF;color:var(--accent-mid);border:1px solid #c8dff7}
+#content{flex:1;overflow-y:auto;padding:22px}
+
+/* ===== BUTTONS ===== */
+.btn{padding:6px 13px;font-size:12px;border-radius:var(--radius-sm);border:1px solid var(--border);cursor:pointer;background:white;color:var(--text-2);transition:all .1s}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn-primary{background:var(--accent);color:white;border-color:var(--accent)}
+.btn-primary:hover{background:var(--accent-mid);border-color:var(--accent-mid);color:white}
+.btn-danger{color:var(--danger);border-color:var(--danger)}
+.btn-sm{padding:4px 10px;font-size:11px}
+
+/* ===== LAYOUT COMPONENTS ===== */
+.page{display:none}
+.page.active{display:block}
+.page-hd{margin-bottom:20px}
+.page-title{font-size:18px;font-weight:600;color:var(--text);margin-bottom:4px}
+.page-desc{font-size:13px;color:var(--text-2)}
+.card{background:white;border:1px solid var(--border-light);border-radius:var(--radius);padding:18px 20px;margin-bottom:16px}
+.card-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:6px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px}
+.g4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.mc{background:white;border:1px solid var(--border-light);border-radius:var(--radius);padding:14px 16px}
+.mc-label{font-size:11px;color:var(--text-3);margin-bottom:5px;font-weight:500}
+.mc-val{font-size:22px;font-weight:700;color:var(--text);line-height:1}
+.mc-sub{font-size:11px;color:var(--text-3);margin-top:4px}
+.c-ok{color:var(--green)}.c-up{color:var(--danger)}.c-warn{color:var(--warn)}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 12px;font-size:11px;font-weight:600;color:var(--text-3);background:#fafbfc;border-bottom:1px solid var(--border-light);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid var(--border-light);color:var(--text)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafcff}
+.badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+.bd{width:5px;height:5px;border-radius:50%;background:currentColor}
+.b-h{background:#FCEBEB;color:#791F1F}
+.b-m{background:#FAEEDA;color:#633806}
+.b-l{background:#E1F5EE;color:#085041}
+.b-b{background:#EBF4FF;color:#185FA5}
+.b-g{background:#F1EFE8;color:#444441}
+.b-p{background:#EEEDFE;color:#26215C}
+.tag{font-size:10px;padding:2px 6px;border-radius:4px;background:#f0f2f5;color:var(--text-2)}
+.form-row{display:flex;gap:12px;margin-bottom:13px}
+.fg2{flex:1}
+.fg2 label{display:block;font-size:12px;font-weight:500;color:var(--text-2);margin-bottom:4px}
+.fg2 input[type=text],.fg2 select,.fg2 textarea{width:100%;padding:7px 10px;font-size:13px;border:1px solid var(--border);border-radius:var(--radius-sm);background:#fafbfc;color:var(--text);outline:none}
+.fg2 input:focus,.fg2 select:focus{border-color:var(--accent);background:white}
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:36px;text-align:center;margin-bottom:16px;cursor:pointer;transition:all .15s}
+.upload-zone:hover{background:#f5f9ff;border-color:var(--accent)}
+.pbar{height:4px;background:#EEF1F6;border-radius:2px;overflow:hidden;margin-top:5px}
+.pfill{height:100%;border-radius:2px;background:var(--accent)}
+.step-list{list-style:none}
+.step-item{display:flex;gap:11px;padding:10px 0;border-bottom:1px solid var(--border-light)}
+.step-item:last-child{border-bottom:none}
+.sn{width:23px;height:23px;border-radius:50%;background:var(--accent);color:white;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.s-done{background:var(--green)}
+.map-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border-light);font-size:12px}
+.map-row:last-child{border-bottom:none}
+.map-src{flex:1;padding:5px 8px;background:#f5f7fa;border-radius:4px;color:var(--text-2)}
+.map-tgt{flex:1;padding:5px 8px;background:#EBF4FF;border-radius:4px;color:var(--accent-mid);font-weight:500}
+.switch{position:relative;display:inline-block;width:32px;height:18px}
+.switch input{opacity:0;width:0;height:0}
+.sld{position:absolute;cursor:pointer;inset:0;background:#e0e4ec;border-radius:10px;transition:.2s}
+.sld:before{content:'';position:absolute;height:12px;width:12px;left:3px;bottom:3px;background:white;border-radius:50%;transition:.2s}
+.switch input:checked+.sld{background:var(--accent)}
+.switch input:checked+.sld:before{transform:translateX(14px)}
+.rule-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-light)}
+.rule-item:last-child{border-bottom:none}
+.rule-name{flex:1;font-size:13px;color:var(--text)}
+.sidebar-bottom{border-top:1px solid var(--border-light);padding:6px 0 4px;flex-shrink:0}
+.user-area{display:flex;align-items:center;gap:9px;padding:7px 12px;cursor:pointer;overflow:hidden;transition:background .1s}
+.user-area:hover{background:#f5f7fa}
+.u-av{width:27px;height:27px;border-radius:50%;background:linear-gradient(135deg,#c8dff7,#9cc5f0);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--accent-mid);flex-shrink:0}
+.u-info{flex:1;min-width:0;transition:opacity .15s}
+#sidebar.collapsed .u-info{opacity:0;width:0;flex:none}
+.u-name{font-size:12px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.u-role{font-size:10px;color:var(--text-3)}
+.logout-btn{font-size:11px;color:var(--text-3);cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid var(--border-light);white-space:nowrap;transition:opacity .15s}
+#sidebar.collapsed .logout-btn{opacity:0;pointer-events:none}
+.logout-btn:hover{color:var(--danger);border-color:var(--danger)}
+/* soon placeholder */
+.soon{opacity:.45;cursor:default!important}
+.soon:hover{background:transparent!important}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen">
+ <div class="login-shapes"><div class="ls ls1"></div><div class="ls ls2"></div><div class="ls ls3"></div></div>
+ <div class="login-card">
+  <div class="login-logo">
+   <svg class="ll-icon" viewBox="0 0 250 250" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g1" x1=".5" x2=".5" y1="0" y2="1"><stop offset="0" stop-color="#0088ff"/><stop offset="1" stop-color="#0055cc"/></linearGradient></defs><path d="m231.4,199.5c0,-15.84 -9.6,-29.51 -23.46,-36.69c6.17,-13.65 7.67,-25.72 7.67,-35.02l0,-69.84c0,-3.53 -2.37,-5.49 -4.76,-5.95l-47.88,-9.36c-4.32,-18.47 -19.54,-33.2 -42.8,-33.66l-0.96,0c-21.43,0 -37,14.73 -41.97,33.38l-52,9.71c-3.29,.62 -5.12,3.22 -5.12,5.76l0,68.58c0,28.68 12.93,53.47 38.69,76.3c18.5,16.36 38.43,28.6 58.54,36.97c1.49,.64 2.52,.12 3.13,-.18c11.56,-5.14 21.91,-10.56 32.84,-17.59c8.73,12.06 19.8,19.08 35.47,19.08c23.49,0 43.42,-19.4 43.42,-41.49zm-112.8,-185.6l1.42,0c22.07,.1 39.59,18.5 39.59,38.42c0,21.15 -17.2,38.35 -39.59,38.35l-1.1,0c-21.51,-.29 -38.76,-17.97 -38.41,-38.95c.36,-20.56 17.4,-37.82 38.09,-37.82zm32.61,69.2l1.88,-1.8l5.68,5.92l-3.14,3.13l-6.32,-6.32zm6.17,12.92l6.23,-6.23l22.87,23.54c2.45,2.44 .83,6.71 -2.86,6.71c-1.2,0 -2.23,-.51 -3.03,-1.43zm-39.02,133.6c-38.3,-15.49 -88.55,-47.65 -88.55,-103.8l0,-65.21l45.88,-9.09c-.25,22.02 18.22,43.69 43.72,43.69l.7,0c9.92,0 18.35,-3.17 25.17,-8.28l6.13,6.14c-1.32,1.32 -1.66,4.1 -.1,5.03l25.96,23.91c2.15,1.88 3.54,2.29 6.32,2.29c9.59,0 12.04,-10.48 6.04,-15.13l-24.27,-23.64c-1.15,-1.15 -2.75,-1.01 -3.8,.04l-6.32,-6.33c6.47,-7.57 8.91,-16.01 9.08,-27.17l42.39,8.36l0,67.04c0,10.01 -2.32,21.13 -7.39,31.37c-3.5,-.89 -6.31,-1.18 -10.66,-1.18c-23.64,0 -42.17,19.83 -42.17,42.09c0,5.27 .92,10.07 2.62,13.6c-10.05,7.27 -18.93,11.97 -30.75,16.22zm70.33,1.85c-18.86,0 -32.95,-14.23 -32.95,-32.15c0,-18.25 14.19,-32.11 33.12,-32.11c18.32,0 33.82,14.76 33.82,32.28c0,17.38 -15.57,31.98 -33.99,31.98z" fill="url(#g1)"/><path d="m120.1,87.33c20.26,0 35.68,-16.67 35.68,-34.72c0,-19.71 -16.02,-36.55 -35.68,-36.55c-20.26,0 -34.24,16.55 -33.75,35.65c.49,18.61 15.04,35.62 33.75,35.62zm-.08,-67.23c17.42,0 31.57,14.97 31.57,32.23c0,16.94 -14.31,31.49 -31.57,31.49c-17.82,0 -31.49,-14.84 -31.49,-31.73c0,-17.08 14.09,-31.99 31.49,-31.99z" fill="url(#g1)"/><path d="m203.8,183.7l-19.21,19.72l-8.73,-8.99c-2.64,-2.38 -7.96,.07 -7.35,4.23c.14,1.1 .79,1.82 1.34,2.33l12.15,11.99c2.21,1.88 4.65,1.26 6.28,-.61l21.9,-21.87c1.22,-1.22 1.5,-2.07 1.5,-3.56c0,-4.19 -5.07,-6.3 -7.88,-3.24z" fill="url(#g1)"/></svg>
+   <div><div class="ll-en">InvoiceLens</div><div class="ll-cn">票鉴 · 发票审计分析平台</div></div>
+  </div>
+  <div class="login-sep">请使用您的机构账号登录</div>
+  <div class="demo-tip">演示账号：<b>admin</b> / 密码：<b>admin123</b></div>
+  <div class="fg"><label>用户名 / 工号</label><input type="text" id="lu" value="admin" placeholder="请输入用户名"></div>
+  <div class="fg"><label>密码</label><input type="password" id="lp" value="admin123" placeholder="请输入密码"></div>
+  <div class="login-opts"><label><input type="checkbox" checked> 记住登录状态</label><a href="#">忘记密码？</a></div>
+  <button class="btn-login" onclick="doLogin()">登 录</button>
+  <div class="login-foot">© 2025 InvoiceLens 票鉴 · 仅供授权机构内部使用</div>
+ </div>
+</div>
+
+<!-- APP -->
+<div id="app">
+ <div id="shell">
+
+  <!-- SIDEBAR WRAPPER (for collapse button) -->
+  <div id="sidebar-wrap">
+   <div id="sidebar">
+    <div class="sb-logo">
+     <svg class="sb-logo-icon" viewBox="0 0 250 250" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg1" x1=".5" x2=".5" y1="0" y2="1"><stop offset="0" stop-color="#0088ff"/><stop offset="1" stop-color="#0055cc"/></linearGradient></defs><path d="m231.4,199.5c0,-15.84 -9.6,-29.51 -23.46,-36.69c6.17,-13.65 7.67,-25.72 7.67,-35.02l0,-69.84c0,-3.53 -2.37,-5.49 -4.76,-5.95l-47.88,-9.36c-4.32,-18.47 -19.54,-33.2 -42.8,-33.66l-0.96,0c-21.43,0 -37,14.73 -41.97,33.38l-52,9.71c-3.29,.62 -5.12,3.22 -5.12,5.76l0,68.58c0,28.68 12.93,53.47 38.69,76.3c18.5,16.36 38.43,28.6 58.54,36.97c1.49,.64 2.52,.12 3.13,-.18c11.56,-5.14 21.91,-10.56 32.84,-17.59c8.73,12.06 19.8,19.08 35.47,19.08c23.49,0 43.42,-19.4 43.42,-41.49zm-112.8,-185.6l1.42,0c22.07,.1 39.59,18.5 39.59,38.42c0,21.15 -17.2,38.35 -39.59,38.35l-1.1,0c-21.51,-.29 -38.76,-17.97 -38.41,-38.95c.36,-20.56 17.4,-37.82 38.09,-37.82zm32.61,69.2l1.88,-1.8l5.68,5.92l-3.14,3.13l-6.32,-6.32zm6.17,12.92l6.23,-6.23l22.87,23.54c2.45,2.44 .83,6.71 -2.86,6.71c-1.2,0 -2.23,-.51 -3.03,-1.43zm-39.02,133.6c-38.3,-15.49 -88.55,-47.65 -88.55,-103.8l0,-65.21l45.88,-9.09c-.25,22.02 18.22,43.69 43.72,43.69l.7,0c9.92,0 18.35,-3.17 25.17,-8.28l6.13,6.14c-1.32,1.32 -1.66,4.1 -.1,5.03l25.96,23.91c2.15,1.88 3.54,2.29 6.32,2.29c9.59,0 12.04,-10.48 6.04,-15.13l-24.27,-23.64c-1.15,-1.15 -2.75,-1.01 -3.8,.04l-6.32,-6.33c6.47,-7.57 8.91,-16.01 9.08,-27.17l42.39,8.36l0,67.04c0,10.01 -2.32,21.13 -7.39,31.37c-3.5,-.89 -6.31,-1.18 -10.66,-1.18c-23.64,0 -42.17,19.83 -42.17,42.09c0,5.27 .92,10.07 2.62,13.6c-10.05,7.27 -18.93,11.97 -30.75,16.22zm70.33,1.85c-18.86,0 -32.95,-14.23 -32.95,-32.15c0,-18.25 14.19,-32.11 33.12,-32.11c18.32,0 33.82,14.76 33.82,32.28c0,17.38 -15.57,31.98 -33.99,31.98z" fill="url(#sg1)"/><path d="m120.1,87.33c20.26,0 35.68,-16.67 35.68,-34.72c0,-19.71 -16.02,-36.55 -35.68,-36.55c-20.26,0 -34.24,16.55 -33.75,35.65c.49,18.61 15.04,35.62 33.75,35.62zm-.08,-67.23c17.42,0 31.57,14.97 31.57,32.23c0,16.94 -14.31,31.49 -31.57,31.49c-17.82,0 -31.49,-14.84 -31.49,-31.73c0,-17.08 14.09,-31.99 31.49,-31.99z" fill="url(#sg1)"/><path d="m203.8,183.7l-19.21,19.72l-8.73,-8.99c-2.64,-2.38 -7.96,.07 -7.35,4.23c.14,1.1 .79,1.82 1.34,2.33l12.15,11.99c2.21,1.88 4.65,1.26 6.28,-.61l21.9,-21.87c1.22,-1.22 1.5,-2.07 1.5,-3.56c0,-4.19 -5.07,-6.3 -7.88,-3.24z" fill="url(#sg1)"/></svg>
+     <div class="sb-logo-text"><div class="lt-en">InvoiceLens</div><div class="lt-cn">票鉴 · 审计分析平台</div></div>
+    </div>
+
+    <div class="nav-scroll" id="nav-scroll">
+
+     <!-- ===== 数据准备 ===== -->
+     <div class="nav-section-label">数据准备</div>
+
+     <!-- 数据导入 -->
+     <div class="nav-parent open" id="ng-import" onclick="toggleGroup('import')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><path d="M7.5 1v9M4 7l3.5 3.5L11 7M2 12h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">数据导入</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children open" id="nc-import">
+      <!-- 2级：导入向导 (有3级) -->
+      <div class="nav-child c-open" id="nc2-wizard" onclick="toggleChild('wizard',event)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><rect x="1" y="1" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4 5.5h3M5.5 4v3" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+       <span class="nc-label">导入向导</span>
+       <svg class="nc-arrow" viewBox="0 0 10 10" fill="none"><path d="M3 4l2 2 2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="nav-grandchildren open" id="ngc-wizard">
+       <div class="nav-grandchild active" onclick="goto('import-wizard','数据导入 / 导入向导','文件上传',this)"><span class="nav-grandchild-label">文件上传</span></div>
+       <div class="nav-grandchild" onclick="goto('import-preview','数据导入 / 导入向导','ODS数据查看',this)"><span class="nav-grandchild-label">ODS数据查看</span></div>
+       <div class="nav-grandchild soon"><span class="nav-grandchild-label">格式检测</span><span class="ngc-soon">待开发</span></div>
+      </div>
+      <!-- 2级：历史批次 -->
+      <div class="nav-child" id="nc2-history" onclick="gotoChild('import-history','数据导入','历史批次记录',this)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 3v2.5l2 1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+       <span class="nc-label">历史批次记录</span>
+      </div>
+      <!-- 2级：数据质量 (有3级) -->
+      <div class="nav-child" id="nc2-quality" onclick="toggleChild('quality',event)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><path d="M2 8.5l2.5-3 2 2.5L9 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+       <span class="nc-label">数据质量报告</span>
+       <svg class="nc-arrow" viewBox="0 0 10 10" fill="none"><path d="M3 4l2 2 2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="nav-grandchildren" id="ngc-quality">
+       <div class="nav-grandchild" onclick="goto('quality-overview','数据导入 / 数据质量报告','质量概览',this)"><span class="nav-grandchild-label">质量概览</span></div>
+       <div class="nav-grandchild" onclick="goto('quality-detail','数据导入 / 数据质量报告','异常明细',this)"><span class="nav-grandchild-label">异常明细</span></div>
+       <div class="nav-grandchild soon"><span class="nav-grandchild-label">质量趋势</span><span class="ngc-soon">待开发</span></div>
+      </div>
+      <!-- 2级：字段映射 (有3级) -->
+      <div class="nav-child" id="nc2-mapping" onclick="toggleChild('mapping',event)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><path d="M1 4h4M1 7h4M6 4l4 1.5L6 7" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+       <span class="nc-label">字段映射配置</span>
+       <svg class="nc-arrow" viewBox="0 0 10 10" fill="none"><path d="M3 4l2 2 2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="nav-grandchildren" id="ngc-mapping">
+       <div class="nav-grandchild" onclick="goto('mapping-config','数据导入 / 字段映射','映射配置',this)"><span class="nav-grandchild-label">映射配置</span></div>
+       <div class="nav-grandchild soon"><span class="nav-grandchild-label">模板管理</span><span class="ngc-soon">待开发</span></div>
+      </div>
+     </div>
+
+     <!-- 维度管理 -->
+     <div class="nav-parent" id="ng-dim" onclick="toggleGroup('dim')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><rect x="1" y="3" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="3" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="5" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 8v2M11.5 8v2M7.5 8v1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">维度管理</span>
+      <span class="nav-badge info" style="font-size:9px;padding:1px 5px">新</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-dim">
+      <div class="nav-child" id="nc2-org" onclick="toggleChild('org',event)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><rect x="4" y="1" width="3" height="2" rx=".5" stroke="currentColor" stroke-width="1"/><rect x="1" y="7.5" width="3" height="2" rx=".5" stroke="currentColor" stroke-width="1"/><rect x="7" y="7.5" width="3" height="2" rx=".5" stroke="currentColor" stroke-width="1"/><path d="M5.5 3v2M3 8.5H2V5h7v3.5H9" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+       <span class="nc-label">企业组织维度</span>
+       <svg class="nc-arrow" viewBox="0 0 10 10" fill="none"><path d="M3 4l2 2 2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="nav-grandchildren" id="ngc-org">
+       <div class="nav-grandchild" onclick="goto('dim-org','维度管理 / 企业组织','管理树',this)"><span class="nav-grandchild-label">管理树</span></div>
+       <div class="nav-grandchild" onclick="goto('dim-org-equity','维度管理 / 企业组织','产权树',this)"><span class="nav-grandchild-label">产权树</span></div>
+       <div class="nav-grandchild soon"><span class="nav-grandchild-label">管产差异分析</span><span class="ngc-soon">待开发</span></div>
+      </div>
+      <div class="nav-child" id="nc2-tax" onclick="toggleChild('tax',event)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><rect x="1" y="1.5" width="9" height="8" rx="1" stroke="currentColor" stroke-width="1"/><path d="M3 4.5h5M3 7h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+       <span class="nc-label">税收分类编码</span>
+       <svg class="nc-arrow" viewBox="0 0 10 10" fill="none"><path d="M3 4l2 2 2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      </div>
+      <div class="nav-grandchildren" id="ngc-tax">
+       <div class="nav-grandchild" onclick="goto('dim-tax','维度管理 / 税收编码','编码库管理',this)"><span class="nav-grandchild-label">编码库管理</span></div>
+       <div class="nav-grandchild soon"><span class="nav-grandchild-label">覆盖率分析</span><span class="ngc-soon">待开发</span></div>
+      </div>
+      <div class="nav-child" id="nc2-dict" onclick="gotoChild('dim-dict','维度管理','数据字典维护',this)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><rect x="2" y="1" width="7" height="9" rx="1" stroke="currentColor" stroke-width="1"/><path d="M4 4h3M4 6.5h2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+       <span class="nc-label">数据字典维护</span>
+      </div>
+      <div class="nav-child" id="nc2-ver" onclick="gotoChild('dim-version','维度管理','年度版本管理',this)">
+       <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style="flex-shrink:0;opacity:.5"><circle cx="5.5" cy="5.5" r="4" stroke="currentColor" stroke-width="1"/><path d="M5.5 3v2.5l1.5 1" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+       <span class="nc-label">年度版本管理</span>
+      </div>
+     </div>
+
+     <div class="nav-divider"></div>
+     <!-- ===== 分析看板 ===== -->
+     <div class="nav-section-label">分析看板</div>
+
+     <div class="nav-parent" id="ng-overview" onclick="toggleGroup('overview')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><rect x="1" y="8" width="3" height="6" rx="1" fill="currentColor" opacity=".5"/><rect x="6" y="5" width="3" height="9" rx="1" fill="currentColor" opacity=".7"/><rect x="11" y="2" width="3" height="12" rx="1" fill="currentColor"/></svg>
+      <span class="nav-parent-label">数据概览</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-overview">
+      <div class="nav-child" onclick="gotoChild('overview','数据概览','整体汇总',this)"><span class="nc-label">整体汇总</span></div>
+      <div class="nav-child soon"><span class="nc-label">月度趋势</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">税率结构</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-parent" id="ng-supplier" onclick="toggleGroup('supplier')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 2v5.5l3.5 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">供应商分析</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-supplier">
+      <div class="nav-child" onclick="gotoChild('supplier','供应商分析','集中度分析（CR值）',this)"><span class="nc-label">集中度（CR值）</span></div>
+      <div class="nav-child soon"><span class="nc-label">Top 供应商明细</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">新增/消失供应商</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-parent" id="ng-flags" onclick="toggleGroup('flags')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><path d="M7.5 2v7M7.5 11v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">审计疑点</span>
+      <span class="nav-badge">12</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-flags">
+      <div class="nav-child" onclick="gotoChild('flags','审计疑点','疑点清单',this)"><span class="nc-label">疑点清单</span></div>
+      <div class="nav-child" onclick="gotoChild('flags-rules','审计疑点','规则配置',this)"><span class="nc-label">规则配置</span></div>
+      <div class="nav-child soon"><span class="nc-label">疑点跟踪</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-parent" id="ng-related" onclick="toggleGroup('related')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="7.5" cy="11" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M6 4h3M5.2 5.5l1.5 4M9.8 5.5l-1.5 4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">关联交易</span>
+      <span class="nav-badge warn">3</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-related">
+      <div class="nav-child" onclick="gotoChild('related','关联交易','图谱分析',this)"><span class="nc-label">图谱分析</span></div>
+      <div class="nav-child soon"><span class="nc-label">对开发票</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">通道公司识别</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-parent" id="ng-jiuqi" onclick="toggleGroup('jiuqi')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><path d="M1 11L5 5l3 4 2-3 4 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="nav-parent-label">财务校验</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-jiuqi">
+      <div class="nav-child" onclick="gotoChild('jiuqi','财务校验','发票与账表核对',this)"><span class="nc-label">发票与账表核对</span></div>
+      <div class="nav-child soon"><span class="nc-label">差异分析</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-parent" id="ng-compare" onclick="toggleGroup('compare')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><rect x="1" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="8" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M3.5 7v2M11.5 1v5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">子公司对比</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-compare">
+      <div class="nav-child" onclick="gotoChild('compare','子公司对比','评级排名',this)"><span class="nc-label">评级排名</span></div>
+      <div class="nav-child soon"><span class="nc-label">横向对比图表</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-divider"></div>
+     <!-- ===== 输出 ===== -->
+     <div class="nav-section-label">输出</div>
+     <div class="nav-parent" id="ng-report" onclick="toggleGroup('report')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><rect x="2" y="1" width="11" height="13" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M5 5h5M5 7.5h5M5 10h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">生成报告</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-report">
+      <div class="nav-child" onclick="gotoChild('report','生成报告','报告配置',this)"><span class="nc-label">报告配置</span></div>
+      <div class="nav-child soon"><span class="nc-label">报告模板管理</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">历史报告存档</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+     <div class="nav-divider"></div>
+     <!-- ===== 系统 ===== -->
+     <div class="nav-section-label">系统</div>
+     <div class="nav-parent" id="ng-users" onclick="toggleGroup('users')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="5" r="3" stroke="currentColor" stroke-width="1.2"/><path d="M1 13.5c0-3.3 2.9-6 6.5-6s6.5 2.7 6.5 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">用户管理</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-users">
+      <div class="nav-child" onclick="gotoChild('users','用户管理','用户列表',this)"><span class="nc-label">用户列表</span></div>
+      <div class="nav-child soon"><span class="nc-label">角色权限配置</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">操作日志</span><span class="ngc-soon">待开发</span></div>
+     </div>
+     <div class="nav-parent" id="ng-settings" onclick="toggleGroup('settings')">
+      <svg class="nav-icon" viewBox="0 0 15 15" fill="none"><circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M7.5 1v1.5M7.5 12.5V14M1 7.5h1.5M12.5 7.5H14M2.6 2.6l1 1M11.4 11.4l1 1M11.4 3.6l-1 1M3.6 11.4l-1 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <span class="nav-parent-label">系统设置</span>
+      <svg class="np-arrow" viewBox="0 0 12 12" fill="none"><path d="M4 5l2 2 2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+     </div>
+     <div class="nav-children" id="nc-settings">
+      <div class="nav-child" onclick="gotoChild('settings','系统设置','规则阈值',this)"><span class="nc-label">规则阈值</span></div>
+      <div class="nav-child soon"><span class="nc-label">授权管理</span><span class="ngc-soon">待开发</span></div>
+      <div class="nav-child soon"><span class="nc-label">实例配置</span><span class="ngc-soon">待开发</span></div>
+     </div>
+
+    </div><!-- /nav-scroll -->
+
+    <div class="sidebar-bottom">
+     <div class="user-area">
+      <div class="u-av" id="cur-av">张</div>
+      <div class="u-info"><div class="u-name" id="cur-name">张审计员</div><div class="u-role" id="cur-role">系统管理员</div></div>
+      <div class="logout-btn" onclick="doLogout()">退出</div>
+     </div>
+    </div>
+   </div><!-- /sidebar -->
+   <div class="collapse-btn" id="collapse-btn" onclick="toggleSidebar()" title="收起/展开侧边栏">
+    <span class="arrow">◀</span>
+   </div>
+  </div><!-- /sidebar-wrap -->
+
+  <!-- MAIN -->
+  <div id="main">
+   <div id="topbar">
+    <div class="breadcrumb" id="bc">数据导入 / 导入向导 / <b>文件上传</b></div>
+    <div class="topbar-right">
+     <span class="license-tag">专业版 · 有效期 2025-12-31</span>
+     <button class="btn">帮助</button>
+    </div>
+   </div>
+   <div id="content">
+
+<!-- ============ PAGES ============ -->
+
+<!-- 文件上传 -->
+<div class="page active" id="p-import-wizard">
+ <div class="page-hd"><div class="page-title">文件上传</div><div class="page-desc">上传各下属企业从金税系统导出的发票 Excel 文件，支持金税三期/四期格式。</div></div>
+ <div class="upload-zone">
+  <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="margin:0 auto"><rect x="4" y="8" width="32" height="26" rx="3" stroke="#0072D1" stroke-width="1.5" stroke-dasharray="3"/><path d="M20 16v10M16 20l4-4 4 4" stroke="#0072D1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <div style="font-size:14px;color:var(--text);margin-top:10px">拖放 Excel 文件到此处，或点击选择</div>
+  <div style="font-size:12px;color:var(--text-3);margin-top:6px">支持 .xlsx / .xls · 命名规范：{公司简称}_{进项/销项}_{YYYYMM}_{YYYYMM}.xlsx</div>
+ </div>
+ <div class="card">
+  <div class="card-title">批次配置</div>
+  <div class="form-row">
+   <div class="fg2"><label>批次基准日期</label><input type="text" value="2026-03-27"></div>
+   <div class="fg2"><label>后续区分标记</label><select><option>自动识别（后续区分）</option><option>强制进项标记（后续区分）</option><option>强制销项标记（后续区分）</option></select></div>
+   <div class="fg2"><label>完成后 DWD 清洗</label><select><option>自动触发</option><option>手动触发</option></select></div>
+  </div>
+ </div>
+ <div class="card">
+  <div class="card-title">当前队列</div>
+  <ul class="step-list">
+   <li class="step-item"><div class="sn s-done">✓</div><div style="flex:1"><div style="font-size:13px;font-weight:500">华北分公司_进项_202401_202412.xlsx</div><div style="font-size:11px;color:var(--green);margin-top:3px">成功 · 写入 1,523 行 · ODS Parquet 已生成</div></div></li>
+   <li class="step-item"><div class="sn s-done">✓</div><div style="flex:1"><div style="font-size:13px;font-weight:500">华南子公司_销项_202401_202412.xlsx</div><div style="font-size:11px;color:var(--green);margin-top:3px">成功 · 写入 892 行</div></div></li>
+   <li class="step-item"><div class="sn" style="background:#FA9D2B">3</div><div style="flex:1"><div style="font-size:13px;font-weight:500">东北贸易公司_进项_202401_202412.xlsx</div><div style="font-size:11px;color:var(--text-3);margin-top:3px">处理中… 67%</div><div class="pbar"><div class="pfill" style="width:67%"></div></div></div></li>
+  </ul>
+ </div>
+ <div style="display:flex;gap:8px"><button class="btn btn-primary">开始导入</button><button class="btn">暂停</button></div>
+</div>
+
+<!-- ODS数据查看 -->
+<div class="page" id="p-import-preview">
+ <div class="page-hd"><div class="page-title">ODS数据查看</div><div class="page-desc">导入完成后在此查看 ODS 层数据，确认字段解析是否正确。</div></div>
+ <div class="g4">
+  <div class="mc"><div class="mc-label">当前批次行数</div><div class="mc-val">2,415</div><div class="mc-sub">3个文件合计</div></div>
+  <div class="mc"><div class="mc-label">解析成功</div><div class="mc-val c-ok">2,409</div><div class="mc-sub">99.75%</div></div>
+  <div class="mc"><div class="mc-label">解析异常</div><div class="mc-val c-up">6</div><div class="mc-sub">需人工确认</div></div>
+  <div class="mc"><div class="mc-label">ODS 写入状态</div><div class="mc-val" style="font-size:14px;padding-top:4px"><span class="badge b-l">已写入</span></div></div>
+ </div>
+ <div class="card">
+  <div class="card-title">ODS数据查看（前50行）</div>
+  <div class="table-wrap"><table>
+   <thead><tr><th>fpdm</th><th>fphm</th><th>kprq</th><th>xfmc（销售方）</th><th>gfmc（购买方）</th><th>jshj（价税合计）</th><th>sl（税率）</th><th>fplx（状态）</th></tr></thead>
+   <tbody>
+    <tr><td>044031900104</td><td>76583921</td><td>2024-01-05</td><td>华润建材科技有限公司</td><td>华北分公司</td><td>235,000.00</td><td>13%</td><td><span class="badge b-b">蓝票</span></td></tr>
+    <tr><td>044031900104</td><td>76583922</td><td>2024-01-05</td><td>华润建材科技有限公司</td><td>华北分公司</td><td>235,000.00</td><td>13%</td><td><span class="badge b-b" style="background:#FCEBEB;color:#791F1F">⚠ 重复</span></td></tr>
+    <tr><td>033001900201</td><td>12340018</td><td>2024-02-14</td><td>XX 物流有限公司</td><td>华南子公司</td><td>-186,000.00</td><td>9%</td><td><span class="badge b-m">红票</span></td></tr>
+   </tbody>
+  </table></div>
+ </div>
+</div>
+
+<!-- 历史批次 -->
+<div class="page" id="p-import-history">
+ <div class="page-hd"><div class="page-title">历史批次记录</div><div class="page-desc">查看所有已完成的导入批次。</div></div>
+ <div class="g4">
+  <div class="mc"><div class="mc-label">历史批次</div><div class="mc-val">47</div></div>
+  <div class="mc"><div class="mc-label">成功批次</div><div class="mc-val c-ok">44</div></div>
+  <div class="mc"><div class="mc-label">失败批次</div><div class="mc-val c-up">3</div></div>
+  <div class="mc"><div class="mc-label">最新导入</div><div class="mc-val" style="font-size:16px">03-27</div></div>
+ </div>
+ <div class="card">
+  <div class="card-title">批次列表</div>
+  <div class="table-wrap"><table>
+   <thead><tr><th>批次ID</th><th>日期</th><th>公司</th><th>方向</th><th>行数</th><th>状态</th><th>操作</th></tr></thead>
+   <tbody>
+    <tr><td>B-2026-047</td><td>03-27</td><td>华北分公司</td><td><span class="badge b-b">进项</span></td><td>1,523</td><td><span class="badge b-l">成功</span></td><td><button class="btn btn-sm">查看</button></td></tr>
+    <tr><td>B-2026-046</td><td>03-27</td><td>华南子公司</td><td><span class="badge b-p">销项</span></td><td>892</td><td><span class="badge b-l">成功</span></td><td><button class="btn btn-sm">查看</button></td></tr>
+    <tr><td>B-2026-041</td><td>03-20</td><td>东北贸易公司</td><td><span class="badge b-b">进项</span></td><td>—</td><td><span class="badge b-h">失败</span></td><td><button class="btn btn-sm btn-danger">重试</button></td></tr>
+   </tbody>
+  </table></div>
+ </div>
+</div>
+
+<!-- 质量概览 -->
+<div class="page" id="p-quality-overview">
+ <div class="page-hd"><div class="page-title">数据质量概览</div><div class="page-desc">对已导入数据进行完整性、一致性检测。</div></div>
+ <div class="g4">
+  <div class="mc"><div class="mc-label">综合评分</div><div class="mc-val c-ok">86</div><div class="mc-sub">良好</div></div>
+  <div class="mc"><div class="mc-label">完整性</div><div class="mc-val c-ok">94%</div></div>
+  <div class="mc"><div class="mc-label">一致性</div><div class="mc-val c-warn">81%</div></div>
+  <div class="mc"><div class="mc-label">孤立红票</div><div class="mc-val c-up">3</div></div>
+ </div>
+ <div class="card">
+  <div class="card-title">检测结果</div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-light);font-size:12px"><div style="flex:1;color:var(--text-2)">发票代码（fpdm）缺失</div><div style="color:var(--text)">0 行</div><span class="badge b-l">通过</span></div>
+   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-light);font-size:12px"><div style="flex:1;color:var(--text-2)">购买方税号（gfsbh）缺失</div><div style="color:var(--text)">47 行（1.5%）</div><span class="badge b-m">警告</span></div>
+   <div style="display:flex;align-items:center;gap:10px;padding:8px 0;font-size:12px"><div style="flex:1;color:var(--text-2)">金额 = 税前 + 税额 校验</div><div style="color:var(--text)">差异 5 行</div><span class="badge b-h">错误</span></div>
+  </div>
+ </div>
+</div>
+
+<!-- 异常明细 -->
+<div class="page" id="p-quality-detail">
+ <div class="page-hd"><div class="page-title">异常明细</div><div class="page-desc">质量检测中发现的具体异常行，支持导出修正。</div></div>
+ <div class="card">
+  <div class="card-title">异常记录（共 52 行）</div>
+  <div class="table-wrap"><table>
+   <thead><tr><th>行号</th><th>发票号</th><th>字段</th><th>异常类型</th><th>当前值</th><th>建议值</th></tr></thead>
+   <tbody>
+    <tr><td>12</td><td>76583921</td><td>gfsbh</td><td><span class="badge b-m">缺失</span></td><td>—</td><td>需人工补录</td></tr>
+    <tr><td>89</td><td>12340018</td><td>jshj</td><td><span class="badge b-h">金额不平</span></td><td>-186,000</td><td>复核原票</td></tr>
+   </tbody>
+  </table></div>
+ </div>
+ <div style="display:flex;gap:8px"><button class="btn btn-primary">导出异常清单（Excel）</button><button class="btn">一键忽略警告</button></div>
+</div>
+
+<!-- 字段映射配置 -->
+<div class="page" id="p-mapping-config">
+ <div class="page-hd"><div class="page-title">字段映射配置</div><div class="page-desc">配置 Excel 列名到 ODS 标准字段的映射关系。</div></div>
+ <div class="g2">
+  <div class="card">
+   <div class="card-title">当前模板：金税四期标准</div>
+   <div class="map-row"><div class="map-src">发票代码</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt">fpdm</div><span class="badge b-l" style="font-size:10px">匹配</span></div>
+   <div class="map-row"><div class="map-src">发票号码</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt">fphm</div><span class="badge b-l" style="font-size:10px">匹配</span></div>
+   <div class="map-row"><div class="map-src">开票日期</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt">kprq</div><span class="badge b-l" style="font-size:10px">匹配</span></div>
+   <div class="map-row"><div class="map-src">销售方名称</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt">xfmc</div><span class="badge b-l" style="font-size:10px">匹配</span></div>
+   <div class="map-row"><div class="map-src">价税合计</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt">jshj</div><span class="badge b-l" style="font-size:10px">匹配</span></div>
+   <div class="map-row"><div class="map-src" style="color:var(--danger)">税率/征收率</div><div style="color:var(--accent);font-size:14px;flex-shrink:0">→</div><div class="map-tgt" style="color:var(--warn)">sl ⚠</div><span class="badge b-m" style="font-size:10px">歧义</span></div>
+  </div>
+  <div>
+   <div class="card">
+    <div class="card-title">操作</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+     <button class="btn btn-primary">保存当前映射</button>
+     <button class="btn">导出映射配置（.json）</button>
+     <button class="btn">导入映射配置文件</button>
+    </div>
+   </div>
+   <div class="card">
+    <div class="card-title">覆盖率</div>
+    <div style="font-size:12px;color:var(--text-2);margin-bottom:8px">ODS 36个字段，已映射 34 个</div>
+    <div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>映射覆盖率</span><span class="c-ok">94.4%</span></div><div class="pbar" style="height:8px"><div class="pfill" style="width:94%"></div></div></div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<!-- 维度各页（简版，Cursor后续填充） -->
+<div class="page" id="p-dim-org"><div class="page-hd"><div class="page-title">企业组织维度 · 管理树</div><div class="page-desc">维护集团管理层级树结构，按年度版本管理。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 管理树内容由 Cursor 实现</div></div>
+<div class="page" id="p-dim-org-equity"><div class="page-hd"><div class="page-title">企业组织维度 · 产权树</div><div class="page-desc">维护集团股权层级树结构。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 产权树内容由 Cursor 实现</div></div>
+<div class="page" id="p-dim-tax"><div class="page-hd"><div class="page-title">税收分类编码库</div><div class="page-desc">管理商品和服务税收分类编码表。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 编码库内容由 Cursor 实现</div></div>
+<div class="page" id="p-dim-dict"><div class="page-hd"><div class="page-title">数据字典维护</div><div class="page-desc">字段定义与枚举值管理。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 字典内容由 Cursor 实现</div></div>
+<div class="page" id="p-dim-version"><div class="page-hd"><div class="page-title">年度版本管理</div><div class="page-desc">按年度维护维度快照。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 年度版本内容由 Cursor 实现</div></div>
+
+<!-- 分析看板（简版占位） -->
+<div class="page" id="p-overview"><div class="page-hd"><div class="page-title">数据概览</div><div class="page-desc">集团整体发票数据汇总看板。</div></div><div class="g4"><div class="mc"><div class="mc-label">发票总金额（万元）</div><div class="mc-val">4,821</div></div><div class="mc"><div class="mc-label">发票总张数</div><div class="mc-val">32,156</div></div><div class="mc"><div class="mc-label">审计疑点</div><div class="mc-val c-up">12</div></div><div class="mc"><div class="mc-label">质量评分</div><div class="mc-val c-ok">86</div></div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 图表内容由 Cursor 实现</div></div>
+<div class="page" id="p-supplier"><div class="page-hd"><div class="page-title">供应商集中度分析</div><div class="page-desc">CR值计算与供应商风险排名。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-flags"><div class="page-hd"><div class="page-title">审计疑点清单</div><div class="page-desc">10条规则自动标记，当前12条疑点。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-flags-rules"><div class="page-hd"><div class="page-title">规则配置</div><div class="page-desc">审计规则开关与阈值调整。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-related"><div class="page-hd"><div class="page-title">关联交易图谱分析</div><div class="page-desc">对开发票与通道公司识别。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-jiuqi"><div class="page-hd"><div class="page-title">财务校验</div><div class="page-desc">发票净额与久其财务数据交叉核验。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-compare"><div class="page-hd"><div class="page-title">子公司横向对比</div><div class="page-desc">各下属企业综合评级排名。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-report"><div class="page-hd"><div class="page-title">生成审计报告</div><div class="page-desc">一键生成 Word/PDF 审计分析报告。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-users"><div class="page-hd"><div class="page-title">用户管理</div><div class="page-desc">管理账户、角色与权限。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+<div class="page" id="p-settings"><div class="page-hd"><div class="page-title">系统设置</div><div class="page-desc">规则阈值、授权管理。</div></div><div class="card" style="text-align:center;padding:40px;color:var(--text-3)">🏗 由 Cursor 实现</div></div>
+
+   </div><!-- /content -->
+  </div><!-- /main -->
+ </div><!-- /shell -->
+</div><!-- /app -->
+
+<script>
+// ===== AUTH =====
+const USERS={admin:{pass:'admin123',name:'张审计员',role:'系统管理员',av:'张'},lisi:{pass:'lisi123',name:'李分析员',role:'审计分析员',av:'李'},wangwu:{pass:'wang123',name:'王审阅员',role:'只读查看',av:'王'}};
+function doLogin(){
+  const u=document.getElementById('lu').value.trim(),p=document.getElementById('lp').value;
+  const info=USERS[u];
+  if(info&&info.pass===p){
+    document.getElementById('cur-name').textContent=info.name;
+    document.getElementById('cur-role').textContent=info.role;
+    document.getElementById('cur-av').textContent=info.av;
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('app').classList.add('show');
+  }else{alert('账号或密码错误\n演示: admin / admin123');}
+}
+function doLogout(){if(confirm('确认退出？')){document.getElementById('login-screen').style.display='flex';document.getElementById('app').classList.remove('show');}}
+document.getElementById('lp').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+// ===== SIDEBAR COLLAPSE =====
+let sbCollapsed=false;
+function toggleSidebar(){
+  sbCollapsed=!sbCollapsed;
+  const sb=document.getElementById('sidebar');
+  const btn=document.getElementById('collapse-btn');
+  sb.classList.toggle('collapsed',sbCollapsed);
+  btn.querySelector('.arrow').style.transform=sbCollapsed?'rotate(180deg)':'rotate(0deg)';
+}
+
+// ===== NAV: 1级展开 =====
+function toggleGroup(key){
+  const parent=document.getElementById('ng-'+key);
+  const children=document.getElementById('nc-'+key);
+  if(!parent||!children)return;
+  const open=children.classList.contains('open');
+  parent.classList.toggle('open',!open);
+  children.classList.toggle('open',!open);
+}
+
+// ===== NAV: 2级展开（有3级子菜单） =====
+function toggleChild(key,e){
+  e.stopPropagation();
+  const el=document.getElementById('nc2-'+key);
+  const gc=document.getElementById('ngc-'+key);
+  if(!el||!gc)return;
+  const open=gc.classList.contains('open');
+  gc.classList.toggle('open',!open);
+  el.classList.toggle('c-open',!open);
+}
+
+// ===== NAV: 2级直接跳转（无3级） =====
+function gotoChild(pageKey,section,name,el){
+  e_activate(el,'.nav-child');
+  showPage(pageKey,section+' / <b>'+name+'</b>');
+}
+
+// ===== NAV: 3级跳转 =====
+function goto(pageKey,section,name,el){
+  e_activate(el,'.nav-grandchild');
+  showPage(pageKey,section+' / <b>'+name+'</b>');
+}
+
+function e_activate(el,sel){
+  document.querySelectorAll(sel).forEach(n=>n.classList.remove('active'));
+  document.querySelectorAll('.nav-child').forEach(n=>n.classList.remove('active'));
+  if(el){el.classList.add('active');const par=el.closest('.nav-grandchildren');if(par){const pid=par.id.replace('ngc-','nc2-');const p2=document.getElementById(pid);if(p2)p2.classList.add('active');}}
+}
+
+function showPage(key,bc){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  const pg=document.getElementById('p-'+key);
+  if(pg)pg.classList.add('active');
+  document.getElementById('bc').innerHTML=bc;
+}
+</script>
+</body>
+</html>
