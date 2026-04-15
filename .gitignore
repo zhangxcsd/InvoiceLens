@@ -24,3 +24,6 @@ output/*
 # OS / IDE
 .DS_Store
 Thumbs.db
+
+# Office temporary lock files
+~$*
