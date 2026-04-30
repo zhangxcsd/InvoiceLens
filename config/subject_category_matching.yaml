@@ -1,0 +1,79 @@
+# 主体类别 — 机器可执行匹配规则（v1）
+# 与 config/subject_category.yaml 的 category_code 对齐；自然语言说明仍以 invoice_scene 为准。
+#
+# 评估顺序：match_order 自上而下，首个「本组 all（及可选 any）」全部满足即命中并返回。
+#
+# 顺序设计（重要）：
+# 1) 先筛「名称 1～4 字」→ SC-TEMP：自然人姓名常见 2～4 字，公司名通常更长；避免 18 位身份证号
+#    与短名称组合被误当作统一社会信用代码去做 91/92 等前缀匹配。
+# 2) 其余基于 18 位码段的规则（SC-SELF 除外），一律增加「名称长度 ≥4」：在必须用编号匹配时，要求具备
+#    最低限度的「公司/组织名称」形态，进一步降低证件号误配风险。
+# 3) SC-SELF（92）：名称长度 ≤4（超过 4 字不按个体户机读命中）；与 2) 组合后个体户机读仅覆盖短字号场景。
+#
+# matching_remarks：弱区分说明（机读不解析，供运维/产品对照）。
+
+version: 1
+standard_version_ref: GB32100-2015
+
+matching_remarks: |
+  18 位且末位为数字的全数字串，极少数可能与统一码形态重叠，亦可能与居民身份证号形态接近；当前用 id_card_like（17 位数字 + 末位数字或 X）对 SC-TEMP 做弱分流，其余码段规则要求名称长度 ≥4 以降低证件号误配。
+  SC-SELF 单独限制名称长度 ≤4：超过 4 个字的抬头不按个体户机读命中。恰好 4 字及更短名称与长名称组织仍存在弱分区，后续可结合 GB32100 校验位、登记字段等再收敛；当前以本备注提示人工复核边界。
+
+match_order:
+  # 短名称优先：自然人/临时场景；但若已是 18 位且明显为统一社会信用代码（非身份证形态），
+  # 不拦截，以便落入 92/91 等码段规则（如四字个体工商户名）。
+  - category_code: SC-TEMP
+    priority: 5
+    all:
+      - { kind: name_len, op: gte, value: 1 }
+      - { kind: name_len, op: lte, value: 4 }
+    any:
+      - { kind: id_len, op: neq, value: 18 }
+      - { kind: id_card_like, value: true }
+
+  - category_code: SC-INSTITUTION
+    priority: 20
+    all:
+      - { kind: name_len, op: gte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["1"] }
+
+  - category_code: SC-SOCIAL
+    priority: 30
+    all:
+      - { kind: name_len, op: gte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["5"] }
+
+  - category_code: SC-SELF
+    priority: 40
+    all:
+      - { kind: name_len, op: lte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["92"] }
+
+  - category_code: SC-COOP
+    priority: 50
+    all:
+      - { kind: name_len, op: gte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["93"] }
+
+  # 91：分支机构名称规则必须先于「独立法人默认」
+  - category_code: SC-BRANCH
+    priority: 60
+    all:
+      - { kind: name_len, op: gte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["91"] }
+    any:
+      - { kind: name_regex, pattern: "(分公司|分支机构|分店|支行|办事处|营业部|项目部|分厂|分场)$" }
+      - { kind: name_regex, pattern: "有限公司.{1,}$" }
+      - { kind: name_regex, pattern: "股份有限公司.{1,}$" }
+
+  - category_code: SC-ENT
+    priority: 70
+    all:
+      - { kind: name_len, op: gte, value: 4 }
+      - { kind: id_len, op: eq, value: 18 }
+      - { kind: id_prefix, prefixes: ["91"] }
