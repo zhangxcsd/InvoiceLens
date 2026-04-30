@@ -29,18 +29,42 @@
 
 ### 开发启动（Windows）
 
-根目录 **`dev.bat`** 合并了原 `start_dev.bat` / `start_local_api.bat` / `start_ui.bat` / `restart_frontend_dev.bat`（脚本内 **`chcp 65001`** + **UTF-8 BOM**，`start` 窗口标题为英文，避免 CMD 默认 GBK 下乱码或把命令截断成 `rt` 等误报）：
+根目录 **`dev.bat`** 合并了原 `start_dev.bat` / `start_local_api.bat` / `start_ui.bat` / `restart_frontend_dev.bat`（脚本内 **`chcp 65001`**，并设置 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`，`start` 窗口标题为英文，避免 CMD 默认 GBK 下乱码或把命令截断成 `rt` 等误报）：
 
 - **`dev.bat`** 或 **`dev.bat all`**：新窗口启动本地 API + 当前窗口启动 Vite（日常开发最常用）
 - **`dev.bat api`**：仅本地 API（导入写 ODS 须保持此进程）
 - **`dev.bat web`**：仅前端（需已另开 API）
 - **`dev.bat restart-web`**：结束 5173~5175 监听并新开窗口启动 Vite
+- **`dev.bat smoke-local-api`**：本地 API 锁/断连回归冒烟（验证 `dim-tax-code` 关键接口不再 `socket hang up`）
+- **`dev.bat smoke-tree-ui`**：树形 UI 回归冒烟（Playwright，覆盖默认收起/展开级次同步/敏感类目过滤/层级连线存在）
+- **`dev.bat smoke`**：串行执行 `encoding-smoke` + `smoke-local-api` + `smoke-tree-ui`
+- **`dev.bat encoding-smoke`**：编码链路冒烟（自动切 UTF-8，校验终端/`dev.bat`/API；若检测到 `dev.bat` BOM 会自动修复）
 - **`dev.bat ui`**：运行 `python main.py`
 - **`dev.bat help`**：查看说明
+- **`powershell -ExecutionPolicy Bypass -File scripts/encoding_smoke.ps1`**：同上，直接调用脚本
+
+首次运行树形 UI 回归前需安装浏览器：`cd frontend && npx playwright install chromium`
+更新截图基线：`cd frontend && npm run test:tree-regression:update`
+打开最新回归报告：`cd frontend && npm run test:tree-regression:report`
+
+`dev.bat all` / `dev.bat api` 启动本地 API 前会自动清理端口 `8765` 的历史监听进程，避免旧进程抢占导致新接口返回 404。
+
+失败截图/视频/trace 固定输出到：`frontend/test-results/tree-regression-artifacts/`  
+HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
 
 前端 **`npm run dev`** 时，未配置 `VITE_LOCAL_API_BASE` 的情况下会通过 **Vite 代理** 把浏览器里的同源路径 **`/api`** 转到 **`127.0.0.1:8765`**，减少「页面是 localhost、API 是 127.0.0.1」等跨域问题；请确保本地 API 已在 8765 监听。
 
 本地 API 已不使用标准库 **`cgi`**（Python 3.13 起已移除），可在 **Python 3.13+** 下运行；若启动仍报错，请确认在项目根目录执行且已 `pip install -r requirements.txt`。
 
 亦可直接：`python main.py`
+
+### 相关文档
+
+- 菜单命名约定（高保真阶段）：`docs/menu_naming_convention.md`
+- 树形回归测试约定（Playwright）：`docs/playwright_tree_regression_convention.md`
+- 前端字体与排版规范（Tailwind `il-*`）：`docs/frontend-typography.md`
+- 企业年度关系回填运行手册（Runbook）：`docs/dim_enterprise_year_rel_runbook.md`
+- 主体库命名收敛清单（术语/字段统一基准）：`docs/subject_naming_convergence.md`
+- 主体库分域规则（组织机构主体/自然人主体）：`docs/subject_dimension_split_rules.md`
+- 主体类别机器匹配（规则 YAML + 推断函数说明）：`docs/subject_category_matching_engine.md`
 

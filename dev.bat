@@ -1,8 +1,11 @@
-﻿@echo off
-REM chcp 65001 + UTF-8 BOM file + ASCII-only "start" titles (fixes GBK cmd garble / broken commands)
+@echo off
+REM chcp 65001 + UTF-8 env + ASCII-only "start" titles (fixes cmd garble / broken commands)
 chcp 65001 >nul 2>&1
 setlocal EnableExtensions
 cd /d "%~dp0"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONLEGACYWINDOWSSTDIO=utf-8"
 
 set "INVOICELENS_LOCAL_API_HOST=127.0.0.1"
 set "INVOICELENS_LOCAL_API_PORT=8765"
@@ -13,6 +16,13 @@ if /i "%~1"=="api" goto :api
 if /i "%~1"=="web" goto :web
 if /i "%~1"=="ui" goto :ui
 if /i "%~1"=="restart-web" goto :restart_web
+if /i "%~1"=="smoke-local-api" goto :smoke_local_api
+if /i "%~1"=="smoke-tree-ui" goto :smoke_tree_ui
+if /i "%~1"=="smoke-tree-report" goto :smoke_tree_report
+if /i "%~1"=="encoding-smoke" goto :encoding_smoke
+if /i "%~1"=="check-api-port" goto :check_api_port
+if /i "%~1"=="kill-api-port" goto :kill_api_port
+if /i "%~1"=="smoke" goto :smoke_all
 if /i "%~1"=="help" goto :usage_ok
 if /i "%~1"=="-h" goto :usage_ok
 if /i "%~1"=="--help" goto :usage_ok
@@ -38,6 +48,13 @@ echo   dev.bat api          Local API only (keep window open for ODS import)
 echo   dev.bat web          Vite only (start api in another window first)
 echo   dev.bat ui           python main.py
 echo   dev.bat restart-web  Kill 5173-5175 listeners, start Vite in new window
+echo   dev.bat smoke-local-api  Run local API lock/socket smoke regression
+echo   dev.bat smoke-tree-ui  Run tree UI regression (Playwright)
+echo   dev.bat smoke-tree-report  Open latest tree UI Playwright report
+echo   dev.bat encoding-smoke  Run UTF-8 / terminal / API encoding smoke
+echo   dev.bat check-api-port  Exit 0 if 8765 is free; 1 if in use / duplicate listeners
+echo   dev.bat kill-api-port   taskkill all LISTENING PIDs on 8765 ^(then run dev.bat api^)
+echo   dev.bat smoke          Run smoke-local-api + smoke-tree-ui
 echo   dev.bat help         Show this help
 echo.
 echo First time: pip install -r requirements.txt   and   cd frontend ^&^& npm install
@@ -46,8 +63,8 @@ goto :eof
 
 :all
 echo [InvoiceLens] Starting Local API in a new window (leave it open^).
-REM start 的首个引号内必须是纯 ASCII 标题，否则在 GBK cmd 下易乱码并截断后续命令
-start "InvoiceLens-LocalAPI" cmd /k "cd /d ""%~dp0"" && set INVOICELENS_LOCAL_API_HOST=127.0.0.1&& set INVOICELENS_LOCAL_API_PORT=8765&& python -m src.local_api.sheet_mapping_server"
+REM start first quoted token must be ASCII title to avoid cmd parse issues
+start "InvoiceLens-LocalAPI" cmd /k "chcp 65001>nul && cd /d ""%~dp0"" && for /f ""tokens=5"" %%P in ('netstat -ano ^| findstr /R /C:"":8765 .*LISTENING""') do taskkill /PID %%P /F >nul 2>nul && set INVOICELENS_LOCAL_API_HOST=127.0.0.1&& set INVOICELENS_LOCAL_API_PORT=8765&& set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& set PYTHONLEGACYWINDOWSSTDIO=utf-8&& python -m src.local_api.sheet_mapping_server"
 timeout /t 2 /nobreak >nul
 echo [InvoiceLens] Starting Vite in this window. Open the URL shown below in your browser.
 cd /d "%~dp0frontend"
@@ -59,6 +76,12 @@ echo.
 echo [InvoiceLens] Local API starting... Keep this window open when you see listening.
 echo [InvoiceLens] If deps missing: pip install -r requirements.txt  (from repo root^)
 echo.
+echo [InvoiceLens] Pre-clean listeners on 8765...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8765 .*LISTENING"') do (
+  echo   taskkill /PID %%P /F   port 8765
+  taskkill /PID %%P /F >nul 2>nul
+)
+timeout /t 1 /nobreak >nul
 python -m src.local_api.sheet_mapping_server
 if errorlevel 1 (
   echo.
@@ -106,9 +129,79 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "InvoiceLens-Vite" cmd /k "cd /d ""%~dp0frontend"" && title InvoiceLens Dev (%PORT%) && npm.cmd run dev -- --host 127.0.0.1 --port %PORT%"
+start "InvoiceLens-Vite" cmd /k "chcp 65001>nul && cd /d ""%~dp0frontend"" && title InvoiceLens Dev (%PORT%) && npm.cmd run dev -- --host 127.0.0.1 --port %PORT%"
 echo.
 echo Vite start requested. Open: http://127.0.0.1:%PORT%/
 echo.
 pause
 exit /b 0
+
+:check_api_port
+python -m src.local_api.listen_port_probe
+exit /b %ERRORLEVEL%
+
+:kill_api_port
+echo.
+echo [InvoiceLens] Killing listeners on port %INVOICELENS_LOCAL_API_PORT% ...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%INVOICELENS_LOCAL_API_PORT% .*LISTENING"') do (
+  echo   taskkill /PID %%P /F   port %INVOICELENS_LOCAL_API_PORT%
+  taskkill /PID %%P /F >nul 2>nul
+)
+timeout /t 1 /nobreak >nul
+python -m src.local_api.listen_port_probe
+if errorlevel 1 (
+  echo [InvoiceLens] Port still not clean; check netstat manually.
+  exit /b 1
+)
+echo [InvoiceLens] Port is free.
+exit /b 0
+
+:smoke_local_api
+echo.
+echo [InvoiceLens] Running local API dim-tax-code smoke regression...
+python scripts\_smoke_local_api_dim_tax_lock.py
+if errorlevel 1 (
+  echo.
+  echo [InvoiceLens] Smoke regression FAILED.
+  pause
+  exit /b 1
+)
+echo.
+echo [InvoiceLens] Smoke regression PASSED.
+exit /b 0
+
+:smoke_tree_ui
+echo.
+echo [InvoiceLens] Running tree UI regression (Playwright)...
+cd /d "%~dp0frontend"
+call npm run test:tree-regression
+if errorlevel 1 (
+  echo.
+  echo [InvoiceLens] Tree UI regression FAILED.
+  pause
+  exit /b 1
+)
+echo.
+echo [InvoiceLens] Tree UI regression PASSED.
+exit /b 0
+
+:smoke_tree_report
+echo.
+echo [InvoiceLens] Opening tree UI regression report...
+cd /d "%~dp0frontend"
+call npm run test:tree-regression:report
+exit /b %ERRORLEVEL%
+
+:encoding_smoke
+echo.
+echo [InvoiceLens] Running encoding smoke...
+powershell -ExecutionPolicy Bypass -File "%~dp0scripts\encoding_smoke.ps1" -Fix
+exit /b %ERRORLEVEL%
+
+:smoke_all
+call "%~f0" encoding-smoke
+if errorlevel 1 exit /b 1
+call "%~f0" smoke-local-api
+if errorlevel 1 exit /b 1
+call "%~f0" smoke-tree-ui
+exit /b %ERRORLEVEL%
