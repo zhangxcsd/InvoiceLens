@@ -23,8 +23,25 @@ import { DataPreviewPage } from './import/DataPreviewPage'
 import { ImportHistoryPage } from './import/ImportHistoryPage'
 import { DwdPreviewPage } from './dwd/DwdPreviewPage'
 import { OdsToDwdCenterPage } from './dwd/OdsToDwdCenterPage'
+import { DwdToDimCenterPage } from './dwd/DwdToDimCenterPage'
 import { FieldMappingConfigPrototype } from './fieldMapping/FieldMappingConfigPrototype'
 import { MappingTemplatesPrototype } from './fieldMapping/MappingTemplatesPrototype'
+import { DataQualityOverviewPage } from './quality/DataQualityOverviewPage'
+import { DataQualityDetailPage } from './quality/DataQualityDetailPage'
+import { DataQualityTrendPage } from './quality/DataQualityTrendPage'
+import { HealthScorePage } from './quality/HealthScorePage'
+import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
+import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
+import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
+import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
+import { AuditedEnterpriseRelationViewPage } from './dim/AuditedEnterpriseRelationViewPage'
+import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
+import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
+import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
+import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
+import { TaxCodeRiskDefinePage } from './dim/TaxCodeRiskDefinePage'
+import { DimVersionPage } from './dim/DimVersionPage'
+import { SubjectCategoryPage } from './dim/SubjectCategoryPage'
 import type { ImportEvent, ImportFailureRecord } from './import/eventTypes'
 import { MAX_IMPORT_FILE_MB } from './config/importLimits'
 import {
@@ -233,6 +250,7 @@ function Sidebar(props: {
   const [openParents, setOpenParents] = useState<Record<string, boolean>>({
     import: true,
     dim: false,
+    tax_analysis: false,
     overview: false,
     supplier: false,
     flags: false,
@@ -249,13 +267,77 @@ function Sidebar(props: {
     mapping: false,
     processing: false,
     org: false,
+    audited: false,
+    ticket: false,
     tax: false,
+    dict: false,
   })
 
   useEffect(() => {
     if (props.nav !== 'import_mapping_config' && props.nav !== 'import_mapping_templates') return
     setOpenParents((p) => ({ ...p, import: true }))
     setOpenChildren((c) => ({ ...c, mapping: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'dim_enterprise_library' &&
+      props.nav !== 'dim_audit_related_library' &&
+      props.nav !== 'dim_audited_registry' &&
+      props.nav !== 'dim_org_manage' &&
+      props.nav !== 'dim_org_equity' &&
+      props.nav !== 'dim_org_diff' &&
+      props.nav !== 'dim_audited_invoice_link'
+    )
+      return
+    setOpenParents((p) => ({ ...p, dim: true }))
+    setOpenChildren((c) => ({ ...c, org: true }))
+    if (
+      props.nav === 'dim_audited_registry' ||
+      props.nav === 'dim_org_manage' ||
+      props.nav === 'dim_org_equity' ||
+      props.nav === 'dim_org_diff'
+    ) {
+      setOpenChildren((c) => ({ ...c, audited: true }))
+    }
+    if (props.nav === 'dim_audit_related_library' || props.nav === 'dim_audited_invoice_link') {
+      setOpenChildren((c) => ({ ...c, ticket: true }))
+    }
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'dim_tax_lib' &&
+      props.nav !== 'dim_tax_risk_define' &&
+      props.nav !== 'dim_tax_result' &&
+      props.nav !== 'dim_tax_quality' &&
+      props.nav !== 'dim_subject_category' &&
+      props.nav !== 'dim_version'
+    )
+      return
+    setOpenParents((p) => ({ ...p, dim: true }))
+    if (props.nav === 'dim_subject_category') {
+      setOpenChildren((c) => ({ ...c, dict: true }))
+      return
+    }
+    if (props.nav === 'dim_version') return
+    setOpenChildren((c) => ({ ...c, tax: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'tax_enterprise_structure') return
+    setOpenParents((p) => ({ ...p, tax_analysis: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'import_quality_overview' &&
+      props.nav !== 'import_quality_detail' &&
+      props.nav !== 'import_quality_trend'
+    )
+      return
+    setOpenParents((p) => ({ ...p, import: true }))
+    setOpenChildren((c) => ({ ...c, quality: true }))
   }, [props.nav])
 
   const toggleParent = (k: string) => {
@@ -297,6 +379,31 @@ function Sidebar(props: {
     )
   }
 
+  const navStandalone = (key: NavKey, label: string, icon: React.ReactNode) => {
+    const active = props.nav === key
+    return (
+      <div
+        className={[
+          'flex items-center gap-2 px-3 py-[7px] text-il-sidebar-parent text-text-2',
+          'cursor-pointer select-none overflow-hidden whitespace-nowrap',
+          'border-l-2 transition-[background,color,border-color] duration-100',
+          active ? 'border-l-accent bg-[#f0f7ff] font-medium text-text' : 'border-l-transparent',
+          'hover:bg-[#f5f7ff] hover:text-text',
+          collapsed ? 'justify-center px-0' : '',
+        ].join(' ')}
+        onClick={() => props.onNav(key)}
+        title={collapsed ? label : undefined}
+      >
+        <span className={['h-[15px] w-[15px] flex-shrink-0', active ? 'opacity-100' : 'opacity-60'].join(' ')}>
+          {icon}
+        </span>
+        <span className={['flex-1 overflow-hidden text-ellipsis', collapsed ? 'opacity-0 w-0 flex-none' : ''].join(' ')}>
+          {label}
+        </span>
+      </div>
+    )
+  }
+
   const navChild = (
     k: string,
     label: string,
@@ -315,11 +422,11 @@ function Sidebar(props: {
     return (
       <div
         className={[
-          'relative flex items-center gap-1.5 px-3 py-[6px] pl-8 text-il-sidebar-child text-text-3',
+          'relative flex items-center gap-1.5 px-3 py-[6px] pl-8 text-il-sidebar-child font-medium text-text-2',
           'cursor-pointer overflow-hidden whitespace-nowrap',
           'border-l-2 border-l-transparent transition-[background,color] duration-100',
-          'hover:bg-[#f5f7ff] hover:text-text-2',
-          soon ? 'opacity-45 cursor-default hover:bg-transparent hover:text-text-3' : '',
+          'hover:bg-[#f5f7ff] hover:text-text',
+          soon ? 'opacity-45 cursor-default hover:bg-transparent hover:text-text-2' : '',
         ].join(' ')}
         onClick={() => {
           if (soon) return
@@ -328,8 +435,8 @@ function Sidebar(props: {
         }}
         title={collapsed ? label : undefined}
       >
-        <span className="absolute left-5 top-1/2 h-px w-[6px] -translate-y-1/2 bg-border-light" />
-        <span className="h-[11px] w-[11px] flex-shrink-0 opacity-50">{icon}</span>
+        <span className="absolute left-5 top-1/2 h-px w-[7px] -translate-y-1/2 bg-border-light" />
+        <span className="h-[11px] w-[11px] flex-shrink-0 opacity-65">{icon}</span>
         <span className="flex-1 overflow-hidden text-ellipsis">{label}</span>
         {openable ? (
           <IconChevronRight className={['h-[10px] w-[10px] flex-shrink-0 opacity-40 transition-transform duration-200', open ? 'rotate-90' : ''].join(' ')} />
@@ -359,7 +466,7 @@ function Sidebar(props: {
     return (
       <div
         className={[
-          'relative flex cursor-pointer items-center px-3 py-[5px] pl-[46px] text-il-sidebar-grand text-text-3',
+          'relative flex cursor-pointer items-center px-3 py-[5px] pl-[52px] text-il-sidebar-grand text-text-3',
           'border-l-2 border-l-transparent transition-[background,color] duration-100 overflow-hidden whitespace-nowrap',
           active ? 'bg-[#EBF4FF] text-accent border-l-accent font-medium' : 'hover:bg-[#f5f7ff] hover:text-text-2',
           soon ? 'opacity-45 cursor-default hover:bg-transparent hover:text-text-3' : '',
@@ -369,7 +476,9 @@ function Sidebar(props: {
           props.onNav(key)
         }}
       >
-        <span className="absolute left-[38px] text-border">·</span>
+        <span className="absolute bottom-0 left-[36px] top-0 w-px bg-border-light" />
+        <span className="absolute left-[36px] top-1/2 h-px w-[10px] -translate-y-1/2 bg-border-light" />
+        <span className="absolute left-[48px] text-border">·</span>
         <span className="flex-1 overflow-hidden text-ellipsis">{label}</span>
         {soon ? (
           <span className="ml-1 rounded border border-border-light px-1 text-il-soon text-text-3">
@@ -451,11 +560,12 @@ function Sidebar(props: {
           <div className={openChildren.processing ? 'block' : 'hidden'}>
             {navGrand('ods_to_dwd_center', t.sidebar.odsToDwd, {
               active: props.nav === 'ods_to_dwd_center',
-              inProgress: true,
+            })}
+            {navGrand('dwd_to_dim_center', t.sidebar.dwdToDim, {
+              active: props.nav === 'dwd_to_dim_center',
             })}
             {navGrand('dwd_data_preview', t.sidebar.dwdDataPreview, {
               active: props.nav === 'dwd_data_preview',
-              inProgress: true,
             })}
           </div>
           {navChild('history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />, {
@@ -468,9 +578,15 @@ function Sidebar(props: {
             { openable: true, open: !!openChildren.quality },
           )}
           <div className={openChildren.quality ? 'block' : 'hidden'}>
-            {navGrand('import_quality_overview', t.sidebar.qualityOverview, { soon: true })}
-            {navGrand('import_quality_detail', t.sidebar.qualityDetail, { soon: true })}
-            {navGrand('import_quality_trend', t.sidebar.qualityTrend, { soon: true })}
+            {navGrand('import_quality_overview', t.sidebar.qualityOverview, {
+              active: props.nav === 'import_quality_overview',
+            })}
+            {navGrand('import_quality_detail', t.sidebar.qualityDetail, {
+              active: props.nav === 'import_quality_detail',
+            })}
+            {navGrand('import_quality_trend', t.sidebar.qualityTrend, {
+              active: props.nav === 'import_quality_trend',
+            })}
           </div>
           {navChild('export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />, {
             onClick: () => props.onNav('import_invoice_export'),
@@ -491,17 +607,65 @@ function Sidebar(props: {
         <div className={openParents.dim && !collapsed ? 'block' : 'hidden'}>
           {navChild('org', t.sidebar.dimOrg, <IconMiniMap className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.org })}
           <div className={openChildren.org ? 'block' : 'hidden'}>
-            {navGrand('dim_org_manage', t.sidebar.dimOrgTree, { soon: true })}
-            {navGrand('dim_org_equity', t.sidebar.dimEquityTree, { soon: true })}
-            {navGrand('dim_org_diff', t.sidebar.dimOrgDiff, { soon: true })}
+            {navChild('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
+              openable: true,
+              open: !!openChildren.audited,
+            })}
+            <div className={openChildren.audited ? 'block' : 'hidden'}>
+              {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
+                active: props.nav === 'dim_audited_registry',
+              })}
+              {navGrand('dim_org_manage', t.sidebar.dimOrgTree, {
+                active: props.nav === 'dim_org_manage',
+              })}
+              {navGrand('dim_org_equity', t.sidebar.dimEquityTree, {
+                active: props.nav === 'dim_org_equity',
+              })}
+              {navGrand('dim_org_diff', t.sidebar.dimOrgDiff, {
+                active: props.nav === 'dim_org_diff',
+              })}
+            </div>
+            {navChild('ticket', t.sidebar.dimTicketViews, <IconMiniMap className="h-[11px] w-[11px]" />, {
+              openable: true,
+              open: !!openChildren.ticket,
+            })}
+            <div className={openChildren.ticket ? 'block' : 'hidden'}>
+              {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
+                active: props.nav === 'dim_audited_invoice_link',
+              })}
+              {navGrand('dim_audit_related_library', t.sidebar.dimAuditRelatedLibrary, {
+                active: props.nav === 'dim_audit_related_library',
+              })}
+            </div>
+            {navGrand('dim_enterprise_library', t.sidebar.dimEnterpriseLibrary, {
+              active: props.nav === 'dim_enterprise_library',
+            })}
           </div>
           {navChild('tax', t.sidebar.dimTaxCode, <IconPlusSquare className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.tax })}
           <div className={openChildren.tax ? 'block' : 'hidden'}>
-            {navGrand('dim_tax_lib', t.sidebar.dimTaxLib, { soon: true })}
-            {navGrand('dim_tax_coverage', t.sidebar.dimTaxCoverage, { soon: true })}
+            {navGrand('dim_tax_lib', t.sidebar.dimTaxLib, {
+              active: props.nav === 'dim_tax_lib',
+            })}
+            {navGrand('dim_tax_risk_define', t.sidebar.dimTaxRiskDefine, {
+              active: props.nav === 'dim_tax_risk_define',
+            })}
+            {navGrand('dim_tax_result', t.sidebar.dimTaxResult, {
+              active: props.nav === 'dim_tax_result',
+            })}
+            {navGrand('dim_tax_quality', t.sidebar.dimTaxQuality, {
+              active: props.nav === 'dim_tax_quality',
+            })}
           </div>
-          {navChild('dict', t.sidebar.dimDict, <IconPlusSquare className="h-[11px] w-[11px]" />, { onClick: () => props.onNav('dim_dict'), soon: true })}
-          {navChild('ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />, { onClick: () => props.onNav('dim_version'), soon: true })}
+          {navChild('dict', t.sidebar.dimDict, <IconPlusSquare className="h-[11px] w-[11px]" />, {
+            openable: true,
+            open: !!openChildren.dict,
+          })}
+          <div className={openChildren.dict ? 'block' : 'hidden'}>
+            {navGrand('dim_subject_category', t.sidebar.dimSubjectCategory, {
+              active: props.nav === 'dim_subject_category',
+            })}
+          </div>
+          {navChild('ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />, { onClick: () => props.onNav('dim_version') })}
         </div>
 
         <div className="my-1 border-t border-border-light" />
@@ -517,12 +681,23 @@ function Sidebar(props: {
           {navChild('ov3', t.sidebar.ovTax, <span />, { onClick: () => props.onNav('overview_tax'), soon: true })}
         </div>
 
+        {navParent('tax_analysis', t.sidebar.taxAnalysis, <IconChartBars className="h-[15px] w-[15px]" />)}
+        <div className={openParents.tax_analysis && !collapsed ? 'block' : 'hidden'}>
+          {navGrand('tax_enterprise_structure', t.sidebar.taxEnterpriseStructure, {
+            active: props.nav === 'tax_enterprise_structure',
+          })}
+          {navChild('ta2', t.sidebar.taxInOutDeviation, <span />, { soon: true })}
+          {navChild('ta3', t.sidebar.taxRiskExposure, <span />, { soon: true })}
+        </div>
+
         {navParent('supplier', t.sidebar.supplier, <IconClock className="h-[15px] w-[15px]" />)}
         <div className={openParents.supplier && !collapsed ? 'block' : 'hidden'}>
           {navChild('s1', t.sidebar.supplierCr, <span />, { onClick: () => props.onNav('supplier_cr'), soon: true })}
           {navChild('s2', t.sidebar.supplierTop, <span />, { onClick: () => props.onNav('supplier_top'), soon: true })}
           {navChild('s3', t.sidebar.supplierNew, <span />, { onClick: () => props.onNav('supplier_new'), soon: true })}
         </div>
+
+        {navStandalone('health_score', t.sidebar.healthScore, <IconMiniCheck className="h-[15px] w-[15px]" />)}
 
         {navParent(
           'flags',
@@ -2308,6 +2483,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dwdDataPreview}</b>
         </>
       )
+    if (props.nav === 'dwd_to_dim_center')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dwdToDim}</b>
+        </>
+      )
     if (props.nav === 'import_history')
       return (
         <>
@@ -2326,6 +2508,128 @@ function AppShell(props: {
         <>
           {t.breadcrumb.invoiceData} / {t.breadcrumb.fieldMapping} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.mappingTemplates}</b>
+        </>
+      )
+    if (props.nav === 'import_quality_overview')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.qualityOverview}</b>
+        </>
+      )
+    if (props.nav === 'import_quality_detail')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.qualityDetail}</b>
+        </>
+      )
+    if (props.nav === 'import_quality_trend')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.qualityTrend}</b>
+        </>
+      )
+    if (props.nav === 'health_score')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.healthScore}</b>
+        </>
+      )
+    if (props.nav === 'dim_enterprise_library')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimEnterpriseLibrary} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimEnterpriseLibrary}</b>
+        </>
+      )
+    if (props.nav === 'dim_audit_related_library')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTicketViews} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimAuditRelatedLibrary}</b>
+        </>
+      )
+    if (props.nav === 'dim_audited_registry')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimAuditedLedger} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimAuditedLedger}</b>
+        </>
+      )
+    if (props.nav === 'dim_org_manage')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimOrgTree} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimOrgTree}</b>
+        </>
+      )
+    if (props.nav === 'dim_org_equity')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimEquityTree} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimEquityTree}</b>
+        </>
+      )
+    if (props.nav === 'dim_org_diff')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimOrgDiff} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimOrgDiff}</b>
+        </>
+      )
+    if (props.nav === 'dim_audited_invoice_link')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTicketViews} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimInvoiceLink}</b>
+        </>
+      )
+    if (props.nav === 'dim_tax_lib')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimTaxLib}</b>
+        </>
+      )
+    if (props.nav === 'dim_tax_risk_define')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimTaxRiskDefine}</b>
+        </>
+      )
+    if (props.nav === 'dim_tax_result')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimTaxResult}</b>
+        </>
+      )
+    if (props.nav === 'dim_tax_quality')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimTaxQuality}</b>
+        </>
+      )
+    if (props.nav === 'dim_version')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.dimVersion}</b>
+        </>
+      )
+    if (props.nav === 'dim_subject_category')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.sidebar.dimDict} / <b className="text-text font-medium">{t.breadcrumb.dimSubjectCategory}</b>
+        </>
+      )
+    if (props.nav === 'tax_enterprise_structure')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.breadcrumb.taxEnterpriseStructure}</b>
         </>
       )
     return (
@@ -2363,6 +2667,8 @@ function AppShell(props: {
             <DataPreviewPage onNav={props.onNav} />
           ) : props.nav === 'ods_to_dwd_center' ? (
             <OdsToDwdCenterPage />
+          ) : props.nav === 'dwd_to_dim_center' ? (
+            <DwdToDimCenterPage />
           ) : props.nav === 'dwd_data_preview' ? (
             <DwdPreviewPage onNav={props.onNav} />
           ) : props.nav === 'import_history' ? (
@@ -2371,6 +2677,42 @@ function AppShell(props: {
             <FieldMappingConfigPrototype onNavUpload={() => props.onNav('import_wizard_upload')} />
           ) : props.nav === 'import_mapping_templates' ? (
             <MappingTemplatesPrototype />
+          ) : props.nav === 'import_quality_overview' ? (
+            <DataQualityOverviewPage onNav={props.onNav} />
+          ) : props.nav === 'import_quality_detail' ? (
+            <DataQualityDetailPage onNav={props.onNav} />
+          ) : props.nav === 'import_quality_trend' ? (
+            <DataQualityTrendPage onNav={props.onNav} />
+          ) : props.nav === 'health_score' ? (
+            <HealthScorePage />
+          ) : props.nav === 'dim_enterprise_library' ? (
+            <EnterpriseLibraryPage />
+          ) : props.nav === 'dim_audit_related_library' ? (
+            <AuditRelatedEnterprisePage />
+          ) : props.nav === 'dim_audited_registry' ? (
+            <AuditedEnterpriseLedgerPage />
+          ) : props.nav === 'dim_org_manage' ? (
+            <AuditedEnterpriseTreePage mode="management" />
+          ) : props.nav === 'dim_org_equity' ? (
+            <AuditedEnterpriseTreePage mode="equity" />
+          ) : props.nav === 'dim_org_diff' ? (
+            <AuditedEnterpriseRelationViewPage />
+          ) : props.nav === 'dim_audited_invoice_link' ? (
+            <AuditedEnterpriseInvoiceLinkPage />
+          ) : props.nav === 'dim_tax_lib' ? (
+            <TaxCodeLibraryPage mode="manage" onOpenResult={() => props.onNav('dim_tax_result')} />
+          ) : props.nav === 'dim_tax_risk_define' ? (
+            <TaxCodeRiskDefinePage />
+          ) : props.nav === 'dim_tax_result' ? (
+            <TaxCodeLibraryPage mode="result" onOpenManage={() => props.onNav('dim_tax_lib')} />
+          ) : props.nav === 'dim_tax_quality' ? (
+            <TaxCodeAnalysisPage />
+          ) : props.nav === 'dim_version' ? (
+            <DimVersionPage />
+          ) : props.nav === 'dim_subject_category' ? (
+            <SubjectCategoryPage onNavigateToRebuild={() => props.onNav('dwd_to_dim_center')} />
+          ) : props.nav === 'tax_enterprise_structure' ? (
+            <TaxCodeEnterpriseAnalysisPage />
           ) : (
             <div className="p-6 text-text-2">{t.importUpload.placeholderPage}</div>
           )}
