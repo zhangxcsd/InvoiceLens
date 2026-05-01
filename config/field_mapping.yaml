@@ -316,6 +316,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     commodity_inspection_no:
       label_zh: 商检号码
       aliases:
@@ -369,6 +381,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     vehicle_plate_no:
       label_zh: 车牌照号
       aliases:
@@ -602,6 +626,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     construction_project_name:
       label_zh: 建筑项目名称
       aliases:
@@ -742,6 +778,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     license_plate_no:
       label_zh: 车牌号
       aliases:
@@ -802,6 +850,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     arrival_place:
       label_zh: 到达地
       aliases:
@@ -855,6 +915,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     arrival_place:
       label_zh: 到达地
       aliases:
@@ -916,6 +988,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     arrival_place:
       label_zh: 到达地
       aliases:
@@ -996,6 +1080,18 @@ sheets:
       aliases: []
     remark:
       aliases: []
+    amount:
+      label_zh: 金额
+      aliases:
+      - 金额
+    tax_amount:
+      label_zh: 税额
+      aliases:
+      - 税额
+    total_amount:
+      label_zh: 价税合计
+      aliases:
+      - 价税合计
     arrival_place:
       label_zh: 到达地
       aliases:

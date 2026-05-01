@@ -35,5 +35,8 @@ includes:
   - config/dwd_mapping/dwd_inv_detail.yaml
   - config/dwd_mapping/dwd_spc_transport_passenger.yaml
   - config/dwd_mapping/dwd_spc_transport_freight.yaml
+  - config/dwd_mapping/dwd_spc_vehicle_sales.yaml
+  - config/dwd_mapping/dwd_spc_construction_service.yaml
+  - config/dwd_mapping/dwd_spc_estate_lease.yaml
 
 tables: {}

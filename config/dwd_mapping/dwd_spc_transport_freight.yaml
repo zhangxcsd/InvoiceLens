@@ -12,104 +12,161 @@ tables:
       - detail_uuid
     columns:
       detail_uuid:
+        layer: C
         source:
           ods_fields: [invoice_code, invoice_no, sdfphm, seq_no]
       header_uuid:
+        layer: C
         source:
           ods_fields: [invoice_code, invoice_no, sdfphm]
       stat_year:
+        layer: C
         source:
           ods_fields: [kprq]
       stat_month:
+        layer: C
         source:
           ods_fields: [kprq]
       logic_line_no:
+        layer: C
         source:
-          ods_fields: [seq_no, 序号]
+          ods_fields: [seq_no]
 
       fpdm:
+        layer: A
         source:
-          ods_fields: [invoice_code, 发票代码]
+          ods_fields: [invoice_code]
       fphm:
+        layer: A
         source:
-          ods_fields: [invoice_no, 发票号码]
+          ods_fields: [invoice_no]
       sdfphm:
+        layer: A
         source:
-          ods_fields: [sdfphm, 数电发票号码]
+          ods_fields: [sdfphm]
       kprq:
+        layer: A
         source:
-          ods_fields: [kprq, 开票日期, 发票日期]
+          ods_fields: [kprq]
       invoice_date:
+        layer: B
         source:
-          ods_fields: [kprq, 开票日期, 发票日期]
+          ods_fields: [kprq]
       fppz:
+        layer: A
         source:
-          ods_fields: [invoice_type, 发票票种]
+          ods_fields: [invoice_type]
       invoice_status:
+        layer: A
         source:
-          ods_fields: [invoice_status, 发票状态]
+          ods_fields: [invoice_status]
       is_positive_invoice:
+        layer: A
         source:
-          ods_fields: [is_positive_invoice, 是否正数发票]
+          ods_fields: [is_positive_invoice]
       remark:
+        layer: A
         source:
-          ods_fields: [remark, 备注]
+          ods_fields: [remark]
       je:
+        layer: B
         source:
-          ods_fields: [amount, 金额]
+          ods_fields: [amount, je, 金额]
       se:
+        layer: B
         source:
-          ods_fields: [tax_amount, 税额]
+          ods_fields: [tax_amount, se, 税额]
       jshj:
+        layer: B
         source:
-          ods_fields: [total_amount, 价税合计]
+          ods_fields: [total_amount, jshj, 价税合计]
+      xfsbh:
+        layer: A
+        comment: 销方纳税人识别号
+        source:
+          ods_fields: [xfsbh, seller_tax_no, 销方识别号, 销方税号]
+      xfmc:
+        layer: A
+        comment: 销方名称
+        source:
+          ods_fields: [xfmc, seller_name, 销方名称]
+      gfsbh:
+        layer: A
+        comment: 购买方纳税人识别号
+        source:
+          ods_fields: [gfsbh, buyer_tax_no, 购买方识别号, 购买方税号, 购方税号]
+      gfmc:
+        layer: A
+        comment: 购买方名称
+        source:
+          ods_fields: [gfmc, buyer_name, 购买方名称, 购方名称]
 
-      shipper:
-        source:
-          ods_fields: [shipper, 托运人]
-      receiver:
-        source:
-          ods_fields: [receiver, 收货人]
       cargo_name:
+        layer: A
         source:
-          ods_fields: [cargo_name, 货物名称]
+          ods_fields: [cargo_name]
       departure_place:
+        layer: A
         source:
-          ods_fields: [departure_place, 起运地]
+          ods_fields: [shipping_origin]
       arrival_place:
+        layer: A
         source:
-          ods_fields: [arrival_place, 到达地]
-      transport_tool_type:
+          ods_fields: [arrival_place]
+      transport_means_plate_no:
+        layer: A
         source:
-          ods_fields: [transport_tool_type, 交通工具类型]
+          ods_fields: [transport_means_plate_no]
+      transport_means_type:
+        layer: A
+        source:
+          ods_fields: [transport_means_type]
 
       source_table_type:
+        layer: D
         source:
-          ods_fields: [table_type]
+          ods_fields: [表类型]
       source_scope_key:
+        layer: C
         source:
           ods_fields: [import_session_id, source_excel_file, source_sheet]
       is_business_in_scope:
+        layer: C
         source:
           ods_fields: [invoice_status, is_positive_invoice]
       import_batch_id:
+        layer: D
         source:
           ods_fields: [批次]
       import_session_id:
+        layer: D
         source:
           ods_fields: [import_session_id]
       ods_file_seq:
+        layer: D
         source:
           ods_fields: [ods_file_seq]
       source_excel_file:
+        layer: D
         source:
           ods_fields: [source_excel_file]
       source_parquet_file:
+        layer: D
         source:
           ods_fields: [source_parquet_file]
       source_sheet:
+        layer: D
         source:
           ods_fields: [source_sheet]
       ingest_ts:
+        layer: D
         source:
           ods_fields: [ingest_ts]
+      dwd_build_ts:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建时间（ETL 生成）
+        populate: dwd_lineage
+      dwd_build_id:
+        layer: D
+        rule_zh: 血缘；本次写入 DWD 的构建任务 ID（ETL 生成）
+        populate: dwd_lineage
