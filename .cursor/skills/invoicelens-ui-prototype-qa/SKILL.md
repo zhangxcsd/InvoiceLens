@@ -30,6 +30,7 @@ description: Enforces prototype-level UI implementation discipline for InvoiceLe
   - Login header logo + sidebar logo use the same asset
 
 ## Implementation notes
+- **Typography / 字体与排版**：以 `docs/frontend-typography.md` 为约定来源；字号用 `tailwind.config.ts` 的 `il-*`，避免页面级 `text-[Npx]` 漂移。
 - Prefer **design tokens** from Tailwind config, not ad-hoc hex values (except where the prototype uses a literal and it’s intentional).
 - Any non-implemented feature must be a **visual shell only** (“soon/待开发”), no backend logic unless explicitly requested.
 

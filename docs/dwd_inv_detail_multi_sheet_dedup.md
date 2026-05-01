@@ -49,7 +49,18 @@
 
 - **多进程 / 多会话并行**对 **同一票、同一 `logic_line_no`** 插入时，存在 **竞态导致短暂重复** 的理论风险；单机单连接顺序执行时风险极低。若生产并行写同一 DuckDB，应对导入 **串行化** 或使用事务策略另行设计。
 
-## 9. 修订记录
+## 9. 专项运输（客运 / 货运）对齐
+
+- `dwd_spc_transport_passenger` / `dwd_spc_transport_freight` 的 **`logic_line_no` 生成与 `dwd_inv_detail` 共用** `src/etl/dwd_shared_logic_line.py` 中 `build_create_ods_logic_line_view_sql`（分区 `_hdr_k` + `_scope_k`、汇总参考行 `0`、同键去重等语义一致）。
+- **`detail_uuid`** 与明细表相同：`MD5(fw2hw(fpdm)||fw2hw(fphm)||fw2hw(sdfphm)||logic_line_no)`，**不含** `source_sheet`；同逻辑行在专项表与明细表中主键一致（计算正确时可直接 JOIN）。
+- 多 sheet 时仍按 **来源作用域**（`_scope_k` / 落盘列 `source_scope_key`）各自编号；表级约束为 **`UNIQUE(header_uuid, logic_line_no)`**（与明细「同票同槽位」一致）。
+- 行数数据质量：`run_cleaner` 返回 `dq_spc_transport_passenger_linecount_mismatch` / `dq_spc_transport_freight_linecount_mismatch` / `dq_spc_vehicle_sales_linecount_mismatch` / `dq_spc_construction_linecount_mismatch` / `dq_spc_estate_lease_linecount_mismatch`，比较同 `(header_uuid, source_scope_key)` 下 **`logic_line_no > 0`** 行数在专项与 `dwd_inv_detail` 是否一致。
+- 金额校验（仅报告）：`dq_spc_transport_passenger_amount_vs_inv_detail` / `dq_spc_transport_freight_amount_vs_inv_detail` / `dq_spc_vehicle_sales_amount_vs_inv_detail` / `dq_spc_construction_service_amount_vs_inv_detail` / `dq_spc_estate_lease_amount_vs_inv_detail`。仅 **`logic_line_no > 0`** 的专项行；按 **`detail_uuid` LEFT JOIN `dwd_inv_detail`**；`dq_issue` 为 `no_inv_detail_row`（无同 UUID 明细）或 `amount_mismatch`（`je`/`se`/`jshj` 与明细差绝对值 > 默认 **0.01**）。不落库、不阻断清洗；规则见 `src/etl/dwd_shared_logic_line.py` 中 `sql_amount_dq_vs_inv_detail`。
+
+## 10. 修订记录
 
 - 2026-04：确立「sheet 内 `logic_line_no` + 全库 `detail_uuid` 不含 sheet + ON CONFLICT 先到先得」；恢复 `UNIQUE(header_uuid, logic_line_no)`；本文初版。
 - 2026-04-13：`logic_line_no` 分区升级为 `source_scope_key`（`import_session_id + source_excel_file + source_sheet` 哈希）；新增同作用域重复落盘的编号前去重规则。
+- 2026-04-18：专项运输与明细共用 `logic_line_no` / `detail_uuid` 规则；补充第 9 节。
+- 2026-04-18：`dwd_spc_vehicle_sales`（新车+二手合并）、`dwd_spc_construction_service`、`dwd_spc_estate_lease` 落盘与同源 DQ 字段。
+- 2026-04-18：专项金额按 `detail_uuid` 与 `dwd_inv_detail` 对照的 DQ 报告字段（`dq_*_amount_vs_inv_detail`）。

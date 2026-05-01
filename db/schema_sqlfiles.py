@@ -50,11 +50,129 @@ def _matches_any_parquet(pattern: str) -> bool:
 
 
 def _create_empty_view(conn, view_name: str) -> None:
-    # 占位视图：至少保证对象存在，后续导入 ODS parquet 后可重新初始化以挂载真实视图
+    """
+    占位视图：无 Parquet 时仍须含 batch_id / import_session_id 等列，否则 cleaner 中
+    「WHERE batch_id = …」会对全 ODS 专项视图 Binder 报错（仅 __placeholder__ 不够）。
+    使用 OR REPLACE，避免旧版占位卡在 IF NOT EXISTS。
+    """
     conn.execute(
-        f"CREATE VIEW IF NOT EXISTS {view_name} AS "
-        "SELECT NULL::VARCHAR AS __placeholder__ WHERE FALSE"
+        f"CREATE OR REPLACE VIEW {view_name} AS "
+        "SELECT "
+        "CAST(NULL AS VARCHAR) AS batch_id, "
+        "CAST(NULL AS VARCHAR) AS import_session_id, "
+        "CAST(NULL AS VARCHAR) AS source_parquet_file, "
+        "CAST(NULL AS BIGINT) AS ods_file_seq "
+        "WHERE FALSE"
     )
+
+
+def _ods_view_has_placeholder_column(conn, view_name: str) -> bool:
+    """占位视图仅含 __placeholder__ 列；若仍被用于 WHERE batch_id=… 会 Binder Error。"""
+    try:
+        rows = conn.execute(f"DESCRIBE {view_name}").fetchall()
+        return any(str(r[0]) == "__placeholder__" for r in rows)
+    except Exception:
+        return False
+
+
+def _ods_inv_core_view_needs_parquet_mount(conn, view_name: str) -> bool:
+    """
+    True：仍为占位，或 DESCRIBE 中缺少 batch_id（清洗 SQL 依赖 hive 分区别名）。
+    仅检 __placeholder__ 可能漏掉异常中间态，故同时检查 batch_id。
+    """
+    try:
+        rows = conn.execute(f"DESCRIBE {view_name}").fetchall()
+        names = [str(r[0]) for r in rows]
+        if any(n == "__placeholder__" for n in names):
+            return True
+        lower = {n.lower() for n in names}
+        return "batch_id" not in lower
+    except Exception:
+        return True
+
+
+def _repair_core_ods_inv_views_if_placeholder(conn) -> None:
+    """
+    主循环中若 OR REPLACE 曾失败，回退的 CREATE VIEW IF NOT EXISTS 不会覆盖已存在的占位视图，
+    导致 ods_inv_* 永久卡在 __placeholder__。此处对核心发票视图在「磁盘已有 parquet」时强制 OR REPLACE。
+    """
+    for stmt in [s.strip() for s in DDL_ODS.split(";") if s.strip()]:
+        view_m = _RE_VIEW_NAME.search(stmt)
+        read_m = _RE_READ_PARQUET_LITERAL.search(stmt)
+        if not view_m or not read_m:
+            continue
+        vn = view_m.group("name")
+        if vn not in ("ods_inv_header", "ods_inv_detail"):
+            continue
+        pattern = read_m.group("pattern")
+        if not _ods_inv_core_view_needs_parquet_mount(conn, vn):
+            continue
+        if not _matches_any_parquet(pattern):
+            continue
+        replace_stmt = re.sub(
+            r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\b",
+            "CREATE OR REPLACE VIEW",
+            stmt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        try:
+            conn.execute(replace_stmt)
+            logger.info("已用 Parquet 覆盖占位 ODS 视图: %s", vn)
+        except Exception as exc:
+            logger.warning("覆盖占位 ODS 视图失败（将尝试 DROP 后重建）: %s (%s)", vn, exc)
+            try:
+                conn.execute(f"DROP VIEW IF EXISTS {vn}")
+                conn.execute(replace_stmt)
+                logger.info("已 DROP 后重建 ODS 视图: %s", vn)
+            except Exception as exc2:
+                logger.warning("DROP 后仍无法创建 ODS 视图: %s (%s)", vn, exc2)
+
+
+def ensure_ods_inv_views_materialized(conn) -> None:
+    """
+    DWD 清洗依赖 ods_inv_header / ods_inv_detail 含 batch_id 等列。
+    先做一次核心视图自愈（与 init_all_tables 末尾逻辑一致），再校验；避免仅依赖 cleaner 内调用顺序。
+    """
+    _repair_core_ods_inv_views_if_placeholder(conn)
+    for vn in ("ods_inv_header", "ods_inv_detail"):
+        if _ods_inv_core_view_needs_parquet_mount(conn, vn):
+            raise RuntimeError(
+                f"{vn} 未正确挂载 ODS Parquet（缺少 batch_id 列或仍为占位视图 __placeholder__）。"
+                "请确认 data/ods 下已存在 inv_header / inv_detail 的 parquet，并从仓库根目录启动本地 API；"
+                "若仍报此错，请关闭「InvoiceLens-LocalAPI」窗口后重新运行 dev.bat，避免旧进程占用端口。"
+            )
+
+
+def force_remount_ods_inv_core_views(conn) -> None:
+    """
+    不依赖 DESCRIBE：只要磁盘上存在对应 glob 的 parquet，即 DROP + CREATE OR REPLACE。
+    供 cleaner 在 Binder 仍报 batch_id/__placeholder__ 时二次强制挂载（避免占位视图卡死）。
+    """
+    for stmt in [s.strip() for s in DDL_ODS.split(";") if s.strip()]:
+        view_m = _RE_VIEW_NAME.search(stmt)
+        read_m = _RE_READ_PARQUET_LITERAL.search(stmt)
+        if not view_m or not read_m:
+            continue
+        vn = view_m.group("name")
+        if vn not in ("ods_inv_header", "ods_inv_detail"):
+            continue
+        pattern = read_m.group("pattern")
+        if not _matches_any_parquet(pattern):
+            continue
+        replace_stmt = re.sub(
+            r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\b",
+            "CREATE OR REPLACE VIEW",
+            stmt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        try:
+            conn.execute(f"DROP VIEW IF EXISTS {vn}")
+            conn.execute(replace_stmt)
+            logger.info("已强制重挂 ODS 视图: %s", vn)
+        except Exception as exc:
+            logger.warning("强制重挂 ODS 视图失败: %s (%s)", vn, exc)
 
 
 def _load_ddl_file(name: str) -> str:
@@ -145,6 +263,74 @@ def migrate_ods_load_log_dwd_watermark(conn) -> None:
     logger.info("已迁移：ods_load_log.dwd_session_processed_at")
 
 
+def migrate_dwd_spc_transport_unique_header_line(conn) -> None:
+    """
+    专项运输表与 dwd_inv_detail 对齐：若表已存在且 (header_uuid, logic_line_no) 无重复，则补
+    UNIQUE(header_uuid, logic_line_no)。旧版 UNIQUE(header_uuid, source_scope_key, logic_line_no) 保留与否由 DuckDB 决定；
+    新约束与「同票同 logic_line_no 唯一槽位」一致。
+    """
+    for tbl in ("dwd_spc_transport_passenger", "dwd_spc_transport_freight"):
+        if not _table_exists(conn, tbl):
+            continue
+        try:
+            dup = conn.execute(
+                f"""
+                SELECT COUNT(*) FROM (
+                  SELECT 1 FROM {tbl}
+                  GROUP BY header_uuid, logic_line_no
+                  HAVING COUNT(*) > 1
+                ) t
+                """
+            ).fetchone()[0]
+            if int(dup or 0) > 0:
+                logger.warning(
+                    "%s 存在重复 (header_uuid, logic_line_no)，跳过 ADD UNIQUE；请清理或重建库",
+                    tbl,
+                )
+                continue
+        except Exception as exc:
+            logger.debug("检查 %s 重复键时跳过: %s", tbl, exc)
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE {tbl} "
+                f"ADD CONSTRAINT {tbl}_hdr_line_uq UNIQUE (header_uuid, logic_line_no)"
+            )
+            logger.info("已迁移：%s UNIQUE(header_uuid, logic_line_no)", tbl)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "already exists" in msg or "duplicate" in msg:
+                continue
+            logger.debug("%s UNIQUE 迁移跳过（可能已存在）: %s", tbl, exc)
+
+
+def migrate_dwd_spc_buyer_seller_columns(conn) -> None:
+    """
+    专项明细表补齐购销方字段：
+    - xfsbh / xfmc / gfsbh / gfmc
+    旧库表已存在时，CREATE TABLE IF NOT EXISTS 不会自动补列，这里做幂等迁移。
+    """
+    target_tables = (
+        "dwd_spc_transport_passenger",
+        "dwd_spc_transport_freight",
+        "dwd_spc_vehicle_sales",
+        "dwd_spc_construction_service",
+        "dwd_spc_estate_lease",
+    )
+    target_cols = ("xfsbh", "xfmc", "gfsbh", "gfmc")
+    for tbl in target_tables:
+        if not _table_exists(conn, tbl):
+            continue
+        for col in target_cols:
+            if _column_exists(conn, tbl, col):
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} VARCHAR")
+                logger.info("已迁移：%s.%s", tbl, col)
+            except Exception as exc:
+                logger.debug("迁移补列跳过：%s.%s (%s)", tbl, col, exc)
+
+
 def migrate_dwd_inv_detail_unique_header_line(conn) -> None:
     """
     旧库若曾不含 UNIQUE(header_uuid, logic_line_no)，在表已存在且数据无重复时补约束。
@@ -184,9 +370,83 @@ def migrate_dwd_inv_detail_unique_header_line(conn) -> None:
         logger.debug("dwd_inv_detail UNIQUE 迁移跳过（可能已存在）: %s", exc)
 
 
+def migrate_dim_subject_governance_columns(conn) -> None:
+    """
+    主体库治理字段迁移（Step B）：
+    - dim_subject_master / dim_subject_source_record 补 run/snapshot/rule/status 字段
+    说明：旧库使用 CREATE TABLE IF NOT EXISTS 时不会自动补列，因此需显式 ALTER。
+    """
+    targets = {
+        "dim_subject_master": (
+            ("subject_build_run_id", "VARCHAR"),
+            ("subject_snapshot_id", "VARCHAR"),
+            ("category_rule_version", "VARCHAR"),
+            ("category_rule_enabled_at_run", "BOOLEAN DEFAULT TRUE"),
+            ("category_status_note", "VARCHAR"),
+        ),
+        "dim_subject_source_record": (
+            ("subject_build_run_id", "VARCHAR"),
+            ("subject_snapshot_id", "VARCHAR"),
+            ("category_rule_version", "VARCHAR"),
+            ("category_rule_enabled_at_run", "BOOLEAN DEFAULT TRUE"),
+            ("category_status_note", "VARCHAR"),
+        ),
+    }
+    for tbl, cols in targets.items():
+        if not _table_exists(conn, tbl):
+            continue
+        for col, ddl in cols:
+            if _column_exists(conn, tbl, col):
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+                logger.info("已迁移：%s.%s", tbl, col)
+            except Exception as exc:
+                logger.debug("主体治理补列跳过：%s.%s (%s)", tbl, col, exc)
+
+
+def migrate_dim_enterprise_year_rel_columns(conn) -> None:
+    """
+    企业-年度关系表补列迁移：
+    旧库可能已存在 dim_enterprise_year_rel，但字段不完整（CREATE TABLE IF NOT EXISTS 不会补列）。
+    """
+    tbl = "dim_enterprise_year_rel"
+    if not _table_exists(conn, tbl):
+        return
+    cols = (
+        ("year_role_tag", "VARCHAR DEFAULT 'unknown'"),
+        ("has_seller_role", "BOOLEAN DEFAULT FALSE"),
+        ("has_buyer_role", "BOOLEAN DEFAULT FALSE"),
+        ("year_first_seen_batch_id", "VARCHAR"),
+        ("year_last_seen_batch_id", "VARCHAR"),
+        ("year_first_seen_session_id", "VARCHAR"),
+        ("year_last_seen_session_id", "VARCHAR"),
+        ("year_first_seen_date", "DATE"),
+        ("year_last_seen_date", "DATE"),
+        ("invoice_count", "BIGINT DEFAULT 0"),
+        ("amount_jshj_sum", "DECIMAL(18,2) DEFAULT 0"),
+        ("relation_build_run_id", "VARCHAR"),
+        ("relation_snapshot_id", "VARCHAR"),
+        ("quality_status", "VARCHAR DEFAULT 'ok'"),
+        ("quality_issue", "VARCHAR"),
+        ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+    )
+    for col, ddl in cols:
+        if _column_exists(conn, tbl, col):
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+            logger.info("已迁移：%s.%s", tbl, col)
+        except Exception as exc:
+            logger.debug("年度关系补列跳过：%s.%s (%s)", tbl, col, exc)
+
+
 def init_all_tables(conn) -> dict:
     migrate_legacy_dwd_schema(conn)
     migrate_ods_load_log_dwd_watermark(conn)
+    migrate_dwd_spc_buyer_seller_columns(conn)
+    migrate_dim_subject_governance_columns(conn)
+    migrate_dim_enterprise_year_rel_columns(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]
 
@@ -248,7 +508,18 @@ def init_all_tables(conn) -> dict:
                     )
 
             try:
-                conn.execute(stmt)
+                # ODS 视图：若上面 OR REPLACE 失败而落到此处，须用 OR REPLACE 覆盖已有占位视图；
+                # CREATE VIEW IF NOT EXISTS 在对象已存在时不会更新，会导致永久卡在 __placeholder__。
+                exec_stmt = stmt
+                if view_m and read_m:
+                    exec_stmt = re.sub(
+                        r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\b",
+                        "CREATE OR REPLACE VIEW",
+                        stmt,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                conn.execute(exec_stmt)
                 executed += 1
             except Exception as exc:
                 # 兜底：若仍因 read_parquet 无匹配导致异常，则不中断初始化
@@ -273,7 +544,10 @@ def init_all_tables(conn) -> dict:
                     continue
                 raise
 
+    _repair_core_ods_inv_views_if_placeholder(conn)
+
     migrate_dwd_inv_detail_unique_header_line(conn)
+    migrate_dwd_spc_transport_unique_header_line(conn)
 
     def count_tables(prefix: str) -> int:
         return conn.execute(
