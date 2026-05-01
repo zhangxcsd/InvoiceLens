@@ -18,6 +18,14 @@ function apiUrl(path: string): string {
   return LOCAL_API_BASE ? `${LOCAL_API_BASE}${p}` : p
 }
 
+function subjectCategoryApiCandidates(): string[] {
+  const primary = apiUrl('/api/subject-category/rules')
+  // 开发态优先走 Vite 同源代理；若代理链路异常则回退直连本地 API。
+  if (LOCAL_API_BASE) return [primary]
+  const fallback = 'http://127.0.0.1:8765/api/subject-category/rules'
+  return primary === fallback ? [primary] : [primary, fallback]
+}
+
 export type SheetMappingOption = {
   sheet_key: string
   table_type?: string
@@ -250,6 +258,128 @@ export async function postDwdForceRebuild(
     import_session_id?: string
   }
   return { ...json, httpStatus: res.status }
+}
+
+export type DimEnterpriseProfileBuildResult = {
+  ok: boolean
+  stage?: string
+  run_id?: string
+  calc_batch_id?: string
+  source_scope?: string
+  subject_category_scope?: string
+  stat_month?: string | null
+  import_batch_id?: string | null
+  enterprise_upserted?: number
+  profile_rows_written?: number
+  error?: { message?: string; detail?: string; exception_type?: string }
+}
+
+export type DimTaskBuildResult = {
+  ok: boolean
+  stage?: string
+  run_id?: string
+  import_batch_id?: string | null
+  rows_affected?: number
+  error?: { message?: string; detail?: string; exception_type?: string }
+}
+
+export type DimTaskRunLogRow = {
+  run_id: string
+  task_code: string
+  task_name: string
+  status: string
+  trigger_source: string
+  run_mode: string
+  rows_affected: number
+  error_message: string
+  calc_batch_id: string
+  import_batch_id: string
+  started_at: string
+  finished_at: string
+  duration_ms: number
+}
+
+/** POST /api/dim/build-enterprise-profile：DWD→DIM 企业画像聚合 */
+export async function postDimEnterpriseProfileBuild(
+  params: {
+    stat_month?: string
+    import_batch_id?: string
+    calc_batch_id?: string
+    source_scope?: string
+    subject_category_scope?: string
+    run_id?: string
+  },
+  signal?: AbortSignal,
+): Promise<DimEnterpriseProfileBuildResult & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/build-enterprise-profile'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(params.stat_month ? { stat_month: params.stat_month } : {}),
+      ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
+      ...(params.calc_batch_id ? { calc_batch_id: params.calc_batch_id } : {}),
+      ...(params.source_scope ? { source_scope: params.source_scope } : {}),
+      ...(params.subject_category_scope ? { subject_category_scope: params.subject_category_scope } : {}),
+      ...(params.run_id ? { run_id: params.run_id } : {}),
+    }),
+    signal,
+  })
+  const json = (await res.json().catch(() => ({}))) as DimEnterpriseProfileBuildResult
+  return { ...json, httpStatus: res.status }
+}
+
+/** POST /api/dim/build-enterprise-master：DWD→DIM 企业主数据构建 */
+export async function postDimEnterpriseMasterBuild(
+  params: { import_batch_id?: string; subject_category_scope?: string; run_id?: string },
+  signal?: AbortSignal,
+): Promise<DimTaskBuildResult & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/build-enterprise-master'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
+      ...(params.subject_category_scope ? { subject_category_scope: params.subject_category_scope } : {}),
+      ...(params.run_id ? { run_id: params.run_id } : {}),
+    }),
+    signal,
+  })
+  const json = (await res.json().catch(() => ({}))) as DimTaskBuildResult
+  return { ...json, httpStatus: res.status }
+}
+
+/** POST /api/dim/build-enterprise-mapping：DWD→DIM 企业映射状态构建 */
+export async function postDimEnterpriseMappingBuild(
+  params: { import_batch_id?: string; subject_category_scope?: string; run_id?: string },
+  signal?: AbortSignal,
+): Promise<DimTaskBuildResult & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/build-enterprise-mapping'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
+      ...(params.subject_category_scope ? { subject_category_scope: params.subject_category_scope } : {}),
+      ...(params.run_id ? { run_id: params.run_id } : {}),
+    }),
+    signal,
+  })
+  const json = (await res.json().catch(() => ({}))) as DimTaskBuildResult
+  return { ...json, httpStatus: res.status }
+}
+
+export async function fetchDimTaskRuns(
+  params: { task_code?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; runs: DimTaskRunLogRow[]; error?: { message?: string; detail?: string } }> {
+  const qs = new URLSearchParams()
+  if (params.task_code) qs.set('task_code', params.task_code)
+  if (params.limit != null) qs.set('limit', String(params.limit))
+  const url = `${apiUrl('/api/dim/task-runs')}${qs.toString() ? `?${qs.toString()}` : ''}`
+  const res = await fetch(url, { signal })
+  const json = (await res.json().catch(() => ({}))) as any
+  if (!res.ok || !json?.ok) {
+    return { ok: false, runs: [], error: json?.error }
+  }
+  return { ok: true, runs: Array.isArray(json.runs) ? (json.runs as DimTaskRunLogRow[]) : [] }
 }
 
 export async function saveFieldMapping(
@@ -851,7 +981,7 @@ export async function fetchOdsPreviewTablePage(params: {
 }
 
 export type DwdPreviewTabMeta = {
-  table_type: string
+  dwd_table: string
   title: string
   layer: 'header' | 'detail'
   row_count: number
@@ -880,14 +1010,27 @@ export async function fetchDwdPreviewTabs(params: {
       return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
     }
     const raw = Array.isArray(json.tabs) ? json.tabs : []
+    // 强约束：仅接受 dwd_table。若后端仍返回旧结构（table_type），直接报错提示升级/重启 API。
+    const hasLegacyOnly =
+      raw.length > 0 &&
+      raw.some((t: any) => String(t?.dwd_table ?? '').trim() === '' && String(t?.table_type ?? '').trim() !== '')
+    if (hasLegacyOnly) {
+      return {
+        ok: false,
+        error: {
+          message:
+            '本地 API 返回了旧版 DWD tabs 结构（table_type）。请重启并更新本地 API，使 /api/dwd-preview/tabs 返回 dwd_table 字段。',
+        },
+      }
+    }
     const tabs: DwdPreviewTabMeta[] = raw
       .map((t: any) => ({
-        table_type: String(t?.table_type ?? '').trim(),
-        title: String(t?.title ?? t?.table_type ?? '').trim(),
+        dwd_table: String(t?.dwd_table ?? '').trim(),
+        title: String(t?.title ?? t?.dwd_table ?? '').trim(),
         layer: t?.layer === 'header' ? 'header' : 'detail',
         row_count: Number(t?.row_count ?? 0),
       }))
-      .filter((t: DwdPreviewTabMeta) => t.table_type.length > 0)
+      .filter((t: DwdPreviewTabMeta) => t.dwd_table.length > 0)
     const warnings = Array.isArray(json.warnings) ? json.warnings.map((w: any) => String(w)) : []
     return { ok: true, tabs, warnings }
   } catch (e) {
@@ -903,7 +1046,9 @@ export async function fetchDwdPreviewTablePage(params: {
   batchId: string
   /** 空字符串表示该批次下全部会话 */
   sessionId: string
-  /** 与 ODS Tab 对齐；指定时优先于 layer */
+  /** DWD 物理表名（更符合 DWD 预览语义）；指定时优先于 layer / tableType */
+  dwdTable?: string
+  /** 兼容旧参数：按 ODS table_type 解析到 DWD 表，并按 source_parquet_file 血缘过滤 */
   tableType?: string
   layer?: 'header' | 'detail'
   limit?: number
@@ -919,13 +1064,15 @@ export async function fetchDwdPreviewTablePage(params: {
   total_rows?: number | null
   error?: { message?: string; detail?: string }
 }> {
-  const { batchId, sessionId, tableType, layer = 'detail', limit = 200, cursor, signal } = params
+  const { batchId, sessionId, dwdTable, tableType, layer = 'detail', limit = 200, cursor, signal } = params
   const q = new URLSearchParams({
     batch_id: batchId,
     session_id: sessionId,
     layer,
     limit: String(Math.max(1, Math.min(500, Math.floor(limit)))),
   })
+  const dt = (dwdTable ?? '').trim()
+  if (dt) q.set('dwd_table', dt)
   const tt = (tableType ?? '').trim()
   if (tt) q.set('table_type', tt)
   if (cursor && typeof cursor === 'object') {
@@ -978,6 +1125,7 @@ export async function deleteDwdPreviewLoad(body: {
   ok: boolean
   deleted_header_rows?: number
   deleted_detail_rows?: number
+  deleted_rows_by_table?: Record<string, number>
   ods_sessions_reset?: number
   error?: { message?: string; detail?: string; code?: string }
 }> {
@@ -1000,6 +1148,15 @@ export async function deleteDwdPreviewLoad(body: {
         json.deleted_header_rows != null ? Number(json.deleted_header_rows) : undefined,
       deleted_detail_rows:
         json.deleted_detail_rows != null ? Number(json.deleted_detail_rows) : undefined,
+      deleted_rows_by_table:
+        json.deleted_rows_by_table && typeof json.deleted_rows_by_table === 'object'
+          ? Object.fromEntries(
+              Object.entries(json.deleted_rows_by_table as Record<string, unknown>).map(([k, v]) => [
+                k,
+                Number(v ?? 0),
+              ]),
+            )
+          : undefined,
       ods_sessions_reset:
         json.ods_sessions_reset != null ? Number(json.ods_sessions_reset) : undefined,
     }
@@ -1052,3 +1209,763 @@ export async function deleteOdsPreviewImport(body: {
   }
 }
 
+export type HealthIndicatorDirection = {
+  code: string
+  title: string
+  detail: string
+  related_audit_topics: string[]
+}
+
+export type HealthIndicatorRow = {
+  indicator_code: string
+  indicator_name: string
+  dimension_code: string
+  dimension_name: string
+  indicator_value: number
+  score: number
+  level: 'normal' | 'warning' | 'alert'
+  weight_in_dimension: number
+  weight_global: number
+  formula_text: string
+  threshold_text: string
+  data_source_text: string
+  hit_band_min: number | null
+  hit_band_max: number | null
+  suspicion_directions: HealthIndicatorDirection[]
+  suggest_actions: string[]
+  evidence_count: number
+  explain_text: string
+}
+
+export type HealthScoreSnapshot = {
+  ok: boolean
+  rule_version?: string
+  overview?: {
+    total_score: number
+    grade: string
+    change_vs_prev: number
+    score_formula: string
+    grade_rule: string
+  }
+  dimensions?: Array<{
+    dimension_code: string
+    dimension_name: string
+    weight: number
+    score: number
+  }>
+  indicators?: HealthIndicatorRow[]
+  top_deductions?: Array<{
+    indicator_code: string
+    indicator_name: string
+    dimension_name: string
+    score: number
+    level: string
+    explain_text: string
+  }>
+  error?: { message?: string; detail?: string }
+}
+
+export async function fetchHealthScoreSnapshot(params?: {
+  batchId?: string
+  sessionId?: string
+  signal?: AbortSignal
+}): Promise<HealthScoreSnapshot> {
+  const q = new URLSearchParams()
+  if (params?.batchId) q.set('batch_id', params.batchId)
+  if (params?.sessionId) q.set('session_id', params.sessionId)
+  try {
+    const res = await fetch(apiUrl(`/api/quality/health-score?${q.toString()}`), {
+      signal: params?.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      rule_version: json.rule_version != null ? String(json.rule_version) : undefined,
+      overview: json.overview,
+      dimensions: Array.isArray(json.dimensions) ? json.dimensions : [],
+      indicators: Array.isArray(json.indicators) ? json.indicators : [],
+      top_deductions: Array.isArray(json.top_deductions) ? json.top_deductions : [],
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export type RedInvoiceQualityOverview = {
+  ok: boolean
+  red_invoice_count: number
+  unmatched_blue_count: number
+  orphan_red_count: number
+  matched_blue_count: number
+  error?: { message?: string; detail?: string }
+}
+
+export async function fetchRedInvoiceQualityOverview(params?: {
+  batchId?: string
+  sessionId?: string
+  signal?: AbortSignal
+}): Promise<RedInvoiceQualityOverview> {
+  const q = new URLSearchParams()
+  if (params?.batchId) q.set('batch_id', params.batchId)
+  if (params?.sessionId) q.set('session_id', params.sessionId)
+  try {
+    const res = await fetch(apiUrl(`/api/quality/red-invoice-overview?${q.toString()}`), {
+      signal: params?.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        red_invoice_count: 0,
+        unmatched_blue_count: 0,
+        orphan_red_count: 0,
+        matched_blue_count: 0,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    return {
+      ok: true,
+      red_invoice_count: Number(json.red_invoice_count ?? 0),
+      unmatched_blue_count: Number(json.unmatched_blue_count ?? 0),
+      orphan_red_count: Number(json.orphan_red_count ?? 0),
+      matched_blue_count: Number(json.matched_blue_count ?? 0),
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      red_invoice_count: 0,
+      unmatched_blue_count: 0,
+      orphan_red_count: 0,
+      matched_blue_count: 0,
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export type RedInvoiceQualityDetailRow = {
+  header_uuid: string
+  import_batch_id: string
+  import_session_id: string
+  sdfphm: string
+  fpdm: string
+  fphm: string
+  jshj: number
+  net_calc_status: string
+  is_orphan_red: boolean
+  related_blue_invoice_uuid: string
+  bz: string
+  quality_reason: string
+}
+
+export async function fetchRedInvoiceQualityDetails(params?: {
+  batchId?: string
+  sessionId?: string
+  onlyUnmatched?: boolean
+  limit?: number
+  signal?: AbortSignal
+}): Promise<{ ok: boolean; rows: RedInvoiceQualityDetailRow[]; error?: { message?: string; detail?: string } }> {
+  const q = new URLSearchParams()
+  if (params?.batchId) q.set('batch_id', params.batchId)
+  if (params?.sessionId) q.set('session_id', params.sessionId)
+  q.set('only_unmatched', params?.onlyUnmatched === false ? '0' : '1')
+  q.set('limit', String(Math.max(1, Math.min(1000, Math.floor(params?.limit ?? 200)))))
+  try {
+    const res = await fetch(apiUrl(`/api/quality/red-invoice-details?${q.toString()}`), {
+      signal: params?.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, rows: [], error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const raw = Array.isArray(json.rows) ? json.rows : []
+    return {
+      ok: true,
+      rows: raw.map((r: any) => ({
+        header_uuid: String(r?.header_uuid ?? ''),
+        import_batch_id: String(r?.import_batch_id ?? ''),
+        import_session_id: String(r?.import_session_id ?? ''),
+        sdfphm: String(r?.sdfphm ?? ''),
+        fpdm: String(r?.fpdm ?? ''),
+        fphm: String(r?.fphm ?? ''),
+        jshj: Number(r?.jshj ?? 0),
+        net_calc_status: String(r?.net_calc_status ?? ''),
+        is_orphan_red: Boolean(r?.is_orphan_red),
+        related_blue_invoice_uuid: String(r?.related_blue_invoice_uuid ?? ''),
+        bz: String(r?.bz ?? ''),
+        quality_reason: String(r?.quality_reason ?? ''),
+      })),
+    }
+  } catch (e) {
+    return { ok: false, rows: [], error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function parseRedInvoiceBzDebug(params: {
+  bz: string
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  matched: boolean
+  rule_name?: string | null
+  mode?: string | null
+  pattern?: string | null
+  groups?: string[]
+  matched_text?: string | null
+  target_blue_header_uuid?: string | null
+  error?: { message?: string; detail?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/quality/red-invoice-parse'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ bz: params.bz }),
+      signal: params.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json) {
+      return {
+        ok: false,
+        matched: false,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    return {
+      ok: Boolean(json.ok),
+      matched: Boolean(json.matched),
+      rule_name: json.rule_name != null ? String(json.rule_name) : null,
+      mode: json.mode != null ? String(json.mode) : null,
+      pattern: json.pattern != null ? String(json.pattern) : null,
+      groups: Array.isArray(json.groups) ? json.groups.map((x: unknown) => String(x ?? '')) : [],
+      matched_text: json.matched_text != null ? String(json.matched_text) : null,
+      target_blue_header_uuid:
+        json.target_blue_header_uuid != null ? String(json.target_blue_header_uuid) : null,
+      error: json.error,
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      matched: false,
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export type DimTaxCodeImportResult = {
+  ok: boolean
+  implemented?: boolean
+  dry_run?: boolean
+  message?: string
+  received?: Record<string, unknown>
+  stats?: Record<string, unknown>
+  error?: { message?: string }
+}
+
+/**
+ * 税收分类编码维表导入：multipart 带 `file` 时走 DuckDB 落库（`source_path` 可传空字符串）；
+ * 无 `file` 时须传 `source_path` 由服务端按仓库相对路径读取；仅 JSON 时多为 dry_run/参数校验。
+ * 对应 `POST /api/dim-tax-code/import`。
+ */
+export async function postDimTaxCodeImport(params: {
+  data_version: string
+  source_path: string
+  strategy: string
+  file?: File | null
+  signal?: AbortSignal
+}): Promise<DimTaxCodeImportResult> {
+  try {
+    let res: Response
+    if (params.file) {
+      const fd = new FormData()
+      fd.append('data_version', params.data_version)
+      fd.append('source_path', params.source_path)
+      fd.append('strategy', params.strategy)
+      fd.append('file', params.file)
+      res = await fetch(apiUrl('/api/dim-tax-code/import'), {
+        method: 'POST',
+        body: fd,
+        signal: params.signal,
+      })
+    } else {
+      res = await fetch(apiUrl('/api/dim-tax-code/import'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          data_version: params.data_version,
+          source_path: params.source_path,
+          strategy: params.strategy,
+        }),
+        signal: params.signal,
+      })
+    }
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    return {
+      ok: Boolean(json.ok),
+      implemented: json.implemented != null ? Boolean(json.implemented) : undefined,
+      dry_run: json.dry_run != null ? Boolean(json.dry_run) : undefined,
+      message: json.message != null ? String(json.message) : undefined,
+      received: json.received && typeof json.received === 'object' ? (json.received as Record<string, unknown>) : undefined,
+      stats: json.stats && typeof json.stats === 'object' ? (json.stats as Record<string, unknown>) : undefined,
+      error: json.error,
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export type DimTaxCodeRowDto = {
+  taxCode: string
+  goodsName: string
+  goodsShortName: string
+  description: string
+  parentCode: string | null
+  levelDepth: number
+  isLeaf: boolean
+  fullPath: string
+  cleanStatus: string
+  auditRiskLabel: string
+  dataVersion: string
+  importBatchId: string
+  importSessionId: string
+  sourceSheet: string
+  sourceExcelFile: string
+}
+
+export async function fetchDimTaxCodeRows(params: {
+  keyword?: string
+  cleanStatus?: string
+  risk?: string
+  importBatchId?: string
+  importSessionId?: string
+  abnormalOnly?: boolean
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  total: number
+  rows: DimTaxCodeRowDto[]
+  error?: { message?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    if (params.keyword?.trim()) sp.set('keyword', params.keyword.trim())
+    sp.set('clean_status', params.cleanStatus ?? 'all')
+    sp.set('risk', params.risk ?? 'all')
+    if (params.importBatchId?.trim()) sp.set('import_batch_id', params.importBatchId.trim())
+    if (params.importSessionId?.trim()) sp.set('import_session_id', params.importSessionId.trim())
+    if (params.abnormalOnly) sp.set('abnormal_only', '1')
+    const res = await fetch(apiUrl(`/api/dim-tax-code/rows?${sp.toString()}`), { signal: params.signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        total: 0,
+        rows: [],
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    const rows = Array.isArray(json.rows) ? (json.rows as DimTaxCodeRowDto[]) : []
+    const total = Number(json.total)
+    return { ok: true, total: Number.isFinite(total) ? total : rows.length, rows }
+  } catch (e) {
+    return {
+      ok: false,
+      total: 0,
+      rows: [],
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export async function fetchDimTaxCodeFilterOptions(params?: {
+  importBatchId?: string
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  importBatchOptions: string[]
+  importSessionOptions: string[]
+  error?: { message?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    if (params?.importBatchId?.trim()) sp.set('import_batch_id', params.importBatchId.trim())
+    const qs = sp.toString()
+    const res = await fetch(apiUrl(`/api/dim-tax-code/filter-options${qs ? `?${qs}` : ''}`), {
+      signal: params?.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        importBatchOptions: [],
+        importSessionOptions: [],
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    return {
+      ok: true,
+      importBatchOptions: Array.isArray(json.importBatchOptions)
+        ? json.importBatchOptions.map((v: unknown) => String(v))
+        : [],
+      importSessionOptions: Array.isArray(json.importSessionOptions)
+        ? json.importSessionOptions.map((v: unknown) => String(v))
+        : [],
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      importBatchOptions: [],
+      importSessionOptions: [],
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
+export async function postDimTaxCodeReapplyRiskRules(signal?: AbortSignal): Promise<{
+  ok: boolean
+  message?: string
+  stats?: Record<string, unknown>
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim-tax-code/reapply-risk-rules'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: '{}',
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    return {
+      ok: Boolean(json.ok),
+      message: json.message != null ? String(json.message) : undefined,
+      stats: json.stats && typeof json.stats === 'object' ? (json.stats as Record<string, unknown>) : undefined,
+      error: json.error,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchDimTaxCodeRiskRules(signal?: AbortSignal): Promise<{
+  ok: boolean
+  yamlText: string
+  source?: string
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim-tax-code/risk-rules'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    const msg = json?.error?.message != null ? String(json.error.message) : undefined
+    const friendly =
+      msg === 'Not Found'
+        ? '本地 API 尚未加载“敏感类目定义”接口，请重启本地 API（dev.bat api 或重启 dev.bat all）后重试。'
+        : msg
+    return {
+      ok: Boolean(json.ok),
+      yamlText: json.yaml_text != null ? String(json.yaml_text) : '',
+      source: json.source != null ? String(json.source) : undefined,
+      error: friendly ? { message: friendly } : json.error,
+    }
+  } catch (e) {
+    return { ok: false, yamlText: '', error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function saveDimTaxCodeRiskRules(
+  yamlText: string,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; message?: string; source?: string; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/dim-tax-code/risk-rules'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ yaml_text: yamlText }),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    return {
+      ok: Boolean(json.ok),
+      message: json.message != null ? String(json.message) : undefined,
+      source: json.source != null ? String(json.source) : undefined,
+      error: json.error,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export type SubjectCategoryRuleDto = {
+  category_code: string
+  category_name: string
+  gb_code: string
+  register_authority: string
+  legal_form: string
+  invoice_scene: string
+  default_risk_focus: string
+  coverage_count: number
+  enabled: boolean
+}
+
+export async function fetchSubjectCategoryRules(signal?: AbortSignal): Promise<{
+  ok: boolean
+  source?: string
+  standard_version?: string
+  updated_at?: string
+  categories: SubjectCategoryRuleDto[]
+  error?: { message?: string }
+}> {
+  let lastError: { message?: string } | undefined
+  for (const url of subjectCategoryApiCandidates()) {
+    try {
+      const res = await fetch(url, { signal })
+      const json = (await res.json().catch(() => ({}))) as any
+      if (!res.ok || !json?.ok) {
+        lastError = json?.error ?? { message: `HTTP ${res.status}` }
+        continue
+      }
+      const raw = Array.isArray(json.categories) ? json.categories : []
+      const categories: SubjectCategoryRuleDto[] = raw.map((x: any) => ({
+        category_code: String(x?.category_code ?? '').trim(),
+        category_name: String(x?.category_name ?? '').trim(),
+        gb_code: String(x?.gb_code ?? '').trim(),
+        register_authority: String(x?.register_authority ?? '').trim(),
+        legal_form: String(x?.legal_form ?? '').trim(),
+        invoice_scene: String(x?.invoice_scene ?? '').trim(),
+        default_risk_focus: String(x?.default_risk_focus ?? '').trim(),
+        coverage_count: Number(x?.coverage_count ?? 0),
+        enabled: Boolean(x?.enabled),
+      }))
+      return {
+        ok: true,
+        source: json.source != null ? String(json.source) : undefined,
+        standard_version: json.standard_version != null ? String(json.standard_version) : undefined,
+        updated_at: json.updated_at != null ? String(json.updated_at) : undefined,
+        categories,
+      }
+    } catch (e) {
+      lastError = { message: e instanceof Error ? e.message : '网络错误' }
+    }
+  }
+  return { ok: false, categories: [], error: lastError ?? { message: '网络错误' } }
+}
+
+export async function saveSubjectCategoryRules(
+  payload: { standard_version?: string; categories: SubjectCategoryRuleDto[] },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; message?: string; source?: string; error?: { message?: string } }> {
+  const normalizeApiError = (err: any, status: number): { message: string } => {
+    const msg = err?.message != null ? String(err.message) : `HTTP ${status}`
+    const detail = err?.detail != null ? String(err.detail) : ''
+    return { message: detail ? `${msg}：${detail}` : msg }
+  }
+  let lastError: { message?: string } | undefined
+  for (const url of subjectCategoryApiCandidates()) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(payload),
+        signal,
+      })
+      const json = (await res.json().catch(() => ({}))) as any
+      if (!json?.ok) {
+        lastError = normalizeApiError(json?.error, res.status)
+        continue
+      }
+      return {
+        ok: true,
+        message: json.message != null ? String(json.message) : undefined,
+        source: json.source != null ? String(json.source) : undefined,
+      }
+    } catch (e) {
+      lastError = { message: e instanceof Error ? e.message : '网络错误' }
+    }
+  }
+  return { ok: false, error: lastError ?? { message: '网络错误' } }
+}
+
+export type SubjectCategoryRecomputeSummary = {
+  run_id: string
+  snapshot_id: string
+  created_at: string
+  category_summary: {
+    total: number
+    matched: number
+    needs_review: number
+    disabled_blocked: number
+    by_org_category: Array<{ org_category: string; count: number }>
+  }
+  relation_summary: {
+    relation_total: number
+    trade_invoice_count_sum: number
+    trade_amount_jshj_sum: number
+  }
+}
+
+export async function fetchSubjectCategoryRecomputeLatest(signal?: AbortSignal): Promise<{
+  ok: boolean
+  latest: SubjectCategoryRecomputeSummary | null
+  message?: string
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/subject-category/recompute/latest'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, latest: null, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      latest: (json.latest as SubjectCategoryRecomputeSummary | null) ?? null,
+      message: json.message != null ? String(json.message) : undefined,
+    }
+  } catch (e) {
+    return { ok: false, latest: null, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postSubjectLibraryIngestFromDwd(signal?: AbortSignal): Promise<{
+  ok: boolean
+  message?: string
+  result?: { run_id?: string; header_rows_scanned?: number; subjects_upserted?: number; source_rows_upserted?: number }
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/subject-library/ingest-from-dwd'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: '{}',
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      message: json.message != null ? String(json.message) : undefined,
+      result: json.result,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postSubjectCategoryRecompute(
+  payload?: { with_relations?: boolean; run_id?: string; snapshot_id?: string },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; message?: string; with_relations?: boolean; result?: any; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/subject-category/recompute'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        with_relations: Boolean(payload?.with_relations),
+        ...(payload?.run_id ? { run_id: payload.run_id } : {}),
+        ...(payload?.snapshot_id ? { snapshot_id: payload.snapshot_id } : {}),
+      }),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      message: json.message != null ? String(json.message) : undefined,
+      with_relations: Boolean(json.with_relations),
+      result: json.result,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export type SubjectLibraryRowDto = {
+  enterprise_id: string
+  enterprise_name: string
+  taxpayer_id: string
+  source_type: 'platform' | 'external'
+  subject_type: 'enterprise' | 'person'
+  subject_category_code: string
+  snapshot_year: string
+  role_tag: 'seller' | 'buyer' | 'both'
+  renamed_in_year: boolean
+  rename_hint: string
+  rename_timeline: string[]
+  first_seen_batch_id: string
+  last_seen_batch_id: string
+  first_seen_date: string
+  last_seen_date: string
+}
+
+export async function fetchSubjectLibrarySummary(params: {
+  snapshotYear?: string
+  subjectType?: 'all' | 'enterprise' | 'person'
+  sourceType?: 'all' | 'platform' | 'external'
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  summary?: { total: number; enterprise_count: number; person_count: number; needs_review_count: number }
+  error?: { message?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    if (params.snapshotYear) sp.set('snapshot_year', params.snapshotYear)
+    if (params.subjectType) sp.set('subject_type', params.subjectType)
+    if (params.sourceType) sp.set('source_type', params.sourceType)
+    const res = await fetch(apiUrl(`/api/subject-library/summary?${sp.toString()}`), { signal: params.signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return { ok: true, summary: json.summary }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchSubjectLibraryRows(params: {
+  snapshotYear?: string
+  keyword?: string
+  subjectType?: 'all' | 'enterprise' | 'person'
+  sourceType?: 'all' | 'platform' | 'external'
+  subjectCategory?: string
+  role?: 'all' | 'seller' | 'buyer' | 'both'
+  batchId?: string
+  limit?: number
+  signal?: AbortSignal
+}): Promise<{ ok: boolean; rows: SubjectLibraryRowDto[]; total: number; error?: { message?: string } }> {
+  try {
+    const sp = new URLSearchParams()
+    if (params.snapshotYear) sp.set('snapshot_year', params.snapshotYear)
+    if (params.keyword) sp.set('keyword', params.keyword)
+    if (params.subjectType) sp.set('subject_type', params.subjectType)
+    if (params.sourceType) sp.set('source_type', params.sourceType)
+    if (params.subjectCategory) sp.set('subject_category', params.subjectCategory)
+    if (params.role) sp.set('role', params.role)
+    if (params.batchId) sp.set('batch_id', params.batchId)
+    sp.set('limit', String(Math.max(1, Math.min(2000, Math.floor(params.limit ?? 500)))))
+    const res = await fetch(apiUrl(`/api/subject-library/rows?${sp.toString()}`), { signal: params.signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, rows: [], total: 0, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      rows: Array.isArray(json.rows) ? (json.rows as SubjectLibraryRowDto[]) : [],
+      total: Number(json.total ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, rows: [], total: 0, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
