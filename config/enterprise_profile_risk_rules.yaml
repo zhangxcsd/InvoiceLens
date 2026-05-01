@@ -1,0 +1,32 @@
+version: "v1"
+description: "企业发票画像（enterprise_profile_agg）首期阈值，默认用于 dwd_inv_header 月度聚合。"
+
+enterprise_profile_risk_rules:
+  red_invoice_ratio:
+    warn: 0.20
+    high: 0.35
+    score_warn: 15
+    score_high: 30
+
+  amount_mom_change_abs:
+    warn: 0.50
+    high: 1.00
+    score_warn: 10
+    score_high: 20
+
+  count_mom_change_abs:
+    warn: 0.50
+    high: 1.00
+    score_warn: 8
+    score_high: 15
+
+  counterparty_concentration:
+    warn: 0.60
+    high: 0.80
+    score_warn: 12
+    score_high: 25
+
+  risk_level:
+    low_max: 29
+    medium_max: 59
+    high_min: 60

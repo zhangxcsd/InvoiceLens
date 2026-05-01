@@ -1,0 +1,29 @@
+# 税收分类编码 dim_tax_code.audit_risk_label 规则（可手工维护）
+# 匹配顺序：自上而下遍历 rules，跳过 enabled=false；对每条规则若 match_any 中任一条件命中，即采用该条 label 并停止；
+# 若全部未命中，则使用 default_label。
+version: 1
+description: 税收分类编码风险标签（NORMAL / HIGH）
+default_label: NORMAL
+
+rules:
+  - id: sensitive_goods_text
+    enabled: true
+    label: HIGH
+    match_any:
+      - type: field_contains
+        field: goods_short_name
+        keywords: [餐饮, 住宿, 会议, 咨询, 旅游, 娱乐, 烟, 酒]
+      - type: field_contains
+        field: goods_name
+        keywords: [餐饮, 住宿, 会议, 咨询, 旅游, 娱乐, 烟, 酒]
+      - type: field_contains
+        field: full_path
+        keywords: [会议展览, 餐饮住宿, 咨询服务]
+
+  # 可按编码前缀追加规则（示例，默认注释）
+  # - id: sample_prefix_high
+  #   enabled: false
+  #   label: HIGH
+  #   match_any:
+  #     - type: tax_code_prefix
+  #       prefixes: ["30701"]

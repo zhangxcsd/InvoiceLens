@@ -1,0 +1,35 @@
+version: 1
+description: 红字发票备注解析规则（按顺序匹配；命中即返回，不再继续）
+rules:
+  - name: positive_code_number
+    enabled: true
+    mode: fpdm_fphm
+    pattern: 对应正数发票代码\s*[:：]\s*(\d+)\s*号码\s*[:：]\s*(\d+)
+  - name: positive_code_invoice_number
+    enabled: true
+    mode: fpdm_fphm
+    pattern: 对应正数发票代码\s*[:：]\s*(\d+)\s*发票号码\s*[:：]\s*(\d+)
+  - name: positive_code_number_with_punct
+    enabled: true
+    mode: fpdm_fphm
+    pattern: 对应正数发票代码\s*([^，,\s:：]+)\s*[，,、]\s*号码\s*([^，,\s]+)
+  - name: blue_digital_ticket_number
+    enabled: true
+    mode: sdfphm
+    pattern: 被红冲蓝字数电票号码\s*[:：]\s*(\d{10,})
+  - name: blue_digital_invoice_number
+    enabled: true
+    mode: sdfphm
+    pattern: 被红冲蓝字数电发票号码\s*[:：]\s*(\d{10,})
+  - name: positive_invoice_number_only
+    enabled: true
+    mode: sdfphm
+    pattern: 对应正数发票号码\s*[:：]\s*(\d{10,})
+  - name: blue_number_then_code
+    enabled: true
+    mode: fphm_fpdm
+    pattern: 被红冲蓝字发票号码\s*[:：]\s*(\d+)\s+被红冲蓝字发票代码\s*[:：]\s*(\d+)
+  - name: blue_code_then_number
+    enabled: true
+    mode: fpdm_fphm
+    pattern: 被红冲蓝字发票代码\s*[:：]\s*(\d+)\s+被红冲蓝字发票号码\s*[:：]\s*(\d+)

@@ -1,0 +1,308 @@
+version: v1
+demo_change_vs_prev: -2.8
+dimensions:
+  - code: stability
+    name: 开票稳定性
+    weight: 0.25
+  - code: ticket_quality
+    name: 票据质量
+    weight: 0.2
+  - code: trade_structure
+    name: 交易结构
+    weight: 0.2
+  - code: compliance
+    name: 合规风险
+    weight: 0.2
+  - code: growth_quality
+    name: 成长质量
+    weight: 0.15
+indicators:
+  - code: stability_cv_amount
+    name: 月度开票金额波动率CV
+    dimension: stability
+    weight_in_dimension: 0.4
+    formula_text: std(月开票金额) / avg(月开票金额)
+    threshold_text: '<=0.25 正常；0.25~0.40 预警；0.40~0.60 预警；>0.60 异常'
+    data_source_text: dwd_inv_header（月度金额聚合）
+    demo_value: 0.63
+    score_bands:
+      - { min: 0, max: 0.25, score: 100, level: normal }
+      - { min: 0.25, max: 0.4, score: 80, level: warning }
+      - { min: 0.4, max: 0.6, score: 60, level: warning }
+      - { min: 0.6, max: 999, score: 30, level: alert }
+    explain_template: 当前值 {value}，波动显著偏高，疑似存在跨期或批量开票行为。
+    demo_evidence_count: 12
+    suggest_actions: [核查月末三日大额发票, 对比上期冲销票链路]
+    suspicion_mapping:
+      - when_level: warning
+        directions:
+          - code: seasonality_batch
+            title: 疑似季节性或批量开票
+            detail: 需检查是否由经营季节性导致，还是异常集中开票。
+            related_audit_topics: [monthly_spike_check, batch_issue_review]
+      - when_level: alert
+        directions:
+          - code: cross_period_risk
+            title: 疑似跨期确认风险
+            detail: 波动超过阈值，需核查收入确认是否集中在单月或月末。
+            related_audit_topics: [cross_period_recognition, month_end_spike]
+
+  - code: stability_continuity
+    name: 开票连续性
+    dimension: stability
+    weight_in_dimension: 0.3
+    formula_text: 近12月有开票月份数 / 12
+    threshold_text: '12月=100分；10-11月=80分；<10月=50分'
+    data_source_text: dwd_inv_header（按月去重）
+    demo_value: 0.83
+    score_bands:
+      - { min: 0.92, max: 1.01, score: 100, level: normal }
+      - { min: 0.83, max: 0.92, score: 80, level: warning }
+      - { min: 0, max: 0.83, score: 50, level: alert }
+    explain_template: 当前值 {value}，连续性不足，需关注是否存在异常停开或漏采集。
+    demo_evidence_count: 8
+    suggest_actions: [核查缺失月份原始导出, 排查导入链路是否漏表]
+    suspicion_mapping:
+      - when_level: warning
+        directions:
+          - code: intermittent_invoicing
+            title: 开票节奏间断
+            detail: 月度开票不连续，可能存在业务波动或数据漏采。
+            related_audit_topics: [continuity_check]
+      - when_level: alert
+        directions:
+          - code: data_gap_risk
+            title: 数据缺口风险
+            detail: 连续性明显不足，优先排查导入覆盖与业务真实性。
+            related_audit_topics: [source_coverage, data_integrity]
+
+  - code: stability_month_end_ratio
+    name: 月末开票占比
+    dimension: stability
+    weight_in_dimension: 0.3
+    formula_text: 月末3天开票金额 / 当月总金额（近12月均值）
+    threshold_text: '<=25% 正常；25%~40% 预警；>40% 异常'
+    data_source_text: dwd_inv_header（invoice_date, jshj）
+    demo_value: 0.46
+    score_bands:
+      - { min: 0, max: 0.25, score: 100, level: normal }
+      - { min: 0.25, max: 0.4, score: 70, level: warning }
+      - { min: 0.4, max: 999, score: 40, level: alert }
+    explain_template: 当前值 {value}，月末开票集中度高，需核查突击确认收入风险。
+    demo_evidence_count: 16
+    suggest_actions: [抽查月末发票样本, 核查合同与验收时间]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: month_end_rush
+            title: 月末突击开票风险
+            detail: 可能存在业绩考核驱动的集中开票与跨期调节。
+            related_audit_topics: [cutoff_test, month_end_spike]
+
+  - code: quality_red_rate
+    name: 红字率（金额口径）
+    dimension: ticket_quality
+    weight_in_dimension: 0.34
+    formula_text: 红字金额 / 开票总金额
+    threshold_text: '<=2% 正常；2%~5% 预警；>5% 异常'
+    data_source_text: dwd_inv_header（jshj<0 视为红字）
+    demo_value: 0.081
+    score_bands:
+      - { min: 0, max: 0.02, score: 100, level: normal }
+      - { min: 0.02, max: 0.05, score: 75, level: warning }
+      - { min: 0.05, max: 999, score: 35, level: alert }
+    explain_template: 当前值 {value}，红字率偏高，需核查冲销链路是否异常。
+    demo_evidence_count: 23
+    suggest_actions: [检查红蓝票关联成功率, 复核红字原因备注]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: reverse_chain_risk
+            title: 异常冲销风险
+            detail: 红字占比超阈值，可能存在频繁回冲或收入确认不稳。
+            related_audit_topics: [red_blue_link, reverse_reason_review]
+
+  - code: quality_void_rate
+    name: 作废率（张数口径）
+    dimension: ticket_quality
+    weight_in_dimension: 0.33
+    formula_text: 作废发票张数 / 发票总张数
+    threshold_text: '<=1% 正常；1%~3% 预警；>3% 异常'
+    data_source_text: dwd_inv_header（作废标识字段）
+    demo_value: 0.018
+    score_bands:
+      - { min: 0, max: 0.01, score: 100, level: normal }
+      - { min: 0.01, max: 0.03, score: 75, level: warning }
+      - { min: 0.03, max: 999, score: 30, level: alert }
+    explain_template: 当前值 {value}，作废率偏高，可能反映开票流程控制薄弱。
+    demo_evidence_count: 9
+    suggest_actions: [核查作废原因分类, 检查作废审批链]
+    suspicion_mapping:
+      - when_level: warning
+        directions:
+          - code: process_control_weak
+            title: 开票流程控制偏弱
+            detail: 作废率偏高可能来自业务录入错误与审核不足。
+            related_audit_topics: [void_reason_review]
+
+  - code: quality_tax_rate_abnormal
+    name: 税率异常占比
+    dimension: ticket_quality
+    weight_in_dimension: 0.33
+    formula_text: 异常税率发票张数 / 发票总张数
+    threshold_text: '<=0.5% 正常；0.5%~1.5% 预警；>1.5% 异常'
+    data_source_text: dwd_inv_detail（税率列）
+    demo_value: 0.012
+    score_bands:
+      - { min: 0, max: 0.005, score: 100, level: normal }
+      - { min: 0.005, max: 0.015, score: 70, level: warning }
+      - { min: 0.015, max: 999, score: 30, level: alert }
+    explain_template: 当前值 {value}，税率分布偏离常态，建议核查税率适用口径。
+    demo_evidence_count: 14
+    suggest_actions: [对比历史税率结构, 抽检异常税率发票]
+    suspicion_mapping:
+      - when_level: warning
+        directions:
+          - code: tax_rate_shift
+            title: 税率结构突变
+            detail: 可能出现税率适配偏差或业务结构变化。
+            related_audit_topics: [tax_rate_distribution]
+
+  - code: structure_cr5
+    name: 客户集中度CR5
+    dimension: trade_structure
+    weight_in_dimension: 0.4
+    formula_text: 前5客户开票金额 / 总金额
+    threshold_text: '<=45% 正常；45%~65% 预警；>65% 异常'
+    data_source_text: dwd_inv_header（购方名称聚合）
+    demo_value: 0.72
+    score_bands:
+      - { min: 0, max: 0.45, score: 100, level: normal }
+      - { min: 0.45, max: 0.65, score: 70, level: warning }
+      - { min: 0.65, max: 999, score: 35, level: alert }
+    explain_template: 当前值 {value}，客户集中度偏高，对单一客户依赖风险上升。
+    demo_evidence_count: 5
+    suggest_actions: [查看Top客户交易趋势, 核查关联方属性]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: customer_dependency
+            title: 单一客户依赖风险
+            detail: 交易过度集中于少数客户，抗风险能力下降。
+            related_audit_topics: [customer_concentration, related_party_check]
+
+  - code: structure_hhi
+    name: 客户HHI指数
+    dimension: trade_structure
+    weight_in_dimension: 0.3
+    formula_text: Σ(客户金额占比^2)
+    threshold_text: '<=0.12 正常；0.12~0.18 预警；>0.18 异常'
+    data_source_text: dwd_inv_header（购方金额占比）
+    demo_value: 0.21
+    score_bands:
+      - { min: 0, max: 0.12, score: 100, level: normal }
+      - { min: 0.12, max: 0.18, score: 75, level: warning }
+      - { min: 0.18, max: 999, score: 40, level: alert }
+    explain_template: 当前值 {value}，结构失衡明显，建议关注交易方多样性。
+    demo_evidence_count: 5
+    suggest_actions: [查看客户分层结构, 评估集中度改善计划]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: structure_imbalance
+            title: 交易结构失衡
+            detail: 业务集中度高，需关注长期可持续性与关联方风险。
+            related_audit_topics: [hhi_monitor]
+
+  - code: structure_new_customer_ratio
+    name: 新增客户占比
+    dimension: trade_structure
+    weight_in_dimension: 0.3
+    formula_text: 本期首次出现客户数 / 本期客户总数
+    threshold_text: '5%~25% 正常；25%~40% 预警；>40% 异常'
+    data_source_text: dwd_inv_header（客户首次出现口径）
+    demo_value: 0.38
+    score_bands:
+      - { min: 0.05, max: 0.25, score: 100, level: normal }
+      - { min: 0.25, max: 0.4, score: 70, level: warning }
+      - { min: 0.4, max: 999, score: 35, level: alert }
+      - { min: 0, max: 0.05, score: 70, level: warning }
+    explain_template: 当前值 {value}，新增客户占比偏高，需核查客户画像是否突变。
+    demo_evidence_count: 11
+    suggest_actions: [核验新增客户资质, 对比新增客户开票金额分布]
+    suspicion_mapping:
+      - when_level: warning
+        directions:
+          - code: customer_profile_shift
+            title: 客户画像快速变化
+            detail: 新增客户占比偏高，需关注渠道冲量或短期扩张真实性。
+            related_audit_topics: [new_customer_review]
+
+  - code: compliance_tax_burden_deviation
+    name: 税负率偏离度
+    dimension: compliance
+    weight_in_dimension: 0.45
+    formula_text: '|本期税负率-历史中位税负率| / 历史中位税负率'
+    threshold_text: '<=10% 正常；10%~20% 预警；>20% 异常'
+    data_source_text: dwd_inv_header（税额/金额）
+    demo_value: 0.24
+    score_bands:
+      - { min: 0, max: 0.1, score: 100, level: normal }
+      - { min: 0.1, max: 0.2, score: 70, level: warning }
+      - { min: 0.2, max: 999, score: 35, level: alert }
+    explain_template: 当前值 {value}，税负率偏离较大，建议核查税务合规风险。
+    demo_evidence_count: 7
+    suggest_actions: [复核税率适配, 按业务类型拆解税负率]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: tax_compliance_risk
+            title: 税务合规偏离风险
+            detail: 税负率偏离历史中枢，可能存在结构性异常或口径变动。
+            related_audit_topics: [tax_burden_deviation]
+
+  - code: compliance_night_holiday_ratio
+    name: 夜间/节假日开票占比
+    dimension: compliance
+    weight_in_dimension: 0.3
+    formula_text: 夜间及节假日开票张数 / 总张数
+    threshold_text: '<=3% 正常；3%~8% 预警；>8% 异常'
+    data_source_text: dwd_inv_header（invoice_date + 开票时段）
+    demo_value: 0.094
+    score_bands:
+      - { min: 0, max: 0.03, score: 100, level: normal }
+      - { min: 0.03, max: 0.08, score: 70, level: warning }
+      - { min: 0.08, max: 999, score: 30, level: alert }
+    explain_template: 当前值 {value}，高风险时段开票占比偏高，需结合样本核验业务真实性。
+    demo_evidence_count: 18
+    suggest_actions: [查看高风险时段发票样本, 核查人工审批日志]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: atypical_time_issue
+            title: 非典型时段开票风险
+            detail: 深夜或节假日开票偏多，需核查是否存在批量或自动化异常。
+            related_audit_topics: [night_holiday_issue]
+
+  - code: growth_quality_index
+    name: 增长质量指数
+    dimension: growth_quality
+    weight_in_dimension: 1.0
+    formula_text: 收入增长率 - 客户集中度变化惩罚项
+    threshold_text: '>=0.08 正常；0.03~0.08 预警；<0.03 异常'
+    data_source_text: dwd_inv_header（同比收入与集中度）
+    demo_value: 0.028
+    score_bands:
+      - { min: 0.08, max: 999, score: 100, level: normal }
+      - { min: 0.03, max: 0.08, score: 70, level: warning }
+      - { min: -999, max: 0.03, score: 35, level: alert }
+    explain_template: 当前值 {value}，增长质量偏弱，增长可能被集中度抬升稀释。
+    demo_evidence_count: 6
+    suggest_actions: [拆解增长来源结构, 检查高风险业务占比变化]
+    suspicion_mapping:
+      - when_level: alert
+        directions:
+          - code: low_quality_growth
+            title: 增长可持续性不足
+            detail: 收入增长未与结构优化同步，需关注质量型增长风险。
+            related_audit_topics: [growth_quality]
