@@ -3,9 +3,12 @@ from __future__ import annotations
 import errno
 import json
 import os
+from datetime import date, datetime, time
+from decimal import Decimal
 import re
 import tempfile
 import shutil
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +20,7 @@ import yaml
 
 from config.field_mapping import get_field_mapping_config_info, save_field_mapping_config
 from src.ingestion.excel_to_ods import load_excel_batch_to_ods
+from src.local_api.listen_port_probe import assert_listen_port_free_or_exit
 from src.local_api.multipart_form import MultipartForm, parse_multipart_form_data
 from src.services.header_coverage import analyze_excel_path
 
@@ -44,8 +48,168 @@ def _read_sheet_mapping_yaml() -> dict[str, str]:
     return {}
 
 
+def _risk_rules_path() -> Path:
+    return _project_root() / "config" / "dim_tax_code_risk_rules.yaml"
+
+
+def _subject_category_rules_path() -> Path:
+    new_path = _project_root() / "config" / "subject_category_rules.yaml"
+    old_path = _project_root() / "config" / "subject_category.yaml"
+    return new_path if new_path.exists() or not old_path.exists() else old_path
+
+
+_SUBJECT_REGISTER_AUTHORITIES = {"机构编制", "民政", "工商", "其他"}
+
+
+def _normalize_register_authority(value: Any) -> str:
+    v = str(value or "").strip()
+    if not v:
+        return "其他"
+    return v if v in _SUBJECT_REGISTER_AUTHORITIES else "其他"
+
+
+def _normalize_non_negative_int(value: Any, default: int = 0) -> int:
+    try:
+        n = int(str(value).strip())
+    except Exception:
+        return default
+    return n if n >= 0 else default
+
+
+def _first_present(obj: dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        if k in obj:
+            return obj.get(k)
+    return None
+
+
+def _read_dim_tax_risk_rules_yaml_text() -> str:
+    p = _risk_rules_path()
+    if not p.exists():
+        return ""
+    return p.read_text(encoding="utf-8")
+
+
+def _save_dim_tax_risk_rules_yaml_text(yaml_text: str) -> Path:
+    p = _risk_rules_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # 先做 YAML 语法校验，避免写入损坏配置
+    loaded = yaml.safe_load(yaml_text) if yaml_text.strip() else {}
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        raise ValueError("YAML 顶层必须为对象（mapping）")
+    p.write_text(yaml_text, encoding="utf-8")
+    return p
+
+
+def _read_subject_category_rules() -> dict[str, Any]:
+    p = _subject_category_rules_path()
+    if not p.exists():
+        return {"standard_version": "GB32100-2015", "categories": []}
+    raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("subject_category_rules.yaml 顶层必须是对象")
+    cats = raw.get("categories")
+    if cats is None:
+        raw["categories"] = []
+    elif not isinstance(cats, list):
+        raise ValueError("subject_category_rules.yaml.categories 必须为数组")
+    else:
+        normalized: list[dict[str, Any]] = []
+        for idx, it in enumerate(cats):
+            if not isinstance(it, dict):
+                raise ValueError(f"subject_category_rules.yaml.categories[{idx}] 必须为对象")
+            normalized.append(
+                {
+                    "category_code": str(it.get("category_code") or "").strip(),
+                    "category_name": str(it.get("category_name") or "").strip(),
+                    "gb_code": str(it.get("gb_code") or "").strip(),
+                    "register_authority": _normalize_register_authority(it.get("register_authority")),
+                    "legal_form": str(it.get("legal_form") or "").strip(),
+                    "invoice_scene": str(it.get("invoice_scene") or "").strip(),
+                    "default_risk_focus": str(it.get("default_risk_focus") or "").strip(),
+                    "coverage_count": _normalize_non_negative_int(it.get("coverage_count"), 0),
+                    "enabled": bool(it.get("enabled", True)),
+                }
+            )
+        raw["categories"] = normalized
+    return raw
+
+
+def _save_subject_category_rules(data: dict[str, Any]) -> Path:
+    if not isinstance(data, dict):
+        raise ValueError("请求体必须为对象")
+    categories = data.get("categories")
+    if not isinstance(categories, list):
+        # 兼容旧前端请求体：rows
+        categories = data.get("rows")
+    if not isinstance(categories, list):
+        raise ValueError("categories 必须为数组")
+    seen: set[str] = set()
+    norm_categories: list[dict[str, Any]] = []
+    for idx, it in enumerate(categories):
+        if not isinstance(it, dict):
+            raise ValueError(f"categories[{idx}] 必须为对象")
+        # 兼容 snake_case + camelCase
+        code = str(_first_present(it, "category_code", "categoryCode") or "").strip()
+        name = str(_first_present(it, "category_name", "categoryName") or "").strip()
+        if not code:
+            raise ValueError(f"categories[{idx}] 缺少 category_code")
+        if code in seen:
+            raise ValueError(f"category_code 重复：{code}")
+        if not name:
+            raise ValueError(f"categories[{idx}] 缺少 category_name")
+        register_authority = _normalize_register_authority(
+            _first_present(it, "register_authority", "registerAuthority")
+        )
+        seen.add(code)
+        norm_categories.append(
+            {
+                "category_code": code,
+                "category_name": name,
+                "gb_code": str(_first_present(it, "gb_code", "gbCode") or "").strip(),
+                "register_authority": register_authority,
+                "legal_form": str(_first_present(it, "legal_form", "legalForm") or "").strip(),
+                "invoice_scene": str(_first_present(it, "invoice_scene", "invoiceScene") or "").strip(),
+                "default_risk_focus": str(
+                    _first_present(it, "default_risk_focus", "defaultRiskFocus") or ""
+                ).strip(),
+                "coverage_count": _normalize_non_negative_int(
+                    _first_present(it, "coverage_count", "coverageCount"), 0
+                ),
+                "enabled": bool(_first_present(it, "enabled") if "enabled" in it else True),
+            }
+        )
+    payload = {
+        "standard_version": str(data.get("standard_version") or "GB32100-2015").strip() or "GB32100-2015",
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "categories": norm_categories,
+    }
+    p = _subject_category_rules_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    txt = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+    p.write_text(txt, encoding="utf-8")
+    return p
+
+
+def _json_default(o: Any) -> Any:
+    """DuckDB 行中常见 Decimal / 日期等，标准 json 无法序列化。"""
+    if isinstance(o, Decimal):
+        return float(o)
+    if isinstance(o, datetime):
+        return o.isoformat()
+    if isinstance(o, date):
+        return o.isoformat()
+    if isinstance(o, time):
+        return o.isoformat()
+    if isinstance(o, (bytes, bytearray)):
+        return o.decode("utf-8", errors="replace")
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def _json(obj: Any) -> bytes:
-    return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    return json.dumps(obj, ensure_ascii=False, default=_json_default).encode("utf-8")
 
 
 def _parse_mb_env(name: str, default: int, *, cap: int) -> int:
@@ -198,6 +362,13 @@ def _norm_target_keys_tuple(v: list[str] | None) -> tuple[str, ...]:
 class Handler(BaseHTTPRequestHandler):
     server_version = "InvoiceLensLocalAPI/0.1"
 
+    def log_message(self, fmt: str, *args: Any) -> None:
+        """避免 stderr 句柄异常导致请求响应中断。"""
+        try:
+            super().log_message(fmt, *args)
+        except Exception:
+            return
+
     def _send(self, status: int, body: dict, *, cors: bool = True) -> None:
         data = _json(body)
         try:
@@ -311,6 +482,276 @@ class Handler(BaseHTTPRequestHandler):
                         "ok": False,
                         "error": {
                             "message": "读取字段映射失败",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/dim-tax-code/risk-rules":
+            try:
+                raw = _read_dim_tax_risk_rules_yaml_text()
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "source": str(_risk_rules_path()),
+                        "yaml_text": raw,
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": "读取敏感类目规则失败",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-category/rules":
+            try:
+                payload = _read_subject_category_rules()
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "source": str(_subject_category_rules_path()),
+                        "standard_version": str(payload.get("standard_version") or "GB32100-2015"),
+                        "updated_at": str(payload.get("updated_at") or ""),
+                        "categories": payload.get("categories") if isinstance(payload.get("categories"), list) else [],
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": "读取主体类别规则失败",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-category/recompute/latest":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+
+                conn = get_conn()
+                init_all_tables(conn)
+                latest = conn.execute(
+                    """
+                    SELECT
+                        snapshot_id,
+                        subject_build_run_id,
+                        MAX(created_at) AS created_at
+                    FROM dim_subject_category_snapshot
+                    GROUP BY snapshot_id, subject_build_run_id
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if not latest:
+                    self._send(
+                        200,
+                        {
+                            "ok": True,
+                            "latest": None,
+                            "message": "暂无主体重算记录",
+                        },
+                    )
+                    return
+                snapshot_id = str(latest[0] or "")
+                run_id = str(latest[1] or "")
+                created_at = latest[2].isoformat() if latest[2] is not None else ""
+
+                cat_agg = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS total,
+                        SUM(CASE WHEN org_category IS NOT NULL AND org_category <> '' THEN 1 ELSE 0 END) AS matched,
+                        SUM(CASE WHEN infer_needs_review THEN 1 ELSE 0 END) AS needs_review,
+                        SUM(CASE WHEN category_status_note = 'category_disabled_at_run' THEN 1 ELSE 0 END) AS disabled_blocked
+                    FROM dim_subject_category_snapshot
+                    WHERE snapshot_id = ?
+                    """,
+                    [snapshot_id],
+                ).fetchone()
+                cat_by_code = conn.execute(
+                    """
+                    SELECT
+                        COALESCE(org_category, 'UNCLASSIFIED') AS org_category,
+                        COUNT(*) AS cnt
+                    FROM dim_subject_category_snapshot
+                    WHERE snapshot_id = ?
+                    GROUP BY 1
+                    ORDER BY cnt DESC, org_category ASC
+                    """,
+                    [snapshot_id],
+                ).fetchall()
+                rel_agg = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) AS relation_total,
+                        COALESCE(SUM(trade_invoice_count), 0) AS trade_invoice_count_sum,
+                        COALESCE(SUM(trade_amount_jshj), 0) AS trade_amount_jshj_sum
+                    FROM dim_subject_relation_snapshot
+                    WHERE snapshot_id = ?
+                    """,
+                    [snapshot_id],
+                ).fetchone()
+
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "latest": {
+                            "run_id": run_id,
+                            "snapshot_id": snapshot_id,
+                            "created_at": created_at,
+                            "category_summary": {
+                                "total": int(cat_agg[0] or 0),
+                                "matched": int(cat_agg[1] or 0),
+                                "needs_review": int(cat_agg[2] or 0),
+                                "disabled_blocked": int(cat_agg[3] or 0),
+                                "by_org_category": [
+                                    {
+                                        "org_category": str(r[0] or "UNCLASSIFIED"),
+                                        "count": int(r[1] or 0),
+                                    }
+                                    for r in cat_by_code
+                                ],
+                            },
+                            "relation_summary": {
+                                "relation_total": int(rel_agg[0] or 0),
+                                "trade_invoice_count_sum": int(rel_agg[1] or 0),
+                                "trade_amount_jshj_sum": float(rel_agg[2] or 0),
+                            },
+                        },
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取主体重算最新摘要失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-library/summary":
+            qs = parse_qs(parsed.query or "")
+            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip()
+            subject_type = (qs.get("subject_type", ["all"])[0] or "all").strip()
+            source_type = (qs.get("source_type", ["all"])[0] or "all").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library import api_subject_library_summary
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_subject_library_summary(
+                    conn,
+                    snapshot_year=snapshot_year,
+                    subject_type=subject_type,
+                    source_type=source_type,
+                )
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取主体库汇总失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-library/rows":
+            qs = parse_qs(parsed.query or "")
+            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip()
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
+            subject_type = (qs.get("subject_type", ["all"])[0] or "all").strip()
+            source_type = (qs.get("source_type", ["all"])[0] or "all").strip()
+            subject_category = (qs.get("subject_category", ["all"])[0] or "all").strip()
+            role = (qs.get("role", ["all"])[0] or "all").strip()
+            batch_id = (qs.get("batch_id", [""])[0] or "").strip()
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except Exception:
+                limit = 500
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library import api_subject_library_rows
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_subject_library_rows(
+                    conn,
+                    snapshot_year=snapshot_year,
+                    keyword=keyword,
+                    subject_type=subject_type,
+                    source_type=source_type,
+                    subject_category=subject_category,
+                    role=role,
+                    batch_id=batch_id,
+                    limit=limit,
+                )
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取主体库明细失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/dim/task-runs":
+            qs = parse_qs(parsed.query or "")
+            task_code = (qs.get("task_code", [""])[0] or "").strip() or None
+            limit_raw = (qs.get("limit", ["20"])[0] or "20").strip()
+            try:
+                limit = int(limit_raw)
+            except Exception:
+                limit = 20
+            try:
+                from src.local_api.dwd_to_dim_build import list_dim_task_runs
+
+                payload = list_dim_task_runs(task_code=task_code, limit=limit)
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": "读取 DWD→DIM 任务运行记录失败",
                             "exception_type": type(exc).__name__,
                             "detail": str(exc),
                         },
@@ -482,6 +923,7 @@ class Handler(BaseHTTPRequestHandler):
             batch_id = (qs.get("batch_id", [""])[0] or "").strip()
             session_id = (qs.get("session_id", [""])[0] or "").strip()
             layer = (qs.get("layer", ["detail"])[0] or "detail").strip().lower()
+            dwd_table = (qs.get("dwd_table", [""])[0] or "").strip()
             table_type = (qs.get("table_type", [""])[0] or "").strip()
             try:
                 limit = int((qs.get("limit", ["200"])[0] or "200").strip() or "200")
@@ -506,6 +948,7 @@ class Handler(BaseHTTPRequestHandler):
                     batch_id=batch_id,
                     session_id=session_id or None,
                     layer=layer,
+                    dwd_table=dwd_table or None,
                     table_type=table_type or None,
                     limit=limit,
                     cursor=cursor_obj if isinstance(cursor_obj, dict) else None,
@@ -522,11 +965,397 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if payload.get("ok") else 503, payload)
             return
 
+        if path == "/api/quality/red-invoice-overview":
+            qs = parse_qs(parsed.query or "")
+            batch_id = (qs.get("batch_id", [""])[0] or "").strip()
+            session_id = (qs.get("session_id", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.data_quality import load_red_invoice_quality_overview
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = load_red_invoice_quality_overview(
+                    conn,
+                    batch_id=batch_id or None,
+                    session_id=session_id or None,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"无法读取红票质量概览：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 503, payload)
+            return
+
+        if path == "/api/quality/red-invoice-details":
+            qs = parse_qs(parsed.query or "")
+            batch_id = (qs.get("batch_id", [""])[0] or "").strip()
+            session_id = (qs.get("session_id", [""])[0] or "").strip()
+            only_unmatched = (qs.get("only_unmatched", ["1"])[0] or "1").strip().lower() not in {"0", "false"}
+            try:
+                limit = int((qs.get("limit", ["200"])[0] or "200").strip() or "200")
+            except Exception:
+                limit = 200
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.data_quality import load_red_invoice_quality_details
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = load_red_invoice_quality_details(
+                    conn,
+                    batch_id=batch_id or None,
+                    session_id=session_id or None,
+                    only_unmatched=only_unmatched,
+                    limit=limit,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"无法读取红票质量明细：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 503, payload)
+            return
+
+        if path == "/api/quality/health-score":
+            qs = parse_qs(parsed.query or "")
+            batch_id = (qs.get("batch_id", [""])[0] or "").strip()
+            session_id = (qs.get("session_id", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.data_quality import load_health_score_snapshot
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = load_health_score_snapshot(
+                    conn,
+                    batch_id=batch_id or None,
+                    session_id=session_id or None,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"无法读取健康度评价：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 503, payload)
+            return
+
+        if path == "/api/dim-tax-code/rows":
+            qs = parse_qs(parsed.query or "")
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
+            clean_status = (qs.get("clean_status", ["all"])[0] or "all").strip().lower()
+            risk = (qs.get("risk", ["all"])[0] or "all").strip()
+            import_batch_id = (qs.get("import_batch_id", [""])[0] or "").strip()
+            import_session_id = (qs.get("import_session_id", [""])[0] or "").strip()
+            abnormal_only = (qs.get("abnormal_only", ["0"])[0] or "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            try:
+                from src.local_api.dim_tax_code_import import api_list_dim_tax_code_rows
+
+                payload = api_list_dim_tax_code_rows(
+                    keyword=keyword,
+                    clean_status=clean_status,
+                    risk=risk,
+                    import_batch_id=import_batch_id,
+                    import_session_id=import_session_id,
+                    abnormal_only=abnormal_only,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"查询 dim_tax_code 失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload)
+            return
+
+        if path == "/api/dim-tax-code/filter-options":
+            qs = parse_qs(parsed.query or "")
+            import_batch_id = (qs.get("import_batch_id", [""])[0] or "").strip()
+            try:
+                from src.local_api.dim_tax_code_import import api_list_dim_tax_code_filter_options
+
+                payload = api_list_dim_tax_code_filter_options(import_batch_id=import_batch_id)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"查询 dim_tax_code 筛选项失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload)
+            return
+
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        if path == "/api/dim-tax-code/import":
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            data_version = ""
+            source_path = ""
+            strategy = "full_rebuild"
+            upload_filename: str | None = None
+            file_bytes: bytes | None = None
+            if "multipart/form-data" in ctype:
+                fs, err = _parse_multipart_fields(self, for_batch=False)
+                if err:
+                    self._send(400, err)
+                    return
+                assert fs is not None
+                data_version = str(_multipart_first_field(fs, "data_version") or "").strip()
+                source_path = str(_multipart_first_field(fs, "source_path") or "").strip()
+                strategy = str(_multipart_first_field(fs, "strategy") or "").strip() or "full_rebuild"
+                for item in getattr(fs, "list", []) or []:
+                    if getattr(item, "name", None) == "file" and getattr(item, "filename", None):
+                        upload_filename = str(getattr(item, "filename"))
+                        rawv = getattr(item, "value", b"")
+                        file_bytes = rawv if isinstance(rawv, bytes) else bytes(rawv)
+                        break
+            else:
+                body = self._read_json()
+                data_version = str(body.get("data_version") or "").strip()
+                source_path = str(body.get("source_path") or "").strip()
+                strategy = str(body.get("strategy") or "").strip() or "full_rebuild"
+            if not data_version:
+                self._send(
+                    400,
+                    {"ok": False, "error": {"message": "data_version 不能为空"}},
+                )
+                return
+            if not source_path and not file_bytes:
+                self._send(
+                    400,
+                    {"ok": False, "error": {"message": "须填写 source_path 或上传文件（multipart 字段名 file）"}},
+                )
+                return
+            try:
+                from src.local_api.dim_tax_code_import import run_dim_tax_code_import
+
+                payload = run_dim_tax_code_import(
+                    data_version=data_version,
+                    source_path=source_path,
+                    strategy=strategy,
+                    file_bytes=file_bytes,
+                    upload_filename=upload_filename,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "implemented": True,
+                    "message": f"dim_tax_code 导入异常：{type(exc).__name__}: {exc}",
+                    "error": {"message": str(exc)},
+                }
+            self._send(200, payload)
+            return
+
+        if path == "/api/dim-tax-code/reapply-risk-rules":
+            try:
+                from src.local_api.dim_tax_code_import import reapply_dim_tax_code_audit_risk_from_yaml
+
+                payload = reapply_dim_tax_code_audit_risk_from_yaml()
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "message": f"重算风险标签失败：{type(exc).__name__}: {exc}",
+                    "error": {"message": str(exc)},
+                }
+            self._send(200, payload)
+            return
+
+        if path == "/api/dim-tax-code/risk-rules":
+            body = self._read_json()
+            yaml_text = str(body.get("yaml_text") or "")
+            try:
+                saved = _save_dim_tax_risk_rules_yaml_text(yaml_text)
+                from src.local_api.dim_tax_code_risk_rules import invalidate_risk_config_cache
+
+                invalidate_risk_config_cache()
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "message": "敏感类目规则已保存",
+                        "source": str(saved),
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    400,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"保存敏感类目规则失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-category/rules":
+            body = self._read_json()
+            try:
+                saved = _save_subject_category_rules(body)
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "message": "主体类别规则已保存",
+                        "source": str(saved),
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    400,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"保存主体类别规则失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-category/recompute":
+            body = self._read_json()
+            with_relations = bool(body.get("with_relations", False))
+            run_id = str(body.get("run_id") or "").strip() or None
+            snapshot_id = str(body.get("snapshot_id") or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.subject_category.recompute import recompute_org_subject_categories
+                from src.subject_category.recompute import recompute_org_subject_categories_and_relations
+
+                conn = get_conn()
+                init_all_tables(conn)
+                if with_relations:
+                    result = recompute_org_subject_categories_and_relations(
+                        conn,
+                        run_id=run_id,
+                        snapshot_id=snapshot_id,
+                    )
+                else:
+                    result = recompute_org_subject_categories(
+                        conn,
+                        run_id=run_id,
+                        snapshot_id=snapshot_id,
+                    )
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "message": "主体分类重算完成" + ("（含关联重建）" if with_relations else ""),
+                        "with_relations": with_relations,
+                        "result": result,
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"主体分类重算失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/subject-library/ingest-from-dwd":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library_dwd_ingest import ingest_dim_subject_master_from_dwd
+
+                conn = get_conn()
+                init_all_tables(conn)
+                result = ingest_dim_subject_master_from_dwd(conn)
+                if not result.get("ok"):
+                    self._send(
+                        400,
+                        {
+                            "ok": False,
+                            "error": {
+                                "message": str(result.get("error") or "DWD 归集失败"),
+                            },
+                            "result": result,
+                        },
+                    )
+                    return
+                self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "message": f"已从 dwd_inv_header 归集 {result.get('subjects_upserted', 0)} 个主体（扫描 {result.get('header_rows_scanned', 0)} 条发票头）",
+                        "result": result,
+                    },
+                )
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"DWD 归集失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/quality/red-invoice-parse":
+            body = self._read_json()
+            bz = body.get("bz")
+            try:
+                from src.etl.cleaner import parse_red_bz_debug
+
+                payload = parse_red_bz_debug(None if bz is None else str(bz))
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "matched": False,
+                    "error": {
+                        "message": f"备注解析调试失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload)
+            return
+
         if path == "/api/field-mapping":
             body = self._read_json()
             defaults = body.get("default_fields")
@@ -825,6 +1654,198 @@ class Handler(BaseHTTPRequestHandler):
                 ec = str(err.get("code") or "")
                 code = 400 if ec in {"session_not_found"} else 500
             self._send(code, payload, cors=True)
+            return
+        if path == "/api/dim/build-enterprise-profile":
+            body = self._read_json()
+            stat_month = str(body.get("stat_month") or "").strip() or None
+            import_batch_id = str(body.get("import_batch_id") or body.get("batch_id") or "").strip() or None
+            calc_batch_id = str(body.get("calc_batch_id") or "").strip() or None
+            source_scope = str(body.get("source_scope") or "").strip() or None
+            subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
+            run_id = str(body.get("run_id") or "").strip() or None
+            t0 = time.time()
+            try:
+                from src.local_api.dwd_to_dim_build import build_dim_enterprise_profile, record_dim_task_run
+
+                payload = build_dim_enterprise_profile(
+                    stat_month=stat_month,
+                    import_batch_id=import_batch_id,
+                    calc_batch_id=calc_batch_id,
+                    source_scope=source_scope,
+                    subject_category_scope=subject_category_scope,
+                    run_id=run_id,
+                )
+                rid = str(payload.get("run_id") or run_id or f"enterprise_profile_{int(t0)}")
+                rows = int(payload.get("profile_rows_written") or 0)
+                record_dim_task_run(
+                    run_id=rid,
+                    task_code="enterprise_profile_agg",
+                    task_name="企业发票画像聚合",
+                    status="success" if payload.get("ok") else "failed",
+                    run_mode="incremental",
+                    params={
+                        "stat_month": stat_month,
+                        "import_batch_id": import_batch_id,
+                        "calc_batch_id": calc_batch_id,
+                        "source_scope": source_scope,
+                    },
+                    result=payload,
+                    rows_affected=rows,
+                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
+                    calc_batch_id=str(payload.get("calc_batch_id") or calc_batch_id or ""),
+                    import_batch_id=import_batch_id,
+                    started_at_ts=t0,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"DWD→DIM 企业画像构建异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+                try:
+                    from src.local_api.dwd_to_dim_build import record_dim_task_run
+
+                    record_dim_task_run(
+                        run_id=run_id or f"enterprise_profile_{int(t0)}",
+                        task_code="enterprise_profile_agg",
+                        task_name="企业发票画像聚合",
+                        status="failed",
+                        run_mode="incremental",
+                        params={
+                            "stat_month": stat_month,
+                            "import_batch_id": import_batch_id,
+                            "calc_batch_id": calc_batch_id,
+                            "source_scope": source_scope,
+                        },
+                        result=payload,
+                        rows_affected=0,
+                        error_message=str(exc),
+                        calc_batch_id=calc_batch_id,
+                        import_batch_id=import_batch_id,
+                        started_at_ts=t0,
+                    )
+                except Exception:
+                    pass
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+        if path == "/api/dim/build-enterprise-master":
+            body = self._read_json()
+            import_batch_id = str(body.get("import_batch_id") or body.get("batch_id") or "").strip() or None
+            subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
+            run_id = str(body.get("run_id") or "").strip() or None
+            t0 = time.time()
+            try:
+                from src.local_api.dwd_to_dim_build import build_dim_enterprise_master_task, record_dim_task_run
+
+                payload = build_dim_enterprise_master_task(
+                    import_batch_id=import_batch_id,
+                    subject_category_scope=subject_category_scope,
+                    run_id=run_id,
+                )
+                rid = str(payload.get("run_id") or run_id or f"enterprise_master_{int(t0)}")
+                rows = int(payload.get("rows_affected") or 0)
+                record_dim_task_run(
+                    run_id=rid,
+                    task_code="enterprise_master_build",
+                    task_name="全量企业主数据构建",
+                    status="success" if payload.get("ok") else "failed",
+                    run_mode="incremental",
+                    params={"import_batch_id": import_batch_id},
+                    result=payload,
+                    rows_affected=rows,
+                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
+                    import_batch_id=import_batch_id,
+                    started_at_ts=t0,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"DWD→DIM 企业主数据构建异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+                try:
+                    from src.local_api.dwd_to_dim_build import record_dim_task_run
+
+                    record_dim_task_run(
+                        run_id=run_id or f"enterprise_master_{int(t0)}",
+                        task_code="enterprise_master_build",
+                        task_name="全量企业主数据构建",
+                        status="failed",
+                        run_mode="incremental",
+                        params={"import_batch_id": import_batch_id},
+                        result=payload,
+                        rows_affected=0,
+                        error_message=str(exc),
+                        import_batch_id=import_batch_id,
+                        started_at_ts=t0,
+                    )
+                except Exception:
+                    pass
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+        if path == "/api/dim/build-enterprise-mapping":
+            body = self._read_json()
+            import_batch_id = str(body.get("import_batch_id") or body.get("batch_id") or "").strip() or None
+            subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
+            run_id = str(body.get("run_id") or "").strip() or None
+            t0 = time.time()
+            try:
+                from src.local_api.dwd_to_dim_build import build_dim_enterprise_mapping_task, record_dim_task_run
+
+                payload = build_dim_enterprise_mapping_task(
+                    import_batch_id=import_batch_id,
+                    subject_category_scope=subject_category_scope,
+                    run_id=run_id,
+                )
+                rid = str(payload.get("run_id") or run_id or f"enterprise_mapping_{int(t0)}")
+                rows = int(payload.get("rows_affected") or 0)
+                record_dim_task_run(
+                    run_id=rid,
+                    task_code="enterprise_mapping_check",
+                    task_name="企业↔票主体映射检查",
+                    status="success" if payload.get("ok") else "failed",
+                    run_mode="incremental",
+                    params={"import_batch_id": import_batch_id},
+                    result=payload,
+                    rows_affected=rows,
+                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
+                    import_batch_id=import_batch_id,
+                    started_at_ts=t0,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"DWD→DIM 企业映射构建异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+                try:
+                    from src.local_api.dwd_to_dim_build import record_dim_task_run
+
+                    record_dim_task_run(
+                        run_id=run_id or f"enterprise_mapping_{int(t0)}",
+                        task_code="enterprise_mapping_check",
+                        task_name="企业↔票主体映射检查",
+                        status="failed",
+                        run_mode="incremental",
+                        params={"import_batch_id": import_batch_id},
+                        result=payload,
+                        rows_affected=0,
+                        error_message=str(exc),
+                        import_batch_id=import_batch_id,
+                        started_at_ts=t0,
+                    )
+                except Exception:
+                    pass
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
             return
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
@@ -1401,8 +2422,35 @@ class _SessionStore:
 _sessions = _SessionStore()
 
 def main() -> int:
+    # Windows 终端默认编码可能是 ANSI/GBK，统一切到 UTF-8 避免中文日志乱码。
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     host = (os.getenv("INVOICELENS_LOCAL_API_HOST") or "127.0.0.1").strip()
     port = int((os.getenv("INVOICELENS_LOCAL_API_PORT") or "8765").strip())
+    assert_listen_port_free_or_exit(port)
+    conn = None
+    try:
+        from db.duckdb_conn import get_conn
+        from db.schema_sqlfiles import init_all_tables
+        from src.bootstrap.dim_tax_code_seed import ensure_dim_tax_code_seeded
+
+        conn = get_conn()
+        init_all_tables(conn)
+        seed_ret = ensure_dim_tax_code_seeded(conn)
+        print(f"[InvoiceLensLocalAPI] dim_tax_code seed init: {seed_ret}")  # noqa: T201
+    except Exception as exc:
+        print(f"[InvoiceLensLocalAPI] bootstrap init warning: {type(exc).__name__}: {exc}")  # noqa: T201
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"[InvoiceLensLocalAPI] listening on http://{host}:{port}")  # noqa: T201
     httpd.serve_forever()

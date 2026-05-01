@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from db.duckdb_conn import get_conn
-from db.schema_sqlfiles import init_all_tables
+from db.schema_sqlfiles import ensure_ods_inv_views_materialized, init_all_tables
 from src.etl.cleaner import (
     _pick_first_column,
     _sql_invoice_date_try_expr,
@@ -17,6 +17,7 @@ from src.etl.cleaner import (
     run_cleaner,
 )
 from src.etl.invoice_date_parse import ODS_INVOICE_DATE_CANDIDATES
+from src.local_api.dwd_preview import _delete_rows_by_session_batched
 
 
 def _session_scope_sql(import_session_ids: list[str] | None) -> tuple[str, list[str]]:
@@ -41,47 +42,6 @@ def _session_scope_sql(import_session_ids: list[str] | None) -> tuple[str, list[
         ")"
     )
     return sess_cond, sid_vals
-
-
-def _delete_rows_by_session_batched(
-    conn: Any,
-    *,
-    table: str,
-    pk: str,
-    import_batch_id: str,
-    import_session_id: str,
-    sess_needle: str,
-    batch_size: int = 200,
-) -> int:
-    """
-    按主键分批删除会话行，规避 DuckDB 在大批量条件 DELETE 时的索引块删除异常：
-    `Failed to delete all rows from index`。
-    """
-    where_sql = """
-      import_batch_id = ?
-      AND (
-        import_session_id = ?
-        OR (
-          (import_session_id IS NULL OR trim(CAST(import_session_id AS VARCHAR)) = '')
-          AND strpos(CAST(source_parquet_file AS VARCHAR), ?) > 0
-        )
-      )
-    """
-    params = [import_batch_id, import_session_id, sess_needle]
-    deleted = 0
-    step = max(1, int(batch_size))
-    while True:
-        ids = conn.execute(
-            f"SELECT {pk} FROM {table} WHERE {where_sql} LIMIT ?",
-            [*params, step],
-        ).fetchall()
-        keys = [str(r[0]) for r in ids if r and r[0] is not None and str(r[0]).strip()]
-        if not keys:
-            break
-        qs = ",".join(["?"] * len(keys))
-        conn.execute(f"DELETE FROM {table} WHERE {pk} IN ({qs})", keys)
-        deleted += len(keys)
-    return deleted
 
 
 def _ods_header_invoice_date_try_sql(conn: Any) -> str:
@@ -415,6 +375,7 @@ def build_dwd_for_batch(
 
     conn = get_conn()
     init_all_tables(conn)
+    ensure_ods_inv_views_materialized(conn)
 
     if not batch_has_ods_data(conn, bid):
         return {
@@ -488,6 +449,7 @@ def force_rebuild_dwd_session(
 
     conn = get_conn()
     init_all_tables(conn)
+    ensure_ods_inv_views_materialized(conn)
 
     n = conn.execute(
         "SELECT COUNT(*) FROM ods_load_log WHERE import_batch_id = ? AND import_session_id = ?",
@@ -503,14 +465,7 @@ def force_rebuild_dwd_session(
     # 此处增加 source_parquet_file 的兜底：ODS 分区路径包含 `会话=<sid>` 时视为该会话血缘。
     # 注意：该兜底仅用于运维「强制重洗」的显式删除路径，避免影响正常增量/全量的幂等写入语义。
     sess_needle = f"会话={sid}"
-    _delete_rows_by_session_batched(
-        conn,
-        table="dwd_inv_header",
-        pk="header_uuid",
-        import_batch_id=bid,
-        import_session_id=sid,
-        sess_needle=sess_needle,
-    )
+    # 先明细后主表（与 DWD 预览整批删除顺序一致），避免宽表 swap 后明细仍指向已删主表键。
     _delete_rows_by_session_batched(
         conn,
         table="dwd_inv_detail",
@@ -519,6 +474,15 @@ def force_rebuild_dwd_session(
         import_session_id=sid,
         sess_needle=sess_needle,
     )
+    _delete_rows_by_session_batched(
+        conn,
+        table="dwd_inv_header",
+        pk="header_uuid",
+        import_batch_id=bid,
+        import_session_id=sid,
+        sess_needle=sess_needle,
+    )
+    init_all_tables(conn)
     conn.execute(
         """
         UPDATE ods_load_log
@@ -555,7 +519,7 @@ def _merge_cleaner_outputs(parts: list[dict[str, Any]]) -> dict[str, Any]:
     ranges = list(parts[0].get("reject_row_ranges") or [])
     samples = list(parts[0].get("reject_row_samples") or [])
     sample_cap = 80
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "stage": "cleaner",
         "import_batch_id": parts[0].get("import_batch_id"),
@@ -568,6 +532,29 @@ def _merge_cleaner_outputs(parts: list[dict[str, Any]]) -> dict[str, Any]:
         "reject_row_samples": samples[:sample_cap],
         "message": f"DWD 清洗完成（按 {len(parts)} 个 stat_year 依次落盘；header+detail 写入已汇总）",
     }
+    _hdr_dtl_scan = {
+        "rows_scanned_header",
+        "rows_written_header",
+        "rows_scanned_detail",
+        "rows_written_detail",
+    }
+    for p in parts:
+        for k, v in p.items():
+            if k in out or k in _hdr_dtl_scan:
+                continue
+            if k.startswith("dq_") and isinstance(v, list):
+                cur = out.get(k)
+                if isinstance(cur, list):
+                    cur.extend(v)
+                else:
+                    out[k] = list(v)
+            elif k.startswith("rows_"):
+                try:
+                    n = int(v or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                out[k] = int(out.get(k) or 0) + n
+    return out
 
 
 def _build_step_summary(cleaner_out: dict[str, Any]) -> list[dict[str, Any]]:
@@ -600,7 +587,20 @@ def _build_step_summary(cleaner_out: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "id": "validate",
             "label": "质量校验",
-            "status": "warning" if int(cleaner_out.get("rows_rejected") or 0) > 0 else tail,
-            "detail": f"拒收 {cleaner_out.get('rows_rejected', 0)} 行（header 解析/必填规则）",
+            "status": "warning"
+            if int(cleaner_out.get("rows_rejected") or 0) > 0
+            or sum(len(v) for k, v in cleaner_out.items() if k.startswith("dq_") and isinstance(v, list))
+            > 0
+            else tail,
+            "detail": _validate_step_detail(cleaner_out),
         },
     ]
+
+
+def _validate_step_detail(cleaner_out: dict[str, Any]) -> str:
+    rej = int(cleaner_out.get("rows_rejected") or 0)
+    dq_n = sum(len(v) for k, v in cleaner_out.items() if k.startswith("dq_") and isinstance(v, list))
+    base = f"拒收 {rej} 行（header 解析/必填规则）"
+    if dq_n <= 0:
+        return base
+    return f"{base}；专项与 inv_detail 对账异常 {dq_n} 条（见 cleaner dq_*）"

@@ -17,7 +17,9 @@ def default_matching_path() -> Path:
 
 
 def default_category_path() -> Path:
-    return _project_root() / "config" / "subject_category.yaml"
+    new_path = _project_root() / "config" / "subject_category_rules.yaml"
+    old_path = _project_root() / "config" / "subject_category.yaml"
+    return new_path if new_path.exists() or not old_path.exists() else old_path
 
 
 def normalize_party_id(raw: str) -> str:
@@ -44,7 +46,7 @@ def load_category_doc(path: Path | None = None) -> dict[str, Any]:
     p = path or default_category_path()
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
-        raise ValueError("subject_category.yaml 顶层必须为对象")
+        raise ValueError("subject_category_rules.yaml 顶层必须为对象")
     return raw
 
 
