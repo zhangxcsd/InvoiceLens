@@ -6,6 +6,8 @@ import type { NavKey } from '../types'
 
 type BatchGroup = {
   batchId: string
+  hasExcelToOds: boolean
+  hasOdsToDwd: boolean
   sessions: Array<{
     id: string
     meta: OdsPreviewBatchMeta
@@ -17,6 +19,20 @@ type BatchGroup = {
   failCount: number
   warnCount: number
   parquetPathCount: number
+}
+
+type HistoryType = 'excel_to_ods' | 'ods_to_dwd'
+
+type HistoryRecord = {
+  id: string
+  type: HistoryType
+  batchId: string
+  group: BatchGroup
+  successNumerator: number
+  successDenominator: number
+  failCount: number
+  warnCount: number
+  latestLoadTime: string
 }
 
 function formatLoadTime(iso: string): string {
@@ -42,6 +58,11 @@ function groupByBatch(list: OdsPreviewBatchMeta[]): BatchGroup[] {
   const out: BatchGroup[] = []
   for (const [batchId, rows] of Object.entries(by)) {
     const sorted = [...rows].sort((a, b) => String(b.load_time ?? '').localeCompare(String(a.load_time ?? ''), 'zh-CN'))
+    const hasOdsToDwd = rows.some((x) => {
+      const wm = String(x.dwd_session_processed_at ?? '').trim()
+      const dwdRows = Number(x.dwd_header_rows ?? 0) + Number(x.dwd_detail_rows ?? 0)
+      return wm.length > 0 || dwdRows > 0
+    })
     const sessions = sorted.map((m) => ({
       id: odsPreviewBatchKey(m),
       meta: m,
@@ -50,6 +71,8 @@ function groupByBatch(list: OdsPreviewBatchMeta[]): BatchGroup[] {
     const latest = sorted[0]
     out.push({
       batchId,
+      hasExcelToOds: true,
+      hasOdsToDwd,
       sessions,
       latestLoadTime: String(latest?.load_time ?? ''),
       fileCount: rows.reduce((s, x) => s + Number(x.file_count ?? 0), 0),
@@ -63,14 +86,52 @@ function groupByBatch(list: OdsPreviewBatchMeta[]): BatchGroup[] {
   return out
 }
 
+function recordsFromGroups(groups: BatchGroup[]): HistoryRecord[] {
+  const out: HistoryRecord[] = []
+  for (const g of groups) {
+    out.push({
+      id: `${g.batchId}::excel_to_ods`,
+      type: 'excel_to_ods',
+      batchId: g.batchId,
+      group: g,
+      successNumerator: g.successCount,
+      successDenominator: g.fileCount,
+      failCount: g.failCount,
+      warnCount: g.warnCount,
+      latestLoadTime: g.latestLoadTime,
+    })
+    if (g.hasOdsToDwd) {
+      const builtSessions = g.sessions.filter((s) => {
+        const wm = String(s.meta.dwd_session_processed_at ?? '').trim()
+        const dwdRows = Number(s.meta.dwd_header_rows ?? 0) + Number(s.meta.dwd_detail_rows ?? 0)
+        return wm.length > 0 || dwdRows > 0
+      }).length
+      out.push({
+        id: `${g.batchId}::ods_to_dwd`,
+        type: 'ods_to_dwd',
+        batchId: g.batchId,
+        group: g,
+        successNumerator: builtSessions,
+        successDenominator: g.sessions.length,
+        failCount: Math.max(0, g.sessions.length - builtSessions),
+        warnCount: 0,
+        latestLoadTime: g.latestLoadTime,
+      })
+    }
+  }
+  out.sort((a, b) => String(b.latestLoadTime).localeCompare(String(a.latestLoadTime), 'zh-CN'))
+  return out
+}
+
 export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [odsRootPath, setOdsRootPath] = useState<string>('')
   const [list, setList] = useState<OdsPreviewBatchMeta[]>([])
-  const [selectedBatchId, setSelectedBatchId] = useState<string>('')
+  const [selectedRecordId, setSelectedRecordId] = useState<string>('')
   const [selectedSessionId, setSelectedSessionId] = useState<string>('')
   const [q, setQ] = useState('')
+  const [typeFilter, setTypeFilter] = useState<'all' | HistoryType>('all')
 
   const [deleteDialog, setDeleteDialog] = useState<'session' | 'batch' | null>(null)
   const [deleteAck, setDeleteAck] = useState(false)
@@ -110,37 +171,48 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
   }, [reload])
 
   const groups = useMemo(() => groupByBatch(list), [list])
+  const records = useMemo(() => recordsFromGroups(groups), [groups])
 
-  const filtered = useMemo(() => {
+  const filteredRecords = useMemo(() => {
     const qq = q.trim().toLowerCase()
-    if (!qq) return groups
-    return groups.filter((g) => g.batchId.toLowerCase().includes(qq) || g.sessions.some((s) => s.meta.session_id.toLowerCase().includes(qq)))
-  }, [groups, q])
+    return records.filter((r) => {
+      if (typeFilter !== 'all' && r.type !== typeFilter) return false
+      if (!qq) return true
+      return (
+        r.batchId.toLowerCase().includes(qq) ||
+        r.group.sessions.some((s) => s.meta.session_id.toLowerCase().includes(qq))
+      )
+    })
+  }, [records, q, typeFilter])
 
   useEffect(() => {
-    if (filtered.length === 0) return
-    if (!selectedBatchId || !filtered.some((g) => g.batchId === selectedBatchId)) {
-      setSelectedBatchId(filtered[0]!.batchId)
-      setSelectedSessionId(filtered[0]!.sessions[0]?.meta.session_id ?? '')
+    if (filteredRecords.length === 0) return
+    if (!selectedRecordId || !filteredRecords.some((r) => r.id === selectedRecordId)) {
+      setSelectedRecordId(filteredRecords[0]!.id)
+      setSelectedSessionId(filteredRecords[0]!.group.sessions[0]?.meta.session_id ?? '')
       return
     }
-    const g = filtered.find((x) => x.batchId === selectedBatchId)
-    if (!g) return
-    if (!selectedSessionId || !g.sessions.some((s) => s.meta.session_id === selectedSessionId)) {
-      setSelectedSessionId(g.sessions[0]?.meta.session_id ?? '')
+    const rec = filteredRecords.find((x) => x.id === selectedRecordId)
+    if (!rec) return
+    if (!selectedSessionId || !rec.group.sessions.some((s) => s.meta.session_id === selectedSessionId)) {
+      setSelectedSessionId(rec.group.sessions[0]?.meta.session_id ?? '')
     }
-  }, [filtered, selectedBatchId, selectedSessionId])
+  }, [filteredRecords, selectedRecordId, selectedSessionId])
 
-  const currentGroup = useMemo(() => filtered.find((g) => g.batchId === selectedBatchId) ?? null, [filtered, selectedBatchId])
+  const currentRecord = useMemo(
+    () => filteredRecords.find((r) => r.id === selectedRecordId) ?? null,
+    [filteredRecords, selectedRecordId],
+  )
+  const currentGroup = useMemo(() => currentRecord?.group ?? null, [currentRecord])
   const currentSession = useMemo(() => {
     if (!currentGroup) return null
     return currentGroup.sessions.find((s) => s.meta.session_id === selectedSessionId) ?? null
   }, [currentGroup, selectedSessionId])
 
   const openPreviewInNewWindow = () => {
-    if (!currentGroup) return
+    if (!currentGroup || !currentRecord) return
     const url = new URL(window.location.href)
-    url.searchParams.set('nav', 'import_wizard_preview')
+    url.searchParams.set('nav', currentRecord.type === 'ods_to_dwd' ? 'dwd_data_preview' : 'import_wizard_preview')
     url.searchParams.set('batch_id', currentGroup.batchId)
     if (currentSession?.meta.session_id) url.searchParams.set('session_id', currentSession.meta.session_id)
     window.open(url.toString(), '_blank', 'noopener,noreferrer')
@@ -241,7 +313,7 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {filteredRecords.length === 0 ? (
         <Card title={t.importHistoryUi.emptyCardTitle} className="shrink-0">
           <p className="text-il-page-desc text-text-3">{t.importHistoryUi.emptyBody}</p>
         </Card>
@@ -254,20 +326,39 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
           >
             <div className="shrink-0 border-b border-border-light px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <input
-                  type="search"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder={t.importHistoryUi.searchPlaceholder}
-                  className="min-w-[12rem] flex-1 rounded-[7px] border border-border bg-[#fafbfc] px-2.5 py-1.5 text-il-input text-text outline-none focus:border-accent sm:max-w-md"
-                />
-                <span className="text-il-meta text-text-3">{t.importHistoryUi.totalHint.replace('{n}', String(filtered.length))}</span>
+                <div className="flex min-w-[12rem] flex-1 flex-wrap items-center gap-2">
+                  <input
+                    type="search"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder={t.importHistoryUi.searchPlaceholder}
+                    className="min-w-[12rem] flex-1 rounded-[7px] border border-border bg-[#fafbfc] px-2.5 py-1.5 text-il-input text-text outline-none focus:border-accent sm:max-w-md"
+                  />
+                  <label className="inline-flex items-center gap-1.5 text-il-meta text-text-3">
+                    <span>{t.importHistoryUi.typeFilterLabel}</span>
+                    <select
+                      value={typeFilter}
+                      onChange={(e) => setTypeFilter((e.target.value as 'all' | HistoryType) || 'all')}
+                      className="rounded-[7px] border border-border bg-[#fafbfc] px-2 py-1.5 text-[12px] text-text outline-none focus:border-accent"
+                    >
+                      <option value="all">{t.importHistoryUi.typeAll}</option>
+                      <option value="excel_to_ods">{t.importHistoryUi.typeExcelToOds}</option>
+                      <option value="ods_to_dwd">{t.importHistoryUi.typeOdsToDwd}</option>
+                    </select>
+                  </label>
+                </div>
+                <span className="text-il-meta text-text-3">
+                  {t.importHistoryUi.totalHint.replace('{n}', String(filteredRecords.length))}
+                </span>
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
               <table className="w-max min-w-full border-collapse text-left text-[12px]">
                 <thead className="sticky top-0 z-[1] bg-[#f5f8fc] text-text-2 shadow-sm">
                   <tr>
+                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium first:pl-4">
+                      {t.importHistoryUi.colType}
+                    </th>
                     <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium first:pl-4">
                       {t.importHistoryUi.colBatch}
                     </th>
@@ -289,34 +380,48 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
                   </tr>
                 </thead>
                 <tbody className="text-text-2">
-                  {filtered.map((g) => {
-                    const active = g.batchId === selectedBatchId
+                  {filteredRecords.map((r) => {
+                    const g = r.group
+                    const active = r.id === selectedRecordId
                     return (
                       <tr
-                        key={g.batchId}
+                        key={r.id}
                         className={[
                           'border-b border-border-light/80 cursor-pointer hover:bg-[#fafbfc]',
                           active ? 'bg-[#EBF4FF]' : '',
                         ].join(' ')}
                         onClick={() => {
-                          setSelectedBatchId(g.batchId)
+                          setSelectedRecordId(r.id)
                           setSelectedSessionId(g.sessions[0]?.meta.session_id ?? '')
                         }}
-                        title={g.batchId}
+                        title={`${g.batchId} · ${r.type}`}
                       >
+                        <td className="whitespace-nowrap px-2.5 py-2 first:pl-4">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {r.type === 'excel_to_ods' ? (
+                              <span className="inline-flex items-center rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-[1px] text-[11px] text-accent-mid">
+                                {t.importHistoryUi.typeExcelToOds}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center rounded border border-[#b7e4c8] bg-[#f0fdf4] px-2 py-[1px] text-[11px] text-[#0d5c2e]">
+                                {t.importHistoryUi.typeOdsToDwd}
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="whitespace-nowrap px-2.5 py-2 font-mono text-[11px] text-text first:pl-4">
                           {g.batchId}
                         </td>
                         <td className="whitespace-nowrap px-2.5 py-2 text-text-2">{g.sessions.length}</td>
                         <td className="whitespace-nowrap px-2.5 py-2 text-text-2">
-                          {g.successCount}/{g.fileCount}
+                          {r.successNumerator}/{r.successDenominator}
                         </td>
                         <td className="whitespace-nowrap px-2.5 py-2 text-text-2">
-                          <span className={g.failCount > 0 ? 'text-danger font-medium' : ''}>{g.failCount}</span>
+                          <span className={r.failCount > 0 ? 'text-danger font-medium' : ''}>{r.failCount}</span>
                         </td>
-                        <td className="whitespace-nowrap px-2.5 py-2 text-text-2">{g.warnCount}</td>
+                        <td className="whitespace-nowrap px-2.5 py-2 text-text-2">{r.warnCount}</td>
                         <td className="whitespace-nowrap px-2.5 py-2 text-text-3 last:pr-4">
-                          {formatLoadTime(g.latestLoadTime)}
+                          {formatLoadTime(r.latestLoadTime)}
                         </td>
                       </tr>
                     )
@@ -336,6 +441,17 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
                     <div>
                       <div className="text-il-meta text-text-3">{t.importHistoryUi.kpiBatchId}</div>
                       <div className="mt-0.5 font-mono text-[12px] font-semibold text-text">{currentGroup.batchId}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {currentRecord?.type === 'excel_to_ods' ? (
+                          <span className="inline-flex items-center rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-[1px] text-[11px] text-accent-mid">
+                            {t.importHistoryUi.typeExcelToOds}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded border border-[#b7e4c8] bg-[#f0fdf4] px-2 py-[1px] text-[11px] text-[#0d5c2e]">
+                            {t.importHistoryUi.typeOdsToDwd}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button

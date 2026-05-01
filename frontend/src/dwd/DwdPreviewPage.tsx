@@ -14,7 +14,8 @@ import type { NavKey } from '../types'
 function uniqueBatchIds(list: OdsPreviewBatchMeta[]): string[] {
   const s = new Set<string>()
   for (const m of list) s.add(m.batch_id)
-  return [...s].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  // 默认按批次号降序，优先显示最新批次（常见格式：YYYYMMDD）
+  return [...s].sort((a, b) => b.localeCompare(a, 'zh-CN'))
 }
 
 function sessionsForBatch(list: OdsPreviewBatchMeta[], bid: string): OdsPreviewBatchMeta[] {
@@ -71,7 +72,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   const [sessionId, setSessionId] = useState('')
   const [dwdTabs, setDwdTabs] = useState<DwdPreviewTabMeta[]>([])
   const [tabsBusy, setTabsBusy] = useState(false)
-  const [tableType, setTableType] = useState('')
+  const [dwdTable, setDwdTable] = useState('')
 
   const [columns, setColumns] = useState<{ field: string; label_zh: string }[]>([])
   const [rows, setRows] = useState<Array<Record<string, string>>>([])
@@ -79,6 +80,8 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   const [hasMore, setHasMore] = useState(false)
   const [totalRows, setTotalRows] = useState<number | null>(null)
   const [pageBusy, setPageBusy] = useState(false)
+  /** 记录当前筛选键是否已自动拉取过首屏，避免空结果时重复自动请求 */
+  const [autoLoadedKey, setAutoLoadedKey] = useState('')
 
   const [deleteDialog, setDeleteDialog] = useState<'session' | 'batch' | null>(null)
   const [deleteAck, setDeleteAck] = useState(false)
@@ -152,7 +155,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   const loadDwdTabs = useCallback(async () => {
     if (!batchId) {
       setDwdTabs([])
-      setTableType('')
+      setDwdTable('')
       return
     }
     setTabsBusy(true)
@@ -161,15 +164,15 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
       const r = await fetchDwdPreviewTabs({ batchId, sessionId })
       if (!r.ok) {
         setDwdTabs([])
-        setTableType('')
+        setDwdTable('')
         setError(r.error?.message ?? '无法加载 DWD Tab')
         return
       }
       const tabs = r.tabs ?? []
       setDwdTabs(tabs)
-      setTableType((prev) => {
-        if (prev && tabs.some((x) => x.table_type === prev)) return prev
-        return tabs[0]?.table_type ?? ''
+      setDwdTable((prev) => {
+        if (prev && tabs.some((x) => x.dwd_table === prev)) return prev
+        return tabs[0]?.dwd_table ?? ''
       })
     } finally {
       setTabsBusy(false)
@@ -189,7 +192,8 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
     setGlobalSearch('')
     setColumnFilters([])
     setColVal('')
-  }, [batchId, sessionId, tableType])
+    setAutoLoadedKey('')
+  }, [batchId, sessionId, dwdTable])
 
   useEffect(() => {
     if (!columns.length) {
@@ -202,13 +206,13 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   }, [columns, colPick])
 
   const selectedTab = useMemo(
-    () => dwdTabs.find((x) => x.table_type === tableType) ?? null,
-    [dwdTabs, tableType],
+    () => dwdTabs.find((x) => x.dwd_table === dwdTable) ?? null,
+    [dwdTabs, dwdTable],
   )
 
   const fetchPage = useCallback(
     async (append: boolean) => {
-      if (!batchId || !tableType) return
+      if (!batchId || !dwdTable) return
       setPageBusy(true)
       setError(null)
       if (!append) {
@@ -220,7 +224,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
         const r = await fetchDwdPreviewTablePage({
           batchId,
           sessionId,
-          tableType,
+          dwdTable,
           layer: selectedTab?.layer ?? 'detail',
           limit: 150,
           cursor: append ? nextCursor : null,
@@ -239,14 +243,13 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
         setPageBusy(false)
       }
     },
-    [batchId, sessionId, tableType, selectedTab?.layer, nextCursor],
+    [batchId, sessionId, dwdTable, selectedTab?.layer, nextCursor],
   )
 
-  const onLoadFirst = () => void fetchPage(false)
   const onLoadMore = () => void fetchPage(true)
 
   const onLoadAll = useCallback(async () => {
-    if (!batchId || !tableType || pageBusy || deleteBusy) return
+    if (!batchId || !dwdTable || pageBusy || deleteBusy) return
     if (rows.length > 0 && !hasMore) return
 
     setPageBusy(true)
@@ -266,7 +269,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
         const r = await fetchDwdPreviewTablePage({
           batchId,
           sessionId,
-          tableType,
+          dwdTable,
           layer: selectedTab?.layer ?? 'detail',
           limit: DWD_LOAD_ALL_CHUNK,
           cursor,
@@ -326,7 +329,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   }, [
     batchId,
     sessionId,
-    tableType,
+    dwdTable,
     selectedTab?.layer,
     pageBusy,
     deleteBusy,
@@ -338,7 +341,16 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
   ])
 
   const canLoadAll =
-    Boolean(batchId && tableType) && !(rows.length > 0 && !hasMore) && !pageBusy && !deleteBusy
+    Boolean(batchId && dwdTable) && !(rows.length > 0 && !hasMore) && !pageBusy && !deleteBusy
+
+  useEffect(() => {
+    const key = `${batchId}::${sessionId}::${dwdTable}`
+    if (!batchId || !dwdTable) return
+    if (tabsBusy || deleteBusy || pageBusy) return
+    if (autoLoadedKey === key) return
+    setAutoLoadedKey(key)
+    void fetchPage(false)
+  }, [batchId, sessionId, dwdTable, tabsBusy, deleteBusy, pageBusy, autoLoadedKey, fetchPage])
 
   const clearTableAfterMutation = useCallback(() => {
     setRows([])
@@ -426,7 +438,10 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
             })
           : await deleteDwdPreviewLoad({ scope: 'batch', batch_id: batchId })
       if (!r.ok) {
-        setDeleteError(r.error?.message ?? r.error?.detail ?? t.dwdPreviewUi.deleteErrorPrefix)
+        const parts = [r.error?.message, r.error?.detail].filter(
+          (x): x is string => typeof x === 'string' && x.trim().length > 0,
+        )
+        setDeleteError(parts.length ? parts.join(' — ') : t.dwdPreviewUi.deleteErrorPrefix)
         return
       }
       setDeleteDialog(null)
@@ -449,17 +464,16 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-[22px]">
-      <div className="mb-4">
-        <div className="mb-1 text-il-page-title font-semibold text-text">{t.dwdPreviewUi.pageTitle}</div>
-        <p className="max-w-3xl text-il-page-desc leading-relaxed text-text-2">{t.dwdPreviewUi.pageBody}</p>
-        {error ? (
-          <p className="mt-2 max-w-3xl rounded-[7px] border border-danger/30 bg-[#fff5f5] px-3 py-2 text-il-meta text-danger">
-            {error}
-          </p>
-        ) : null}
-      </div>
-
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="mb-4 flex min-h-0 shrink-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 text-il-page-title font-semibold text-text">{t.dwdPreviewUi.pageTitle}</div>
+          <p className="w-full text-il-page-desc leading-relaxed text-text-2">{t.dwdPreviewUi.pageBody}</p>
+          {error ? (
+            <p className="mt-2 w-full rounded-[7px] border border-danger/30 bg-[#fff5f5] px-3 py-2 text-il-meta text-danger">
+              {error}
+            </p>
+          ) : null}
+        </div>
         <button
           type="button"
           disabled={listBusy}
@@ -481,10 +495,10 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
         <>
           <Card title={t.dwdPreviewUi.batchCardTitle} className="mb-4 shrink-0">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:gap-4">
-              <label className="block w-full min-w-0 flex-1 sm:max-w-md">
-                <span className="mb-1 block text-il-label font-medium text-text-2">{t.dwdPreviewUi.labelBatch}</span>
+              <label className="block w-full min-w-0 flex-1 sm:max-w-[17rem]">
+                <span className="mb-1 block text-il-label font-semibold text-accent">{t.dwdPreviewUi.labelBatch}</span>
                 <select
-                  className="box-border w-full rounded-[7px] border border-border bg-[#fafbfc] px-2 py-2 font-mono text-[12px] text-text outline-none focus:border-accent focus:bg-white disabled:opacity-60"
+                  className="box-border w-full rounded-[7px] border-2 border-accent/65 bg-[#eef6ff] px-2 py-2 font-mono text-[12px] font-semibold text-text outline-none ring-2 ring-accent/20 focus:border-accent focus:bg-white focus:ring-accent/35 disabled:opacity-60"
                   value={batchId}
                   disabled={listBusy || deleteBusy}
                   onChange={(e) => setBatchId(e.target.value)}
@@ -568,67 +582,44 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
           </div>
 
           <Card title={t.dwdPreviewUi.filterCardTitle} className="mb-4 shrink-0">
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <div className="flex flex-wrap items-center gap-2">
-                {tabsBusy ? (
-                  <span className="text-il-meta text-text-3">{t.dwdPreviewUi.tabsLoading}</span>
-                ) : dwdTabs.length === 0 ? (
-                  <span className="text-il-meta text-text-3">{t.dwdPreviewUi.noTabsHint}</span>
-                ) : (
-                  dwdTabs.map((tab) => (
+            <div className="flex flex-wrap items-center gap-2">
+              {tabsBusy ? (
+                <span className="text-il-meta text-text-3">{t.dwdPreviewUi.tabsLoading}</span>
+              ) : dwdTabs.length === 0 ? (
+                <span className="text-il-meta text-text-3">{t.dwdPreviewUi.noTabsHint}</span>
+              ) : (
+                dwdTabs.map((tab) => {
+                  const baseBtn =
+                    'inline-flex box-border h-9 shrink-0 items-center justify-center rounded-[7px] border px-3 py-0 text-[13px] leading-none'
+                  const cls =
+                    dwdTable === tab.dwd_table
+                      ? `${baseBtn} border-accent bg-[#f0f7ff] text-accent`
+                      : `${baseBtn} border-border bg-white text-text-2 hover:border-accent`
+                  return (
                     <button
-                      key={tab.table_type}
+                      key={tab.dwd_table}
                       type="button"
-                      className={
-                        tableType === tab.table_type
-                          ? 'inline-flex h-9 shrink-0 items-center justify-center rounded-[7px] border border-accent bg-[#f0f7ff] px-3 py-0 text-il-btn leading-none text-accent'
-                          : 'inline-flex h-9 shrink-0 items-center justify-center rounded-[7px] border border-border bg-white px-3 py-0 text-il-btn leading-none text-text-2 hover:border-accent'
-                      }
-                      onClick={() => setTableType(tab.table_type)}
-                      title={tab.table_type}
+                      className={cls}
+                      onClick={() => setDwdTable(tab.dwd_table)}
+                      title={tab.dwd_table}
                     >
                       {tab.title}
                     </button>
-                  ))
-                )}
-              </div>
-              <button
-                type="button"
-                disabled={!batchId || !tableType || pageBusy || deleteBusy || tabsBusy}
-                className="inline-flex h-9 shrink-0 items-center justify-center rounded-[7px] border border-accent bg-accent px-3 py-0 text-il-btn leading-none text-white hover:opacity-95 disabled:opacity-50"
-                onClick={onLoadFirst}
-              >
-                {pageBusy && !rows.length ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadFirstPage}
-              </button>
-              <button
-                type="button"
-                disabled={!canLoadAll || tabsBusy}
-                title={t.dwdPreviewUi.loadAllHint.replace(/\{max\}/g, String(DWD_LOAD_ALL_MAX))}
-                className="inline-flex h-9 shrink-0 items-center justify-center rounded-[7px] border border-border bg-white px-3 py-0 text-il-btn leading-none text-text-2 hover:border-accent disabled:opacity-50"
-                onClick={() => void onLoadAll()}
-              >
-                {pageBusy && rows.length > 0 ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadAll}
-              </button>
+                  )
+                })
+              )}
             </div>
-            <p className="mt-3 max-w-4xl text-[10px] leading-snug text-text-3">{t.dwdPreviewUi.apiHint}</p>
-            <p className="mt-1 max-w-4xl text-[10px] leading-snug text-text-3">
-              {t.dwdPreviewUi.loadAllHint.replace(/\{max\}/g, String(DWD_LOAD_ALL_MAX))}
-            </p>
           </Card>
 
           <Card
-            title={selectedTab?.title ?? t.dwdPreviewUi.filterCardTitle}
+            title={`数据表 · ${selectedTab?.title ?? t.dwdPreviewUi.filterCardTitle}${
+              dwdTable ? `（表=${dwdTable}）` : ''
+            }`}
             className="shrink-0"
           >
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-il-meta text-text-2">{totalLabel}</span>
-              {rows.length > 0 ? (
-                <span className="text-il-meta text-text-3">{t.dwdPreviewUi.tableHint}</span>
-              ) : null}
-            </div>
             {rows.length > 0 ? (
               <div className="mb-3 rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2.5">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-2">
                   <span className="shrink-0 text-il-meta text-text-3">{t.dwdPreviewUi.searchLabelFulltext}</span>
                   <input
                     type="search"
@@ -637,7 +628,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
                     placeholder={t.dwdPreviewUi.searchPlaceholder}
                     autoComplete="off"
                     title={t.dwdPreviewUi.searchPlaceholder}
-                    className="box-border h-9 w-[min(100%,9.5rem)] shrink-0 rounded-[7px] border border-border bg-white px-2.5 font-mono text-[12px] text-text outline-none focus:border-accent sm:w-[11.5rem]"
+                    className="box-border h-9 w-[12.2rem] shrink-0 rounded-[7px] border border-border bg-white px-2.5 font-mono text-[12px] text-text outline-none focus:border-accent sm:w-[15.5rem]"
                   />
                   <span className="hidden h-5 w-px shrink-0 bg-border sm:block" aria-hidden />
                   <span
@@ -654,7 +645,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
                   >
                     {columns.map((c) => (
                       <option key={c.field} value={c.field}>
-                        {(c.label_zh || c.field).slice(0, 48)}
+                        {c.field.slice(0, 48)}
                       </option>
                     ))}
                   </select>
@@ -694,7 +685,7 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
                 {columnFilters.length > 0 ? (
                   <div className="flex flex-wrap gap-1.5">
                     {columnFilters.map((cf) => {
-                      const lab = columns.find((c) => c.field === cf.field)?.label_zh || cf.field
+                      const lab = cf.field
                       return (
                         <button
                           key={cf.field}
@@ -712,59 +703,71 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
                     })}
                   </div>
                 ) : null}
-                <p className="text-[10px] leading-snug text-text-3">{t.dwdPreviewUi.searchScopeNote}</p>
-                {filterActive ? (
-                  <p className="text-il-meta text-accent">
-                    {t.dwdPreviewUi.filteredCount
-                      .replace(/\{loaded\}/g, String(rows.length))
-                      .replace(/\{shown\}/g, String(displayRows.length))}
-                  </p>
-                ) : null}
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <p className="text-il-meta text-text-2">{totalLabel}</p>
+                  {filterActive ? (
+                    <p className="text-il-meta text-accent">
+                      {t.dwdPreviewUi.filteredCount
+                        .replace(/\{loaded\}/g, String(rows.length))
+                        .replace(/\{shown\}/g, String(displayRows.length))}
+                    </p>
+                  ) : (
+                    <p className="text-il-meta text-text-3">
+                      {t.dwdPreviewUi.filteredCount
+                        .replace(/\{loaded\}/g, String(rows.length))
+                        .replace(/\{shown\}/g, String(rows.length))}
+                    </p>
+                  )}
+                  <span className="text-text-3">|</span>
+                  <p className="text-[10px] leading-snug text-text-3">{t.dwdPreviewUi.searchScopeNote}</p>
+                </div>
               </div>
             ) : null}
             {rows.length === 0 && !pageBusy ? (
               <div>
                 <p className="text-il-meta text-text-2">{t.dwdPreviewUi.noRows}</p>
-                {batchId && tableType ? (
-                  <div className="mt-2">
-                    <button
-                      type="button"
-                      disabled={!canLoadAll}
-                      title={t.dwdPreviewUi.loadAllHint.replace(/\{max\}/g, String(DWD_LOAD_ALL_MAX))}
-                      className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent disabled:opacity-50"
-                      onClick={() => void onLoadAll()}
-                    >
-                      {t.dwdPreviewUi.loadAll}
-                    </button>
-                  </div>
-                ) : null}
               </div>
             ) : null}
             {rows.length > 0 && displayRows.length === 0 && filterActive ? (
               <p className="mb-2 text-il-meta text-text-2">{t.dwdPreviewUi.filterNoMatch}</p>
             ) : null}
             {rows.length > 0 && displayRows.length > 0 ? (
-              <div className="max-h-[min(560px,70vh)] overflow-auto">
-                <table className="min-w-full border-collapse text-left text-il-meta">
-                  <thead className="sticky top-0 z-[1] border-b border-border bg-[#f7f9fc]">
+              <div className="max-h-[min(560px,70vh)] w-full overflow-auto">
+                <table className="w-max min-w-full border-collapse text-left text-[12px]">
+                  <thead className="sticky top-0 z-[1] border-b border-border-light bg-[#f5f8fc] text-text-2 shadow-sm">
                     <tr>
-                      {columns.map((c) => (
-                        <th key={c.field} className="whitespace-nowrap px-2 py-1.5 font-medium text-text">
-                          {c.label_zh || c.field}
-                        </th>
-                      ))}
+                      {columns.map((c) => {
+                        const note = (c.label_zh || '').trim()
+                        const hasNote = note.length > 0 && note !== c.field
+                        return (
+                          <th
+                            key={c.field}
+                            title={hasNote ? `注释：${note}` : c.field}
+                            className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium first:pl-4 last:pr-4"
+                          >
+                            <span className={hasNote ? 'block cursor-help font-mono text-[11px] text-text-2' : 'block font-mono text-[11px] text-text-2'}>
+                              {c.field}
+                            </span>
+                          </th>
+                        )
+                      })}
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="text-text-2">
                     {displayRows.map((row, i) => (
-                      <tr key={i} className="border-b border-border-light odd:bg-white even:bg-[#fafbfd]">
+                      <tr key={i} className="border-b border-border-light/80 hover:bg-[#fafbfc]">
                         {columns.map((c) => (
                           <td
                             key={c.field}
-                            className="max-w-[240px] truncate px-2 py-1 text-text-2"
-                            title={row[c.field] ?? ''}
+                            className={[
+                              'px-2.5 py-2 text-text-2 first:pl-4 last:pr-4',
+                              c.field === 'header_uuid' || c.field === 'detail_uuid'
+                                ? 'whitespace-nowrap font-mono'
+                                : 'max-w-[220px] truncate',
+                            ].join(' ')}
+                            title={(row[c.field] ?? '').trim()}
                           >
-                            {row[c.field] ?? ''}
+                            {(row[c.field] ?? '').trim()}
                           </td>
                         ))}
                       </tr>
@@ -782,31 +785,37 @@ export function DwdPreviewPage(props: { onNav: (k: NavKey) => void }) {
             {rows.length > 0 && !hasMore ? (
               <p className="mt-2 text-[11px] text-text-3">{t.dwdPreviewUi.alreadyFullyLoaded}</p>
             ) : null}
-            {hasMore ? (
-              <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 shrink-0 space-y-2 border-t border-border-light px-1 pt-2 text-il-meta text-text-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {hasMore ? (
+                  <button
+                    type="button"
+                    disabled={pageBusy}
+                    className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent disabled:opacity-50"
+                    onClick={onLoadMore}
+                  >
+                    {pageBusy ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadMore}
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  disabled={pageBusy}
-                  className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent disabled:opacity-50"
-                  onClick={onLoadMore}
-                >
-                  {pageBusy ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadMore}
-                </button>
-                <button
-                  type="button"
-                  disabled={!canLoadAll}
+                  disabled={!canLoadAll || tabsBusy}
                   title={t.dwdPreviewUi.loadAllHint.replace(/\{max\}/g, String(DWD_LOAD_ALL_MAX))}
                   className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent disabled:opacity-50"
                   onClick={() => void onLoadAll()}
                 >
-                  {pageBusy ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadAll}
+                  {pageBusy && rows.length > 0 ? t.dwdPreviewUi.loading : t.dwdPreviewUi.loadAll}
                 </button>
               </div>
-            ) : null}
+            </div>
           </Card>
 
-          <div className="mt-4 shrink-0 rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2.5 text-il-meta leading-relaxed text-text-2">
-            {t.dwdPreviewUi.footerHint}
+          <div className="mt-4 shrink-0 space-y-2.5 rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2.5">
+            <p className="w-full break-words font-mono text-[11px] leading-relaxed text-text-3">{t.dwdPreviewUi.apiHint}</p>
+            <p className="w-full text-[11px] leading-relaxed text-text-3">
+              {t.dwdPreviewUi.loadAllHint.replace(/\{max\}/g, String(DWD_LOAD_ALL_MAX))}
+            </p>
+            <p className="border-t border-border-light/70 pt-2.5 text-il-meta leading-relaxed text-text-2">{t.dwdPreviewUi.footerHint}</p>
           </div>
           <div className="mt-3 flex shrink-0 flex-wrap gap-2">
             <button

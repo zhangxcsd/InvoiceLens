@@ -44,6 +44,22 @@ function formatLoadTime(iso: string): string {
   return `${y}-${mo}-${da} ${h}:${mi}`
 }
 
+/** 将 run_cleaner 返回的 dq_* 摘要写入构建日志（专项行数 + 金额/detail_uuid 对账） */
+function buildDqCleanerLogLines(cl: Record<string, unknown>): string[] {
+  const labels = t.odsToDwdCenterUi.dqReportLabels as Record<string, string>
+  const flagged: string[] = []
+  for (const [key, label] of Object.entries(labels)) {
+    const v = cl[key]
+    if (Array.isArray(v) && v.length > 0) {
+      flagged.push(`  · ${label}：${v.length} 条`)
+    }
+  }
+  if (flagged.length === 0) {
+    return [`  · ${t.odsToDwdCenterUi.dqReportAllOk}`]
+  }
+  return [t.odsToDwdCenterUi.dqReportSectionTitle, ...flagged]
+}
+
 function formatLocalDateTime(ts = new Date()): string {
   const d = ts
   const y = d.getFullYear()
@@ -59,7 +75,7 @@ function statusBadge(status: DwdStatus): { text: string; cls: string } {
   if (status === 'running') return { text: t.odsToDwdCenterUi.badgeRunning, cls: 'border-[#c8dff7] bg-[#f0f7ff] text-accent-mid' }
   if (status === 'succeeded') return { text: t.odsToDwdCenterUi.badgeSucceeded, cls: 'border-[#b7e4c8] bg-[#f0fdf4] text-[#0d5c2e]' }
   if (status === 'failed') return { text: t.odsToDwdCenterUi.badgeFailed, cls: 'border-danger/30 bg-[#fff5f5] text-danger' }
-  return { text: t.odsToDwdCenterUi.badgeNotBuilt, cls: 'border-border-light bg-white text-text-3' }
+  return { text: t.odsToDwdCenterUi.badgeNotBuilt, cls: 'border-[#f2c078] bg-[#fff7ea] text-[#9a5a00] font-semibold' }
 }
 
 type BatchBuildOverlay = {
@@ -263,10 +279,11 @@ export function OdsToDwdCenterPage() {
             .join('\n')
         : [
               `${ts} · stat_year=[${yearsLabel}]（来源：${r.stat_year_source}）${forceNote}`,
-              `ODS 扫描：inv_header ${scannedHdr.toLocaleString('zh-CN')} 行，inv_detail ${scannedDtl.toLocaleString('zh-CN')} 行；header 拒收 ${rejN.toLocaleString('zh-CN')} 行（可与上数对照）`,
+              `ODS 扫描：header 口径 ${scannedHdr.toLocaleString('zh-CN')} 行，detail 口径 ${scannedDtl.toLocaleString('zh-CN')} 行；header 拒收 ${rejN.toLocaleString('zh-CN')} 行（可与上数对照）`,
               ...(r.steps ?? []).map((s) => `  [${s.id}] ${s.status} — ${s.detail ?? ''}`),
               String(cl.message ?? ''),
               warn ? '提示：存在 header 拒收行，详见 cleaner.reject_row_samples / 日志' : '',
+              ...buildDqCleanerLogLines(cl),
             ]
               .filter((x) => String(x).trim().length > 0)
               .join('\n')
@@ -283,7 +300,12 @@ export function OdsToDwdCenterPage() {
       }))
       if (!opts?.skipReload) void reloadBatches()
     } else {
-      const msg = r.error?.message ?? `操作失败（HTTP ${r.httpStatus}）`
+      const st = Number(r.httpStatus ?? 0)
+      const msg =
+        r.error?.message ??
+        (st === 502 || st === 503
+          ? t.odsToDwdCenterUi.httpErrorProxy502.replace('{status}', String(st))
+          : `操作失败（HTTP ${st || '—'}）`)
       const logLines = [
         `${formatLocalDateTime()} · error`,
         r.error?.detail ?? '',
@@ -435,7 +457,13 @@ export function OdsToDwdCenterPage() {
         })
         applyDwdResult(batchId, r, t0, { skipReload: true })
         if (!r.ok) {
-          setError(r.error?.message ?? `${t.odsToDwdCenterUi.bulkIncrementalFailPrefix}${batchId}`)
+          // applyDwdResult 已 setError（含 HTTP 502 网关说明）；无 message 时再补批量前缀
+          if (!r.error?.message) {
+            const st = Number(r.httpStatus ?? 0)
+            if (st !== 502 && st !== 503) {
+              setError(`${t.odsToDwdCenterUi.bulkIncrementalFailPrefix}${batchId}`)
+            }
+          }
           break
         }
       }
@@ -473,7 +501,7 @@ export function OdsToDwdCenterPage() {
         </button>
       </div>
 
-      {filtered.length === 0 ? (
+      {rows.length === 0 ? (
         <Card title={t.odsToDwdCenterUi.emptyCardTitle} className="shrink-0">
           <p className="text-il-page-desc text-text-3">{t.odsToDwdCenterUi.emptyBody}</p>
         </Card>
@@ -532,7 +560,7 @@ export function OdsToDwdCenterPage() {
                 <button
                   type="button"
                   disabled={building || bulkStats.batchN === 0}
-                  className="rounded-[6px] bg-accent px-3 py-1 text-[12px] font-medium text-white disabled:opacity-50"
+                  className="rounded-[6px] border border-border bg-white px-3 py-1 text-[12px] text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
                   onClick={() => void runBulkIncremental()}
                 >
                   {bulkProgressLabel != null
@@ -543,31 +571,36 @@ export function OdsToDwdCenterPage() {
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
-              <table className="w-max min-w-full border-collapse text-left text-[12px]">
-                <thead className="sticky top-0 z-[1] bg-[#f5f8fc] text-text-2 shadow-sm">
-                  <tr>
-                    <th className="whitespace-nowrap border-b border-border-light px-2 py-2 font-medium first:pl-4">
-                      {t.odsToDwdCenterUi.colBulkExpand}
-                    </th>
-                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
-                      {t.odsToDwdCenterUi.colBatch}
-                    </th>
-                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
-                      {t.odsToDwdCenterUi.colOds}
-                    </th>
-                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
-                      {t.odsToDwdCenterUi.colDwd}
-                    </th>
-                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
-                      {t.odsToDwdCenterUi.colQuality}
-                    </th>
-                    <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium last:pr-4">
-                      {t.odsToDwdCenterUi.colUpdated}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="text-text-2">
-                  {filtered.map((r) => {
+              {filtered.length === 0 ? (
+                <div className="px-4 py-10 text-center text-il-page-desc leading-relaxed text-text-3">
+                  {t.odsToDwdCenterUi.filterNoMatchBatches}
+                </div>
+              ) : (
+                <table className="w-max min-w-full border-collapse text-left text-[12px]">
+                  <thead className="sticky top-0 z-[1] bg-[#f5f8fc] text-text-2 shadow-sm">
+                    <tr>
+                      <th className="whitespace-nowrap border-b border-border-light px-2 py-2 font-medium first:pl-4">
+                        {t.odsToDwdCenterUi.colBulkExpand}
+                      </th>
+                      <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
+                        {t.odsToDwdCenterUi.colBatch}
+                      </th>
+                      <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
+                        {t.odsToDwdCenterUi.colOds}
+                      </th>
+                      <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
+                        {t.odsToDwdCenterUi.colDwd}
+                      </th>
+                      <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium">
+                        {t.odsToDwdCenterUi.colQuality}
+                      </th>
+                      <th className="whitespace-nowrap border-b border-border-light px-2.5 py-2 font-medium last:pr-4">
+                        {t.odsToDwdCenterUi.colUpdated}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-text-2">
+                    {filtered.map((r) => {
                     const active = r.batchId === selectedBatchId
                     const b = statusBadge(r.dwdStatus)
                     const quality = r.dwdStatus === 'succeeded' ? '通过' : r.dwdStatus === 'failed' ? '未通过' : '—'
@@ -718,16 +751,21 @@ export function OdsToDwdCenterPage() {
                         ) : null}
                       </Fragment>
                     )
-                  })}
-                </tbody>
-              </table>
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </Card>
 
           <div className="min-h-0 space-y-4">
             <Card title={t.odsToDwdCenterUi.detailCardTitle} className="shrink-0">
               {!current ? (
-                <div className="text-il-page-desc text-text-3">{t.odsToDwdCenterUi.emptyBody}</div>
+                <div className="text-il-page-desc text-text-3">
+                  {rows.length > 0 && filtered.length === 0
+                    ? t.odsToDwdCenterUi.filterNoMatchBatches
+                    : t.odsToDwdCenterUi.emptyBody}
+                </div>
               ) : (
                 <>
                   <div className="mb-3 flex flex-wrap items-end justify-between gap-3">

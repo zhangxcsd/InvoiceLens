@@ -437,11 +437,10 @@ export function DataPreviewPage(props: { onNav: (k: NavKey) => void }) {
 
   const tablePack = current && activeTab ? current.tables[activeTab] : undefined
   const activeTableType = useMemo(() => {
-    if (tablePack?.table_type) return tablePack.table_type
     if (!selectedId || !activeTab) return ''
     const meta = liveTabMeta[`${selectedId}::${viewMode}`] ?? []
     return meta.find((x) => x.title === activeTab)?.tableType ?? ''
-  }, [tablePack, selectedId, activeTab, liveTabMeta, viewMode])
+  }, [selectedId, activeTab, liveTabMeta, viewMode])
 
   const filteredRows = useMemo(() => {
     if (!tablePack) return []
@@ -559,7 +558,7 @@ export function DataPreviewPage(props: { onNav: (k: NavKey) => void }) {
                   value={selectedId}
                   onChange={(e) => setSelectedId(e.target.value)}
                   disabled={busy || deleteBusy}
-                  className="box-border w-full max-w-full rounded-[7px] border border-border bg-[#fafbfc] px-2 py-2 font-mono text-[12px] text-text outline-none focus:border-accent focus:bg-white disabled:opacity-60"
+                  className="box-border w-full max-w-full rounded-[7px] border-2 border-accent/65 bg-[#eef6ff] px-2 py-2 font-mono text-[12px] font-semibold text-text outline-none ring-2 ring-accent/20 focus:border-accent focus:bg-white focus:ring-accent/35 disabled:opacity-60"
                 >
                   {batches.map((b) => (
                     <option key={b.id} value={b.id}>
@@ -747,7 +746,7 @@ export function DataPreviewPage(props: { onNav: (k: NavKey) => void }) {
 
               <Card
                 title={`${t.dataPreviewUi.tableCardTitle} · ${activeTab}${
-                  tablePack?.table_type ? `（表类型=${tablePack.table_type}）` : ''
+                  activeTableType ? `（表类型=${activeTableType}）` : ''
                 }`}
                 className="mb-4 min-w-0 shrink-0"
                 bodyClassName="!p-0"
@@ -785,9 +784,9 @@ export function DataPreviewPage(props: { onNav: (k: NavKey) => void }) {
                               <td
                                 key={c.field}
                                 className="max-w-[220px] truncate px-2.5 py-2 first:pl-4 last:pr-4"
-                                title={(row[c.field] ?? '').trim() || '—'}
+                                title={(row[c.field] ?? '').trim()}
                               >
-                                {(row[c.field] ?? '').trim() || '—'}
+                                {(row[c.field] ?? '').trim()}
                               </td>
                             ))}
                           </tr>
