@@ -11,6 +11,9 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8765',
         changeOrigin: true,
+        // DWD 构建可能较长；默认代理超时过短会表现为 HTTP 502（浏览器仅见网关错误）
+        timeout: 3_600_000,
+        proxyTimeout: 3_600_000,
       },
     },
   },
