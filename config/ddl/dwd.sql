@@ -245,51 +245,57 @@ CREATE INDEX IF NOT EXISTS idx_map_ibatch    ON dwd_inv_map (import_batch_id);
 -- dwd_spc_transport_passenger：专项运输-客运明细
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dwd_spc_transport_passenger (
+    -- detail_uuid：与 dwd_inv_detail 相同公式 MD5(fw2hw(fpdm||fphm||sdfphm)||logic_line_no)，便于同逻辑行与明细对齐
     detail_uuid   VARCHAR NOT NULL PRIMARY KEY,
     header_uuid   VARCHAR NOT NULL,
     stat_year     SMALLINT NOT NULL,
     stat_month    SMALLINT NOT NULL,
+    -- 与 dwd_inv_detail 同源：_hdr_k+_scope_k 分区内编号，详见销货清单类汇总参考行为 0（见 src/etl/dwd_shared_logic_line.py）
     logic_line_no INTEGER NOT NULL,
 
-    fpdm                  VARCHAR,
-    fphm                  VARCHAR,
-    sdfphm                VARCHAR,
-    kprq                  VARCHAR,
-    invoice_date          DATE,
-    fppz                  VARCHAR,
-    invoice_status        VARCHAR,
-    is_positive_invoice   VARCHAR,
-    remark                VARCHAR,
-    je                    DECIMAL(18,2),
-    se                    DECIMAL(18,2),
-    jshj                  DECIMAL(18,2),
+    fpdm                  VARCHAR, -- 发票代码（Excel：发票代码）
+    fphm                  VARCHAR, -- 发票号码（Excel：发票号码）
+    sdfphm                VARCHAR, -- 数电发票号码
+    kprq                  VARCHAR, -- 开票日期原串（Excel：开票日期/发票日期）
+    invoice_date          DATE,    -- 开票日期（由 kprq 解析）
+    fppz                  VARCHAR, -- 发票票种（Excel：发票票种）
+    invoice_status        VARCHAR, -- 发票状态（Excel：发票状态）
+    is_positive_invoice   VARCHAR, -- 是否正数发票（Excel：是否正数发票）
+    remark                VARCHAR, -- 备注（Excel：备注）
+    je                    DECIMAL(18,2), -- 金额
+    se                    DECIMAL(18,2), -- 税额
+    jshj                  DECIMAL(18,2), -- 价税合计
+    xfsbh                 VARCHAR, -- 销方纳税人识别号（Excel：销方识别号/销方税号）
+    xfmc                  VARCHAR, -- 销方名称（Excel：销方名称）
+    gfsbh                 VARCHAR, -- 购买方纳税人识别号（Excel：购买方识别号/购买方税号）
+    gfmc                  VARCHAR, -- 购买方名称（Excel：购买方名称/购方名称）
 
-    passenger_name        VARCHAR,
-    traveler_id_no        VARCHAR,
-    trip_date             DATE,
-    trip_time             VARCHAR,
-    departure_place       VARCHAR,
-    arrival_place         VARCHAR,
-    transport_tool_type   VARCHAR,
-    service_class         VARCHAR,
-    trip_no               VARCHAR,
+    passenger_name        VARCHAR, -- 旅客姓名
+    traveler_id_no        VARCHAR, -- 有效身份证号
+    trip_date             DATE,    -- 出行日期
+    trip_time             VARCHAR, -- 出行时间（HH:MM）
+    departure_place       VARCHAR, -- 出发地
+    arrival_place         VARCHAR, -- 到达地
+    transport_means_type  VARCHAR, -- 交通工具类型（铁路/航空/其他）
+    service_class         VARCHAR, -- 舱位/席别等级
+    trip_no               VARCHAR, -- 车次/航班号
 
-    source_table_type     VARCHAR,
-    source_scope_key      VARCHAR,
-    is_business_in_scope  BOOLEAN,
+    source_table_type     VARCHAR, -- 来源专项表类型（如 spc_passenger_transport/spc_rail_eticket/spc_air_transport）
+    source_scope_key      VARCHAR, -- 来源作用域键（import_session_id+source_excel_file+source_sheet 组合哈希）
+    is_business_in_scope  BOOLEAN, -- 是否纳入业务口径（发票状态=正常 且 是否正数发票=是）
 
-    import_batch_id       VARCHAR,
-    import_session_id     VARCHAR,
-    ods_file_seq          INTEGER,
-    source_excel_file     VARCHAR,
-    source_parquet_file   VARCHAR,
-    source_sheet          VARCHAR,
-    ingest_ts             TIMESTAMP,
-    dwd_build_ts          TIMESTAMP,
-    dwd_build_id          VARCHAR,
+    import_batch_id       VARCHAR, -- 导入批次 ID（批次）
+    import_session_id     VARCHAR, -- 导入会话 ID
+    ods_file_seq          INTEGER, -- ODS 分片序号（ods_file_seq）
+    source_excel_file     VARCHAR, -- 来源 Excel 文件路径
+    source_parquet_file   VARCHAR, -- 来源 ODS Parquet 文件路径
+    source_sheet          VARCHAR, -- 来源工作表名
+    ingest_ts             TIMESTAMP, -- 进入 ODS 链路时间
+    dwd_build_ts          TIMESTAMP, -- DWD 构建写入时间
+    dwd_build_id          VARCHAR, -- DWD 构建任务 ID
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (header_uuid, source_scope_key, logic_line_no)
+    UNIQUE (header_uuid, logic_line_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_spcp_header    ON dwd_spc_transport_passenger (header_uuid);
@@ -301,50 +307,228 @@ CREATE INDEX IF NOT EXISTS idx_spcp_ibatch    ON dwd_spc_transport_passenger (im
 -- dwd_spc_transport_freight：专项运输-货运明细
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dwd_spc_transport_freight (
+    -- detail_uuid：与 dwd_inv_detail 相同公式（同票同 logic_line_no 与明细主键一致）
     detail_uuid   VARCHAR NOT NULL PRIMARY KEY,
     header_uuid   VARCHAR NOT NULL,
     stat_year     SMALLINT NOT NULL,
     stat_month    SMALLINT NOT NULL,
+    -- 与 dwd_inv_detail 同源编号规则（见 src/etl/dwd_shared_logic_line.py）
     logic_line_no INTEGER NOT NULL,
 
-    fpdm                  VARCHAR,
-    fphm                  VARCHAR,
-    sdfphm                VARCHAR,
-    kprq                  VARCHAR,
-    invoice_date          DATE,
-    fppz                  VARCHAR,
-    invoice_status        VARCHAR,
-    is_positive_invoice   VARCHAR,
-    remark                VARCHAR,
-    je                    DECIMAL(18,2),
-    se                    DECIMAL(18,2),
-    jshj                  DECIMAL(18,2),
+    fpdm                  VARCHAR, -- 发票代码（Excel：发票代码）
+    fphm                  VARCHAR, -- 发票号码（Excel：发票号码）
+    sdfphm                VARCHAR, -- 数电发票号码
+    kprq                  VARCHAR, -- 开票日期原串（Excel：开票日期/发票日期）
+    invoice_date          DATE,    -- 开票日期（由 kprq 解析）
+    fppz                  VARCHAR, -- 发票票种（Excel：发票票种）
+    invoice_status        VARCHAR, -- 发票状态（Excel：发票状态）
+    is_positive_invoice   VARCHAR, -- 是否正数发票（Excel：是否正数发票）
+    remark                VARCHAR, -- 备注（Excel：备注）
+    je                    DECIMAL(18,2), -- 金额
+    se                    DECIMAL(18,2), -- 税额
+    jshj                  DECIMAL(18,2), -- 价税合计
+    xfsbh                 VARCHAR, -- 销方纳税人识别号（Excel：销方识别号/销方税号）
+    xfmc                  VARCHAR, -- 销方名称（Excel：销方名称）
+    gfsbh                 VARCHAR, -- 购买方纳税人识别号（Excel：购买方识别号/购买方税号）
+    gfmc                  VARCHAR, -- 购买方名称（Excel：购买方名称/购方名称）
 
-    shipper               VARCHAR,
-    receiver              VARCHAR,
-    cargo_name            VARCHAR,
-    departure_place       VARCHAR,
-    arrival_place         VARCHAR,
-    transport_tool_type   VARCHAR,
+    cargo_name            VARCHAR, -- 货物名称
+    departure_place       VARCHAR, -- 起运地
+    arrival_place         VARCHAR, -- 到达地
+    transport_means_plate_no VARCHAR, -- 运输工具牌号/车牌号
+    transport_means_type  VARCHAR, -- 运输工具种类
 
-    source_table_type     VARCHAR,
-    source_scope_key      VARCHAR,
-    is_business_in_scope  BOOLEAN,
+    source_table_type     VARCHAR, -- 来源专项表类型（spc_freight）
+    source_scope_key      VARCHAR, -- 来源作用域键（import_session_id+source_excel_file+source_sheet 组合哈希）
+    is_business_in_scope  BOOLEAN, -- 是否纳入业务口径（发票状态=正常 且 是否正数发票=是）
 
-    import_batch_id       VARCHAR,
-    import_session_id     VARCHAR,
-    ods_file_seq          INTEGER,
-    source_excel_file     VARCHAR,
-    source_parquet_file   VARCHAR,
-    source_sheet          VARCHAR,
-    ingest_ts             TIMESTAMP,
-    dwd_build_ts          TIMESTAMP,
-    dwd_build_id          VARCHAR,
+    import_batch_id       VARCHAR, -- 导入批次 ID（批次）
+    import_session_id     VARCHAR, -- 导入会话 ID
+    ods_file_seq          INTEGER, -- ODS 分片序号（ods_file_seq）
+    source_excel_file     VARCHAR, -- 来源 Excel 文件路径
+    source_parquet_file   VARCHAR, -- 来源 ODS Parquet 文件路径
+    source_sheet          VARCHAR, -- 来源工作表名
+    ingest_ts             TIMESTAMP, -- 进入 ODS 链路时间
+    dwd_build_ts          TIMESTAMP, -- DWD 构建写入时间
+    dwd_build_id          VARCHAR, -- DWD 构建任务 ID
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (header_uuid, source_scope_key, logic_line_no)
+    UNIQUE (header_uuid, logic_line_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_spcf_header    ON dwd_spc_transport_freight (header_uuid);
 CREATE INDEX IF NOT EXISTS idx_spcf_ym        ON dwd_spc_transport_freight (stat_year, stat_month);
 CREATE INDEX IF NOT EXISTS idx_spcf_ibatch    ON dwd_spc_transport_freight (import_batch_id);
+
+-- -----------------------------------------------------------------------------
+-- dwd_spc_vehicle_sales：专项-机动车销售（含新车 spc_vehicle + 二手车 spc_used_vehicle）
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dwd_spc_vehicle_sales (
+    -- detail_uuid：与 dwd_inv_detail 同公式；新车/二手车合并写入本表，source_table_type 区分来源
+    detail_uuid   VARCHAR NOT NULL PRIMARY KEY,
+    header_uuid   VARCHAR NOT NULL,
+    stat_year     SMALLINT NOT NULL,
+    stat_month    SMALLINT NOT NULL,
+    -- 与 dwd_inv_detail 同源编号规则（见 src/etl/dwd_shared_logic_line.py）
+    logic_line_no INTEGER NOT NULL,
+
+    fpdm                  VARCHAR, -- 发票代码（Excel：发票代码）
+    fphm                  VARCHAR, -- 发票号码（Excel：发票号码）
+    sdfphm                VARCHAR, -- 数电发票号码
+    kprq                  VARCHAR, -- 开票日期原串（Excel：开票日期/发票日期）
+    invoice_date          DATE,    -- 开票日期（由 kprq 解析）
+    fppz                  VARCHAR, -- 发票票种（Excel：发票票种）
+    invoice_status        VARCHAR, -- 发票状态（Excel：发票状态）
+    is_positive_invoice   VARCHAR, -- 是否正数发票（Excel：是否正数发票）
+    remark                VARCHAR, -- 备注（Excel：备注）
+    je                    DECIMAL(18,2), -- 金额
+    se                    DECIMAL(18,2), -- 税额
+    jshj                  DECIMAL(18,2), -- 价税合计
+    xfsbh                 VARCHAR, -- 销方纳税人识别号（Excel：销方识别号/销方税号）
+    xfmc                  VARCHAR, -- 销方名称（Excel：销方名称）
+    gfsbh                 VARCHAR, -- 购买方纳税人识别号（Excel：购买方识别号/购买方税号）
+    gfmc                  VARCHAR, -- 购买方名称（Excel：购买方名称/购方名称）
+
+    source_table_type     VARCHAR, -- 来源专项表类型（spc_vehicle/spc_used_vehicle）
+    trade_org_name        VARCHAR, -- 经营/拍卖单位或二手车市场名称（合并字段）
+    trade_org_tax_no      VARCHAR, -- 经营/拍卖单位或二手车市场纳税人识别号（合并字段）
+    vin_chassis           VARCHAR, -- 车辆识别代号/车架号
+    engine_no             VARCHAR, -- 发动机号码
+    vehicle_certificate_no VARCHAR, -- 合格证号
+    commodity_inspection_no VARCHAR, -- 商检号码/商检单号
+    place_of_origin       VARCHAR, -- 产地
+    vehicle_plate_no      VARCHAR, -- 车牌照号/车牌号
+    registration_cert_no  VARCHAR, -- 登记证号
+    transfer_dmv_office   VARCHAR, -- 转入地车辆管理所名称
+    buyer_address         VARCHAR, -- 购买方地址
+    buyer_phone           VARCHAR, -- 购买方联系电话
+
+    source_scope_key      VARCHAR, -- 来源作用域键（import_session_id+source_excel_file+source_sheet 组合哈希）
+    is_business_in_scope  BOOLEAN, -- 是否纳入业务口径（发票状态=正常 且 是否正数发票=是）
+
+    import_batch_id       VARCHAR, -- 导入批次 ID（批次）
+    import_session_id     VARCHAR, -- 导入会话 ID
+    ods_file_seq          INTEGER, -- ODS 分片序号（ods_file_seq）
+    source_excel_file     VARCHAR, -- 来源 Excel 文件路径
+    source_parquet_file   VARCHAR, -- 来源 ODS Parquet 文件路径
+    source_sheet          VARCHAR, -- 来源工作表名
+    ingest_ts             TIMESTAMP, -- 进入 ODS 链路时间
+    dwd_build_ts          TIMESTAMP, -- DWD 构建写入时间
+    dwd_build_id          VARCHAR, -- DWD 构建任务 ID
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (header_uuid, logic_line_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spcvs_header ON dwd_spc_vehicle_sales (header_uuid);
+CREATE INDEX IF NOT EXISTS idx_spcvs_ym     ON dwd_spc_vehicle_sales (stat_year, stat_month);
+CREATE INDEX IF NOT EXISTS idx_spcvs_ibatch ON dwd_spc_vehicle_sales (import_batch_id);
+
+-- -----------------------------------------------------------------------------
+-- dwd_spc_construction_service：专项-建筑服务（spc_construction）
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dwd_spc_construction_service (
+    -- detail_uuid：与 dwd_inv_detail 同公式
+    detail_uuid   VARCHAR NOT NULL PRIMARY KEY,
+    header_uuid   VARCHAR NOT NULL,
+    stat_year     SMALLINT NOT NULL,
+    stat_month    SMALLINT NOT NULL,
+    -- 与 dwd_inv_detail 同源编号规则（见 src/etl/dwd_shared_logic_line.py）
+    logic_line_no INTEGER NOT NULL,
+
+    fpdm                      VARCHAR, -- 发票代码（Excel：发票代码）
+    fphm                      VARCHAR, -- 发票号码（Excel：发票号码）
+    sdfphm                    VARCHAR, -- 数电发票号码
+    kprq                      VARCHAR, -- 开票日期原串（Excel：开票日期/发票日期）
+    invoice_date              DATE,    -- 开票日期（由 kprq 解析）
+    fppz                      VARCHAR, -- 发票票种（Excel：发票票种）
+    invoice_status            VARCHAR, -- 发票状态（Excel：发票状态）
+    is_positive_invoice       VARCHAR, -- 是否正数发票（Excel：是否正数发票）
+    remark                    VARCHAR, -- 备注（Excel：备注）
+    je                        DECIMAL(18,2), -- 金额
+    se                        DECIMAL(18,2), -- 税额
+    jshj                      DECIMAL(18,2), -- 价税合计
+    xfsbh                     VARCHAR, -- 销方纳税人识别号（Excel：销方识别号/销方税号）
+    xfmc                      VARCHAR, -- 销方名称（Excel：销方名称）
+    gfsbh                     VARCHAR, -- 购买方纳税人识别号（Excel：购买方识别号/购买方税号）
+    gfmc                      VARCHAR, -- 购买方名称（Excel：购买方名称/购方名称）
+
+    construction_project_name     VARCHAR, -- 建筑项目名称
+    construction_service_location VARCHAR, -- 建筑服务发生地
+    cross_region_tax_mgmt_no      VARCHAR, -- 跨区域涉税事项报验管理编号
+
+    source_table_type         VARCHAR, -- 来源专项表类型（spc_construction）
+    source_scope_key          VARCHAR, -- 来源作用域键（import_session_id+source_excel_file+source_sheet 组合哈希）
+    is_business_in_scope      BOOLEAN, -- 是否纳入业务口径（发票状态=正常 且 是否正数发票=是）
+
+    import_batch_id           VARCHAR, -- 导入批次 ID（批次）
+    import_session_id         VARCHAR, -- 导入会话 ID
+    ods_file_seq              INTEGER, -- ODS 分片序号（ods_file_seq）
+    source_excel_file         VARCHAR, -- 来源 Excel 文件路径
+    source_parquet_file       VARCHAR, -- 来源 ODS Parquet 文件路径
+    source_sheet              VARCHAR, -- 来源工作表名
+    ingest_ts                 TIMESTAMP, -- 进入 ODS 链路时间
+    dwd_build_ts              TIMESTAMP, -- DWD 构建写入时间
+    dwd_build_id              VARCHAR, -- DWD 构建任务 ID
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (header_uuid, logic_line_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spc_cs_header ON dwd_spc_construction_service (header_uuid);
+CREATE INDEX IF NOT EXISTS idx_spc_cs_ym     ON dwd_spc_construction_service (stat_year, stat_month);
+CREATE INDEX IF NOT EXISTS idx_spc_cs_ibatch ON dwd_spc_construction_service (import_batch_id);
+
+-- -----------------------------------------------------------------------------
+-- dwd_spc_estate_lease：专项-不动产经营租赁（spc_estate_lease）
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dwd_spc_estate_lease (
+    -- detail_uuid：与 dwd_inv_detail 同公式
+    detail_uuid   VARCHAR NOT NULL PRIMARY KEY,
+    header_uuid   VARCHAR NOT NULL,
+    stat_year     SMALLINT NOT NULL,
+    stat_month    SMALLINT NOT NULL,
+    -- 与 dwd_inv_detail 同源编号规则（见 src/etl/dwd_shared_logic_line.py）
+    logic_line_no INTEGER NOT NULL,
+
+    fpdm                  VARCHAR, -- 发票代码（Excel：发票代码）
+    fphm                  VARCHAR, -- 发票号码（Excel：发票号码）
+    sdfphm                VARCHAR, -- 数电发票号码
+    kprq                  VARCHAR, -- 开票日期原串（Excel：开票日期/发票日期）
+    invoice_date          DATE,    -- 开票日期（由 kprq 解析）
+    fppz                  VARCHAR, -- 发票票种（Excel：发票票种）
+    invoice_status        VARCHAR, -- 发票状态（Excel：发票状态）
+    is_positive_invoice   VARCHAR, -- 是否正数发票（Excel：是否正数发票）
+    remark                VARCHAR, -- 备注（Excel：备注）
+    je                    DECIMAL(18,2), -- 金额
+    se                    DECIMAL(18,2), -- 税额
+    jshj                  DECIMAL(18,2), -- 价税合计
+    xfsbh                 VARCHAR, -- 销方纳税人识别号（Excel：销方识别号/销方税号）
+    xfmc                  VARCHAR, -- 销方名称（Excel：销方名称）
+    gfsbh                 VARCHAR, -- 购买方纳税人识别号（Excel：购买方识别号/购买方税号）
+    gfmc                  VARCHAR, -- 购买方名称（Excel：购买方名称/购方名称）
+
+    license_plate_no      VARCHAR, -- 车牌号
+    property_title_cert_no VARCHAR, -- 产权证书/不动产权证号
+
+    source_table_type     VARCHAR, -- 来源专项表类型（spc_estate_lease）
+    source_scope_key      VARCHAR, -- 来源作用域键（import_session_id+source_excel_file+source_sheet 组合哈希）
+    is_business_in_scope  BOOLEAN, -- 是否纳入业务口径（发票状态=正常 且 是否正数发票=是）
+
+    import_batch_id       VARCHAR, -- 导入批次 ID（批次）
+    import_session_id     VARCHAR, -- 导入会话 ID
+    ods_file_seq          INTEGER, -- ODS 分片序号（ods_file_seq）
+    source_excel_file     VARCHAR, -- 来源 Excel 文件路径
+    source_parquet_file   VARCHAR, -- 来源 ODS Parquet 文件路径
+    source_sheet          VARCHAR, -- 来源工作表名
+    ingest_ts             TIMESTAMP, -- 进入 ODS 链路时间
+    dwd_build_ts          TIMESTAMP, -- DWD 构建写入时间
+    dwd_build_id          VARCHAR, -- DWD 构建任务 ID
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE (header_uuid, logic_line_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spc_el_header ON dwd_spc_estate_lease (header_uuid);
+CREATE INDEX IF NOT EXISTS idx_spc_el_ym     ON dwd_spc_estate_lease (stat_year, stat_month);
+CREATE INDEX IF NOT EXISTS idx_spc_el_ibatch ON dwd_spc_estate_lease (import_batch_id);

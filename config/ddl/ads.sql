@@ -58,3 +58,25 @@ CREATE TABLE IF NOT EXISTS ads_import_log (
     detail_json   VARCHAR
 );
 
+-- DWD→DIM 任务运行台账（任务中心运行记录）
+CREATE TABLE IF NOT EXISTS ads_etl_task_run_log (
+    run_id         VARCHAR NOT NULL PRIMARY KEY,
+    task_code      VARCHAR NOT NULL,
+    task_name      VARCHAR,
+    status         VARCHAR NOT NULL, -- success / failed / running
+    trigger_source VARCHAR,          -- manual_ui / api / scheduler
+    run_mode       VARCHAR,          -- incremental / full / chained
+    params_json    VARCHAR,          -- 请求参数快照（JSON 字符串）
+    result_json    VARCHAR,          -- 结果快照（JSON 字符串）
+    rows_affected  BIGINT DEFAULT 0,
+    error_message  VARCHAR,
+    calc_batch_id  VARCHAR,
+    import_batch_id VARCHAR,
+    started_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    finished_at    TIMESTAMP,
+    duration_ms    BIGINT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_run_task_time ON ads_etl_task_run_log (task_code, started_at);
+CREATE INDEX IF NOT EXISTS idx_task_run_status    ON ads_etl_task_run_log (status, started_at);
+
