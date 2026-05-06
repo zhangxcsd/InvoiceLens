@@ -115,6 +115,45 @@ def record_dim_task_run(
     )
 
 
+def record_dim_task_run_running(
+    *,
+    run_id: str,
+    task_code: str,
+    task_name: str,
+    trigger_source: str = "manual_ui",
+    run_mode: str | None = None,
+    params: dict[str, Any] | None = None,
+    started_at_ts: float | None = None,
+) -> None:
+    """
+    写入一条「进行中」台账：finished_at / duration_ms 为空，便于重启后仍能从 run_id 识别未终态任务。
+    任务结束时应再调用 record_dim_task_run 覆盖为 success/failed。
+    """
+    conn = get_conn()
+    init_all_tables(conn)
+    started = float(started_at_ts) if started_at_ts is not None else time.time()
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO ads_etl_task_run_log (
+            run_id, task_code, task_name, status, trigger_source, run_mode,
+            params_json, result_json, rows_affected, error_message,
+            calc_batch_id, import_batch_id, started_at, finished_at, duration_ms
+        )
+        VALUES (?, ?, ?, 'running', ?, ?, ?, ?, 0, NULL, NULL, NULL, to_timestamp(?), NULL, NULL)
+        """,
+        [
+            run_id,
+            task_code,
+            task_name,
+            trigger_source,
+            run_mode,
+            json.dumps(params or {}, ensure_ascii=False),
+            json.dumps({}, ensure_ascii=False),
+            started,
+        ],
+    )
+
+
 def list_dim_task_runs(
     *,
     task_code: str | None = None,

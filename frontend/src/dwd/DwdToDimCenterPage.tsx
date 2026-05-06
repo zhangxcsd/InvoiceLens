@@ -96,6 +96,9 @@ const FAILED_RUNS: FailedRun[] = [
   },
 ]
 
+/** 运行记录弹窗：task_code → 中文名（与 TASKS 注册表一致） */
+const TASK_CODE_TO_NAME: Record<string, string> = Object.fromEntries(TASKS.map((x) => [x.taskCode, x.taskName]))
+
 function statusTag(status: TaskStatus) {
   if (status === 'running') return 'border-[#c8dff7] bg-[#f0f7ff] text-accent-mid'
   if (status === 'queued') return 'border-[#f2c078] bg-[#fff7ea] text-warn'
@@ -296,7 +299,6 @@ export function DwdToDimCenterPage() {
     }
   }, [showRunLogsDialog])
 
-  const allRunTaskOptions = useMemo(() => ['all', ...TASKS.map((x) => x.taskCode)], [])
   const allRunsFiltered = useMemo(
     () =>
       allRuns.filter((r) => {
@@ -852,13 +854,11 @@ export function DwdToDimCenterPage() {
                   }}
                 >
                   <option value="all">{t.dwdToDimCenterUi.runLogFilterTaskAll}</option>
-                  {allRunTaskOptions
-                    .filter((x) => x !== 'all')
-                    .map((x) => (
-                      <option key={x} value={x}>
-                        {x}
-                      </option>
-                    ))}
+                  {TASKS.map((tk) => (
+                    <option key={tk.taskCode} value={tk.taskCode}>
+                      {tk.taskName} · {tk.taskCode}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="text-il-label text-text-3">
@@ -898,7 +898,12 @@ export function DwdToDimCenterPage() {
                   <tbody>
                     {allRunsPageRows.map((row) => (
                       <tr key={row.run_id} className="border-b border-border-light/60">
-                        <td className="py-1.5 pr-2 font-mono text-text-2">{row.task_code}</td>
+                        <td className="py-1.5 pr-2">
+                          <div className="font-medium text-text">
+                            {TASK_CODE_TO_NAME[row.task_code] ?? t.dwdToDimCenterUi.runLogUnknownTask}
+                          </div>
+                          <div className="font-mono text-il-meta text-text-3">{row.task_code || '—'}</div>
+                        </td>
                         <td className="py-1.5 pr-2">
                           <span className={['inline-flex rounded-full border px-2 py-[1px] text-il-pill font-semibold', runStatusClass(row.status)].join(' ')}>
                             {runStatusText(row.status)}

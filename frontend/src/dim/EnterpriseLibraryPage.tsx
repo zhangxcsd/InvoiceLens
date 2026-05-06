@@ -3,13 +3,17 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
+  fetchSubjectLibraryRenameTimeline,
   fetchSubjectLibraryRows,
   fetchSubjectLibrarySummary,
   postSubjectCategoryRecompute,
+  postSubjectLibraryExternalImport,
+  fetchSubjectLibraryRenameRebuildStatus,
   postSubjectLibraryIngestFromDwd,
+  postSubjectLibraryRebuildRenameSignals,
+  postSubjectLibraryRepair,
 } from '../config/localApi'
 
-type RoleTag = 'seller' | 'buyer' | 'both'
 type SubjectType = 'enterprise' | 'person'
 
 type EnterpriseRow = {
@@ -19,64 +23,38 @@ type EnterpriseRow = {
   sourceType: 'platform' | 'external'
   subjectType: SubjectType
   subjectCategoryCode: string
-  snapshotYear: string
-  roleTag: RoleTag
-  renamedInYear: boolean
+  subjectCategoryName: string
+  hasRenameSignal: boolean
+  renameEdgeCount: number
   renameHint: string
   renameTimeline: string[]
   firstSeenBatchId: string
   lastSeenBatchId: string
   firstSeenDate: string
   lastSeenDate: string
+  subjectSnapshotId: string
+  qualityStatus: string
+  categoryStatusNote: string
+  subjectBuildRunId: string
+  categoryRuleVersion: string
 }
 
-function roleLabel(v: RoleTag) {
-  const ui = t.enterpriseLibraryUi
-  if (v === 'both') return ui.roleBoth
-  if (v === 'seller') return ui.roleSeller
-  return ui.roleBuyer
+/** 列表「企业/个人」与库 subject_category（org/person）对齐 */
+function subjectTypeToApi(st: SubjectType): 'org' | 'person' {
+  return st === 'person' ? 'person' : 'org'
 }
 
-function createImportedRows(fileName: string, snapshotYear: string, baseSize: number): EnterpriseRow[] {
-  const stem = fileName.replace(/\.[^.]+$/, '').trim() || '外部导入'
-  const seq = String(baseSize + 1).padStart(3, '0')
-  const year = /^\d{4}$/.test(snapshotYear) ? snapshotYear : String(new Date().getFullYear())
-  return [
-    {
-      enterpriseId: `EXT_ENT_${seq}`,
-      enterpriseName: `${stem}-企业主体`,
-      taxpayerId: `91EXT${String(baseSize + 100001).slice(-6)}${year.slice(-2)}X`,
-      sourceType: 'external',
-      subjectType: 'enterprise',
-      subjectCategoryCode: 'SC-ENT',
-      snapshotYear: year,
-      roleTag: 'both',
-      renamedInYear: false,
-      renameHint: '-',
-      renameTimeline: [],
-      firstSeenBatchId: `EXT_${year}_A01`,
-      lastSeenBatchId: `EXT_${year}_A01`,
-      firstSeenDate: `${year}-01-01`,
-      lastSeenDate: `${year}-12-31`,
-    },
-    {
-      enterpriseId: `EXT_PSN_${seq}`,
-      enterpriseName: `${stem}-个人主体`,
-      taxpayerId: `37EXT${String(baseSize + 200001).slice(-6)}${year.slice(-2)}Y`,
-      sourceType: 'external',
-      subjectType: 'person',
-      subjectCategoryCode: 'SC-TEMP',
-      snapshotYear: year,
-      roleTag: 'buyer',
-      renamedInYear: false,
-      renameHint: '-',
-      renameTimeline: [],
-      firstSeenBatchId: `EXT_${year}_A01`,
-      lastSeenBatchId: `EXT_${year}_A01`,
-      firstSeenDate: `${year}-01-01`,
-      lastSeenDate: `${year}-12-31`,
-    },
-  ]
+/**
+ * dim_subject_master.first_source_system 在库中多为 invoice/external/manual；
+ * 新 API 会把列表 source_type 归一成 platform|external，但旧进程或直连仍可能返回 invoice。
+ * 仅 external 显示「外部导入」，其余一律按「平台计算」展示，避免发票主体被误判。
+ */
+function normalizeSubjectSourceType(api: string | undefined): 'platform' | 'external' {
+  const s = String(api ?? '')
+    .trim()
+    .toLowerCase()
+  if (s === 'external') return 'external'
+  return 'platform'
 }
 
 export function EnterpriseLibraryPage() {
@@ -87,6 +65,7 @@ export function EnterpriseLibraryPage() {
     enterprise_count: 0,
     person_count: 0,
     needs_review_count: 0,
+    rename_signal_subject_count: 0,
   })
   const [loading, setLoading] = useState(false)
   const [loadingError, setLoadingError] = useState('')
@@ -97,46 +76,32 @@ export function EnterpriseLibraryPage() {
   const [subjectType, setSubjectType] = useState<'all' | SubjectType>('enterprise')
   const [sourceType, setSourceType] = useState<'all' | 'platform' | 'external'>('all')
   const [subjectCategory, setSubjectCategory] = useState('all')
-  const [snapshotYear, setSnapshotYear] = useState('')
-  const [renameStatus, setRenameStatus] = useState<'all' | 'renamed' | 'normal'>('all')
-  const [role, setRole] = useState<'all' | RoleTag>('all')
+  const [renameSignal, setRenameSignal] = useState<'all' | 'yes' | 'no'>('all')
   const [batchId, setBatchId] = useState('')
   const [expandedRenameId, setExpandedRenameId] = useState<string | null>(null)
+  const [renameTimelineBySubject, setRenameTimelineBySubject] = useState<Record<string, string[]>>({})
+  const [renameTimelineLoading, setRenameTimelineLoading] = useState<string | null>(null)
+  const [showTechColumns, setShowTechColumns] = useState(false)
+  const [renameRebuildBusy, setRenameRebuildBusy] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [importFile, setImportFile] = useState<File | null>(null)
   const [importError, setImportError] = useState('')
   const [importSuccess, setImportSuccess] = useState('')
-
-  const roleDisabledForPerson = subjectType === 'person'
-  const renameDisabledForPerson = subjectType === 'person'
-
-  const effectiveRole = roleDisabledForPerson ? ('all' as const) : role
-  const effectiveRenameStatus = renameDisabledForPerson ? ('all' as const) : renameStatus
-
-  const snapshotYearOptions = useMemo(() => {
-    const fromRows = [...new Set(rows.map((r) => r.snapshotYear).filter(Boolean))].sort(
-      (a, b) => Number(b) - Number(a),
-    )
-    if (snapshotYear && !fromRows.includes(snapshotYear)) {
-      return [snapshotYear, ...fromRows]
-    }
-    return fromRows
-  }, [rows, snapshotYear])
-
-  const filteredRows = useMemo(() => {
-    if (effectiveRenameStatus === 'renamed') return rows.filter((r) => r.renamedInYear)
-    if (effectiveRenameStatus === 'normal') return rows.filter((r) => !r.renamedInYear)
-    return rows
-  }, [effectiveRenameStatus, rows])
+  const [importBusy, setImportBusy] = useState(false)
+  const [repairRow, setRepairRow] = useState<EnterpriseRow | null>(null)
+  const [repairSubjectCategoryApi, setRepairSubjectCategoryApi] = useState<'org' | 'person'>('org')
+  const [repairOrgCategoryInput, setRepairOrgCategoryInput] = useState('')
+  const [repairReason, setRepairReason] = useState('')
+  const [repairBusy, setRepairBusy] = useState(false)
+  const [repairError, setRepairError] = useState('')
+  const [repairSuccessFlash, setRepairSuccessFlash] = useState('')
 
   const canReset =
     keyword.trim().length > 0 ||
     subjectType !== 'enterprise' ||
     sourceType !== 'all' ||
     subjectCategory !== 'all' ||
-    snapshotYear !== '' ||
-    renameStatus !== 'all' ||
-    role !== 'all' ||
+    renameSignal !== 'all' ||
     batchId.trim().length > 0
 
   const resetFilters = () => {
@@ -144,11 +109,81 @@ export function EnterpriseLibraryPage() {
     setSubjectType('enterprise')
     setSourceType('all')
     setSubjectCategory('all')
-    setSnapshotYear('')
-    setRenameStatus('all')
-    setRole('all')
+    setRenameSignal('all')
     setBatchId('')
     setExpandedRenameId(null)
+    setRenameTimelineBySubject({})
+  }
+
+  const toggleRenameExpand = async (subjectId: string) => {
+    if (expandedRenameId === subjectId) {
+      setExpandedRenameId(null)
+      return
+    }
+    setExpandedRenameId(subjectId)
+    setRenameTimelineLoading(subjectId)
+    const res = await fetchSubjectLibraryRenameTimeline(subjectId)
+    setRenameTimelineLoading(null)
+    if (res.ok && res.timeline_lines) {
+      setRenameTimelineBySubject((prev) => ({ ...prev, [subjectId]: res.timeline_lines ?? [] }))
+    } else {
+      setRenameTimelineBySubject((prev) => ({
+        ...prev,
+        [subjectId]: [res.error?.message ?? '加载失败'],
+      }))
+    }
+  }
+
+  const runRebuildRename = async () => {
+    setRenameRebuildBusy(true)
+    setLoadingError('')
+    const start = await postSubjectLibraryRebuildRenameSignals()
+    if (!start.ok) {
+      setLoadingError(start.error?.message ?? '重建更名信号失败')
+      setRenameRebuildBusy(false)
+      return
+    }
+    if (start.async !== true) {
+      setImportSuccess(start.message ?? '更名信号已重建')
+      setReloadSeq((v) => v + 1)
+      setRenameRebuildBusy(false)
+      return
+    }
+    if (!start.run_id) {
+      setLoadingError('未返回 run_id，无法轮询状态')
+      setRenameRebuildBusy(false)
+      return
+    }
+    const runId = start.run_id
+    const pollMs = 1500
+    const deadline = Date.now() + 2 * 60 * 60 * 1000
+    const endStates = new Set(['success', 'failed'])
+    for (;;) {
+      if (Date.now() > deadline) {
+        setLoadingError('等待重建结果超时（2 小时），可稍后在「任务运行」中查看是否已完成。')
+        break
+      }
+      const st = await fetchSubjectLibraryRenameRebuildStatus(runId)
+      if (!st.ok) {
+        setLoadingError(st.error?.message ?? '查询重建状态失败')
+        break
+      }
+      if (endStates.has(String(st.status ?? ''))) {
+        if (st.status === 'success') {
+          setImportSuccess(st.message ?? '更名信号已重建')
+          setReloadSeq((v) => v + 1)
+        } else {
+          const em =
+            st.error && typeof st.error === 'object' && 'message' in st.error
+              ? String((st.error as { message?: string }).message)
+              : st.message
+          setLoadingError(em ?? '重建更名信号失败')
+        }
+        break
+      }
+      await new Promise((r) => setTimeout(r, pollMs))
+    }
+    setRenameRebuildBusy(false)
   }
 
   const closeImportModal = () => {
@@ -157,15 +192,96 @@ export function EnterpriseLibraryPage() {
     setImportError('')
   }
 
-  const confirmImport = () => {
+  const openRepairModal = (row: EnterpriseRow) => {
+    setRepairError('')
+    setRepairReason('')
+    setRepairRow(row)
+    setRepairSubjectCategoryApi(subjectTypeToApi(row.subjectType))
+    setRepairOrgCategoryInput(row.subjectCategoryCode ?? '')
+  }
+
+  const closeRepairModal = () => {
+    setRepairRow(null)
+    setRepairError('')
+    setRepairReason('')
+    setRepairBusy(false)
+  }
+
+  const confirmRepair = async () => {
+    if (!repairRow) return
+    const rowCat = subjectTypeToApi(repairRow.subjectType)
+    const prevOrg = (repairRow.subjectCategoryCode ?? '').trim()
+    const nextOrg = repairOrgCategoryInput.trim()
+    if (repairSubjectCategoryApi === rowCat && nextOrg === prevOrg) {
+      setRepairError(ui.repairNeedChange)
+      return
+    }
+    setRepairBusy(true)
+    setRepairError('')
+    try {
+      const body: {
+        subject_id: string
+        subject_category: 'org' | 'person'
+        org_category: string
+        reason?: string
+        client_hint: string
+      } = {
+        subject_id: repairRow.enterpriseId,
+        subject_category: repairSubjectCategoryApi,
+        org_category: nextOrg,
+        client_hint: 'web-enterprise-library',
+      }
+      if (repairReason.trim()) body.reason = repairReason.trim()
+      const res = await postSubjectLibraryRepair(body)
+      if (!res.ok) {
+        setRepairError(res.error?.message ?? ui.repairFailed)
+        return
+      }
+      setRepairSuccessFlash(res.message ?? ui.repairSuccess)
+      setReloadSeq((v) => v + 1)
+      closeRepairModal()
+    } catch (e) {
+      setRepairError(e instanceof Error ? e.message : ui.repairFailed)
+    } finally {
+      setRepairBusy(false)
+    }
+  }
+
+  const confirmImport = async () => {
     if (!importFile) {
       setImportError(ui.importNeedFile)
       return
     }
-    const added = createImportedRows(importFile.name, snapshotYear, rows.length)
-    setRows((prev) => [...added, ...prev])
-    setImportSuccess(ui.importSuccessHint.replace('{count}', String(added.length)))
-    closeImportModal()
+    setImportBusy(true)
+    setImportError('')
+    try {
+      const res = await postSubjectLibraryExternalImport({
+        file: importFile,
+      })
+      if (!res.ok) {
+        const extra =
+          res.reject_row_samples && res.reject_row_samples.length > 0
+            ? `；行级拒收样例：${res.reject_row_samples
+                .slice(0, 3)
+                .map((s) => `序号${s.seq_no}${s.field ? `/${s.field}` : ''}:${s.reason}`)
+                .join('；')}`
+            : ''
+        setImportError((res.error?.message ?? ui.importFailed) + extra)
+        return
+      }
+      const n = res.subjects_upserted ?? 0
+      const hint =
+        res.reject_row_samples && res.reject_row_samples.length > 0
+          ? `${ui.importSuccessHint.replace('{count}', String(n))}（${ui.importPartialRejectHint.replace('{n}', String(res.reject_row_samples.length))}）`
+          : ui.importSuccessHint.replace('{count}', String(n))
+      setImportSuccess(res.message ? `${res.message}；${hint}` : hint)
+      setReloadSeq((v) => v + 1)
+      closeImportModal()
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : ui.importFailed)
+    } finally {
+      setImportBusy(false)
+    }
   }
 
   const stats = useMemo(
@@ -173,7 +289,8 @@ export function EnterpriseLibraryPage() {
       total: summary.total,
       enterpriseCount: summary.enterprise_count,
       personCount: summary.person_count,
-      renamedCount: summary.needs_review_count,
+      needsReviewCount: summary.needs_review_count,
+      renameSignalSubjects: summary.rename_signal_subject_count ?? 0,
     }),
     [summary],
   )
@@ -185,19 +302,18 @@ export function EnterpriseLibraryPage() {
       setLoadingError('')
       const [rowsRes, sumRes] = await Promise.all([
         fetchSubjectLibraryRows({
-          snapshotYear,
           keyword,
           subjectType,
           sourceType,
           subjectCategory,
-          role: effectiveRole,
+          renameSignal,
           batchId,
           limit: 1000,
         }),
         fetchSubjectLibrarySummary({
-          snapshotYear,
           subjectType,
           sourceType,
+          keyword,
         }),
       ])
       if (cancelled) return
@@ -209,30 +325,47 @@ export function EnterpriseLibraryPage() {
             enterpriseId: r.enterprise_id,
             enterpriseName: r.enterprise_name,
             taxpayerId: r.taxpayer_id,
-            sourceType: r.source_type,
+            sourceType: normalizeSubjectSourceType(r.source_type),
             subjectType: r.subject_type,
             subjectCategoryCode: r.subject_category_code,
-            snapshotYear: r.snapshot_year || snapshotYear,
-            roleTag: r.role_tag,
-            renamedInYear: r.renamed_in_year,
+            subjectCategoryName: r.subject_category_name ?? '',
+            hasRenameSignal: Boolean(r.has_rename_signal),
+            renameEdgeCount: Number(r.rename_edge_count ?? 0),
             renameHint: r.rename_hint,
-            renameTimeline: r.rename_timeline,
+            renameTimeline: r.rename_timeline ?? [],
             firstSeenBatchId: r.first_seen_batch_id,
             lastSeenBatchId: r.last_seen_batch_id,
             firstSeenDate: r.first_seen_date,
             lastSeenDate: r.last_seen_date,
+            subjectSnapshotId: r.subject_snapshot_id ?? '',
+            qualityStatus: r.quality_status ?? '',
+            categoryStatusNote: r.category_status_note ?? '',
+            subjectBuildRunId: r.subject_build_run_id ?? '',
+            categoryRuleVersion: r.category_rule_version ?? '',
           })),
         )
       }
       if (sumRes.ok && sumRes.summary) {
-        setSummary(sumRes.summary)
+        setSummary({
+          total: sumRes.summary.total,
+          enterprise_count: sumRes.summary.enterprise_count,
+          person_count: sumRes.summary.person_count,
+          needs_review_count: sumRes.summary.needs_review_count,
+          rename_signal_subject_count: sumRes.summary.rename_signal_subject_count ?? 0,
+        })
       }
       setLoading(false)
     })()
     return () => {
       cancelled = true
     }
-  }, [batchId, effectiveRole, keyword, snapshotYear, sourceType, subjectCategory, subjectType, reloadSeq])
+  }, [batchId, keyword, renameSignal, sourceType, subjectCategory, subjectType, reloadSeq])
+
+  useEffect(() => {
+    if (!repairSuccessFlash) return
+    const id = window.setTimeout(() => setRepairSuccessFlash(''), 8000)
+    return () => window.clearTimeout(id)
+  }, [repairSuccessFlash])
 
   const runIngestFromDwd = async () => {
     setIngestBusy(true)
@@ -268,7 +401,6 @@ export function EnterpriseLibraryPage() {
         title={ui.pageTitle}
         description={ui.pageDesc}
         note={ui.prototypeNote}
-        badgeText={ui.prototypeBadge}
         expandLabel={ui.moreTipsToggle}
         collapseLabel={ui.lessTipsToggle}
         actions={
@@ -299,22 +431,34 @@ export function EnterpriseLibraryPage() {
             >
               {recomputeBusy ? '重算中…' : '重算（分类+关联）'}
             </button>
+            <button
+              type="button"
+              disabled={renameRebuildBusy}
+              className="rounded-sm border border-border-light bg-white px-3 py-1.5 text-il-meta text-text transition-colors hover:bg-[#f8fafc] disabled:opacity-60"
+              onClick={() => void runRebuildRename()}
+            >
+              {renameRebuildBusy ? ui.rebuildRenameBusy : ui.rebuildRenameBtn}
+            </button>
           </div>
         }
       />
       <div className="mb-4 rounded-sm border border-[#c8dff7] bg-[#f0f7ff] px-3 py-2 text-il-meta text-accent-mid">
-        {ui.caliberHint.replace('{year}', snapshotYear || ui.filterSnapshotAll)}
+        {ui.caliberHint}
       </div>
       {importSuccess ? <div className="mb-4 rounded-sm border border-[#c8e6d0] bg-[#f4fbf6] px-3 py-2 text-il-meta text-[#1b6b3a]">{importSuccess}</div> : null}
+      {repairSuccessFlash ? (
+        <div className="mb-4 rounded-sm border border-[#c8e6d0] bg-[#f4fbf6] px-3 py-2 text-il-meta text-[#1b6b3a]">{repairSuccessFlash}</div>
+      ) : null}
       {loadingError ? <div className="mb-4 rounded-sm border border-danger/30 bg-[#fff5f5] px-3 py-2 text-il-meta text-danger">{loadingError}</div> : null}
       {loading ? <div className="mb-4 rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2 text-il-meta text-text-3">主体库数据加载中…</div> : null}
 
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           { label: ui.kpiTotal, value: stats.total, cls: 'text-text' },
           { label: ui.kpiEnterprise, value: stats.enterpriseCount, cls: 'text-accent' },
           { label: ui.kpiPerson, value: stats.personCount, cls: 'text-warn' },
-          { label: ui.kpiRenamedInYear, value: stats.renamedCount, cls: 'text-[#6b5cb3]' },
+          { label: ui.kpiCategoryNeedsReview, value: stats.needsReviewCount, cls: 'text-[#6b5cb3]' },
+          { label: ui.kpiRenameSignalSubjects, value: stats.renameSignalSubjects, cls: 'text-[#0d6e5c]' },
         ].map((item) => (
           <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
             <div className="text-il-label text-text-3">{item.label}</div>
@@ -325,21 +469,6 @@ export function EnterpriseLibraryPage() {
 
       <Card title={ui.filterTitle}>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-8">
-          <label className="block text-il-label text-text-2">
-            <span className="mb-1 block font-medium">{ui.filterYearLabel}</span>
-            <select
-              className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent"
-              value={snapshotYear}
-              onChange={(e) => setSnapshotYear(e.target.value)}
-            >
-              <option value="">{ui.filterSnapshotAll}</option>
-              {snapshotYearOptions.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
-          </label>
           <label className="block text-il-label text-text-2">
             <span className="mb-1 block font-medium">{ui.subjectTypeLabel}</span>
             <select
@@ -386,43 +515,16 @@ export function EnterpriseLibraryPage() {
               placeholder={ui.keywordPlaceholder}
             />
           </label>
-          <label
-            className={[
-              'block text-il-label text-text-2',
-              roleDisabledForPerson ? 'opacity-60' : '',
-            ].join(' ')}
-            title={roleDisabledForPerson ? ui.roleDisabledForPersonHint : undefined}
-          >
-            <span className="mb-1 block font-medium">{ui.roleLabel}</span>
+          <label className="block text-il-label text-text-2">
+            <span className="mb-1 block font-medium">{ui.renameSignalLabel}</span>
             <select
-              className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent disabled:cursor-not-allowed disabled:bg-[#f6f8fb]"
-              value={role}
-              disabled={roleDisabledForPerson}
-              onChange={(e) => setRole(e.target.value as 'all' | RoleTag)}
+              className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent"
+              value={renameSignal}
+              onChange={(e) => setRenameSignal(e.target.value as 'all' | 'yes' | 'no')}
             >
-              <option value="all">{ui.roleAll}</option>
-              <option value="seller">{ui.roleSeller}</option>
-              <option value="buyer">{ui.roleBuyer}</option>
-              <option value="both">{ui.roleBoth}</option>
-            </select>
-          </label>
-          <label
-            className={[
-              'block text-il-label text-text-2',
-              renameDisabledForPerson ? 'opacity-60' : '',
-            ].join(' ')}
-            title={renameDisabledForPerson ? ui.renameDisabledForPersonHint : undefined}
-          >
-            <span className="mb-1 block font-medium">{ui.renameStatusLabel}</span>
-            <select
-              className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent disabled:cursor-not-allowed disabled:bg-[#f6f8fb]"
-              value={renameStatus}
-              disabled={renameDisabledForPerson}
-              onChange={(e) => setRenameStatus(e.target.value as 'all' | 'renamed' | 'normal')}
-            >
-              <option value="all">{ui.renameStatusAll}</option>
-              <option value="renamed">{ui.renameStatusRenamed}</option>
-              <option value="normal">{ui.renameStatusNormal}</option>
+              <option value="all">{ui.renameSignalAll}</option>
+              <option value="yes">{ui.renameSignalYes}</option>
+              <option value="no">{ui.renameSignalNo}</option>
             </select>
           </label>
           <label className="block text-il-label text-text-2">
@@ -448,42 +550,63 @@ export function EnterpriseLibraryPage() {
             {ui.filterReset}
           </button>
         </div>
+        <label className="mt-3 flex cursor-pointer items-center gap-2 text-il-meta text-text-2">
+          <input
+            type="checkbox"
+            checked={showTechColumns}
+            onChange={(e) => setShowTechColumns(e.target.checked)}
+            className="rounded-sm border border-border-light"
+          />
+          <span>{ui.showTechFieldsLabel}</span>
+        </label>
       </Card>
 
       <Card title={ui.tableTitle}>
-        <div className="mb-2 text-il-meta text-text-3">
-          {ui.tableHint
-            .replace('{count}', String(filteredRows.length))
-            .replace('{year}', snapshotYear || ui.filterSnapshotAll)}
-        </div>
+        <div className="mb-2 text-il-meta text-text-3">{ui.tableHint.replace('{count}', String(rows.length))}</div>
         <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1180px] border-collapse text-il-page-desc">
+          <table
+            className={[
+              'w-full border-collapse text-il-page-desc',
+              showTechColumns ? 'min-w-[1580px]' : 'min-w-[1080px]',
+            ].join(' ')}
+          >
             <thead>
               <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
                 <th className="px-3 py-2 font-medium">{ui.colSubjectName}</th>
                 <th className="px-3 py-2 font-medium">{ui.colSubjectNo}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSourceType}</th>
+                <th className="whitespace-nowrap px-3 py-2 font-medium">{ui.colSourceType}</th>
                 <th className="px-3 py-2 font-medium">{ui.colSubjectType}</th>
                 <th className="px-3 py-2 font-medium">{ui.colSubjectCategory}</th>
-                <th className="px-3 py-2 font-medium">{ui.colRole}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSnapshotYear}</th>
+                <th className="px-3 py-2 font-medium">{ui.colSubjectCategoryName}</th>
+                <th className="whitespace-nowrap px-3 py-2 font-medium">{ui.colRepairAction}</th>
                 <th className="px-3 py-2 font-medium">{ui.colRenameHint}</th>
                 <th className="px-3 py-2 font-medium">{ui.colRenameAction}</th>
                 <th className="px-3 py-2 font-medium">{ui.colLastBatch}</th>
+                {showTechColumns ? (
+                  <>
+                    <th className="px-3 py-2 font-medium">{ui.colTechSnapshot}</th>
+                    <th className="px-3 py-2 font-medium">{ui.colTechBuildRun}</th>
+                    <th className="px-3 py-2 font-medium">{ui.colTechRuleVer}</th>
+                    <th className="px-3 py-2 font-medium">{ui.colTechCategoryNote}</th>
+                    <th className="px-3 py-2 font-medium">{ui.colTechQuality}</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {filteredRows.map((row) => {
+              {rows.map((row) => {
                 const isExpanded = expandedRenameId === row.enterpriseId
+                const span = showTechColumns ? 15 : 10
+                const lines = renameTimelineBySubject[row.enterpriseId] ?? []
                 return (
                   <Fragment key={row.enterpriseId}>
                     <tr key={row.enterpriseId} className="border-b border-border-light">
                       <td className="px-3 py-2.5 font-medium text-text">{row.enterpriseName}</td>
                       <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.taxpayerId}</td>
-                      <td className="px-3 py-2.5">
+                      <td className="whitespace-nowrap px-3 py-2.5 align-middle">
                         <span
                           className={[
-                            'rounded-sm border px-2 py-0.5 text-il-meta',
+                            'inline-block rounded-sm border px-2 py-0.5 text-il-meta whitespace-nowrap',
                             row.sourceType === 'platform'
                               ? 'border-[#c8e6d0] bg-[#f4fbf6] text-[#1b6b3a]'
                               : 'border-[#d7d8ff] bg-[#f5f5ff] text-[#4747a3]',
@@ -495,35 +618,63 @@ export function EnterpriseLibraryPage() {
                       <td className="px-3 py-2.5">
                         {row.subjectType === 'enterprise' ? ui.subjectTypeEnterprise : ui.subjectTypePerson}
                       </td>
-                      <td className="px-3 py-2.5 font-mono text-il-meta text-text-2">{row.subjectCategoryCode}</td>
-                      <td className="px-3 py-2.5">{roleLabel(row.roleTag)}</td>
-                      <td className="px-3 py-2.5">{row.snapshotYear}</td>
+                      <td className="px-3 py-2.5 font-mono text-il-meta text-text-2">{row.subjectCategoryCode || '—'}</td>
+                      <td className="max-w-[200px] px-3 py-2.5 text-text-2" title={row.subjectCategoryName || undefined}>
+                        {row.subjectCategoryName || '—'}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5">
+                        <button
+                          type="button"
+                          className="rounded-sm border border-border bg-white px-2 py-0.5 text-il-meta text-text-2 hover:border-accent hover:text-accent"
+                          onClick={() => openRepairModal(row)}
+                        >
+                          {ui.colRepairAction}
+                        </button>
+                      </td>
                       <td className="px-3 py-2.5">{row.renameHint}</td>
                       <td className="px-3 py-2.5">
-                        {row.renamedInYear ? (
+                        {row.hasRenameSignal ? (
                           <button
                             type="button"
-                            className="rounded-sm border border-border bg-white px-2 py-0.5 text-il-meta text-text-2 hover:border-accent hover:text-accent"
-                            onClick={() =>
-                              setExpandedRenameId((prev) =>
-                                prev === row.enterpriseId ? null : row.enterpriseId,
-                              )
-                            }
+                            disabled={renameTimelineLoading === row.enterpriseId}
+                            className="rounded-sm border border-border bg-white px-2 py-0.5 text-il-meta text-text-2 hover:border-accent hover:text-accent disabled:opacity-60"
+                            onClick={() => void toggleRenameExpand(row.enterpriseId)}
                           >
-                            {isExpanded ? ui.renameActionCollapse : ui.renameActionExpand}
+                            {renameTimelineLoading === row.enterpriseId
+                              ? '…'
+                              : isExpanded
+                                ? ui.renameActionCollapse
+                                : ui.renameActionExpand}
                           </button>
                         ) : (
                           <span className="text-text-3">{ui.renameActionNone}</span>
                         )}
                       </td>
                       <td className="px-3 py-2.5">{row.lastSeenBatchId}</td>
+                      {showTechColumns ? (
+                        <>
+                          <td className="max-w-[140px] truncate px-3 py-2.5 font-mono text-[11px] text-text-3" title={row.subjectSnapshotId}>
+                            {row.subjectSnapshotId || '—'}
+                          </td>
+                          <td className="max-w-[120px] truncate px-3 py-2.5 font-mono text-[11px] text-text-3" title={row.subjectBuildRunId}>
+                            {row.subjectBuildRunId || '—'}
+                          </td>
+                          <td className="max-w-[100px] truncate px-3 py-2.5 font-mono text-[11px] text-text-3" title={row.categoryRuleVersion}>
+                            {row.categoryRuleVersion || '—'}
+                          </td>
+                          <td className="max-w-[160px] truncate px-3 py-2.5 text-il-meta text-text-3" title={row.categoryStatusNote}>
+                            {row.categoryStatusNote || '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-il-meta">{row.qualityStatus}</td>
+                        </>
+                      ) : null}
                     </tr>
                     {isExpanded ? (
                       <tr className="border-b border-border-light bg-[#fafbfd]">
-                        <td className="px-3 py-2.5" colSpan={10}>
+                        <td className="px-3 py-2.5" colSpan={span}>
                           <div className="text-il-label text-text-3">{ui.renameTimelineTitle}</div>
                           <ul className="mt-1 space-y-1 text-il-page-desc text-text-2">
-                            {row.renameTimeline.map((item) => (
+                            {lines.map((item) => (
                               <li key={item}>- {item}</li>
                             ))}
                           </ul>
@@ -569,8 +720,89 @@ export function EnterpriseLibraryPage() {
               <button type="button" className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent" onClick={closeImportModal}>
                 {ui.modalCancel}
               </button>
-              <button type="button" className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90" onClick={confirmImport}>
-                {ui.importConfirmBtn}
+              <button
+                type="button"
+                disabled={importBusy}
+                className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                onClick={() => void confirmImport()}
+              >
+                {importBusy ? ui.importConfirmBusy : ui.importConfirmBtn}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {repairRow ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.28)] px-4">
+          <div className="w-full max-w-[520px] rounded-[12px] border border-border-light bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-[16px] font-semibold text-text">{ui.repairModalTitle}</h3>
+              <button
+                type="button"
+                className="text-il-page-desc text-text-3 hover:text-text"
+                onClick={closeRepairModal}
+                disabled={repairBusy}
+              >
+                {ui.modalClose}
+              </button>
+            </div>
+            <p className="mb-3 text-il-meta text-text-3">{ui.repairNoUndoNote}</p>
+            <div className="mb-3 rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2 text-il-page-desc text-text-2">
+              <div className="font-medium text-text">{repairRow.enterpriseName}</div>
+              <div className="mt-0.5 font-mono text-il-meta">{repairRow.taxpayerId}</div>
+            </div>
+            <label className="mb-3 block text-il-label text-text-2">
+              <span className="mb-1 block font-medium">{ui.repairSubjectTypeLabel}</span>
+              <select
+                className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent"
+                value={repairSubjectCategoryApi}
+                onChange={(e) => setRepairSubjectCategoryApi(e.target.value as 'org' | 'person')}
+                disabled={repairBusy}
+              >
+                <option value="org">{ui.subjectTypeEnterprise}（org）</option>
+                <option value="person">{ui.subjectTypePerson}（person）</option>
+              </select>
+            </label>
+            <label className="mb-3 block text-il-label text-text-2">
+              <span className="mb-1 block font-medium">{ui.repairOrgCategoryLabel}</span>
+              <input
+                className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent"
+                value={repairOrgCategoryInput}
+                onChange={(e) => setRepairOrgCategoryInput(e.target.value)}
+                disabled={repairBusy}
+              />
+              <span className="mt-1 block text-il-meta text-text-3">{ui.repairOrgCategoryHint}</span>
+              <span className="mt-1 block text-il-meta text-text-2">
+                {ui.repairOrgCategoryYamlName}：{repairRow.subjectCategoryName || '—'}
+              </span>
+            </label>
+            <label className="mb-3 block text-il-label text-text-2">
+              <span className="mb-1 block font-medium">{ui.repairReasonLabel}</span>
+              <input
+                className="h-9 w-full rounded-sm border border-border-light bg-white px-2 text-il-page-desc text-text outline-none focus:border-accent"
+                value={repairReason}
+                onChange={(e) => setRepairReason(e.target.value)}
+                disabled={repairBusy}
+                placeholder={ui.repairReasonPlaceholder}
+              />
+            </label>
+            {repairError ? <div className="mb-3 text-il-meta text-danger">{repairError}</div> : null}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
+                onClick={closeRepairModal}
+                disabled={repairBusy}
+              >
+                {ui.repairCancel}
+              </button>
+              <button
+                type="button"
+                disabled={repairBusy}
+                className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                onClick={() => void confirmRepair()}
+              >
+                {repairBusy ? ui.repairBusy : ui.repairSubmit}
               </button>
             </div>
           </div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from db.schema_sqlfiles import init_all_tables
 from src.subject_category.infer import normalize_party_name
 from src.subject_category.recompute import _make_run_id
+
+logger = logging.getLogger(__name__)
 
 
 def _id_card_like(party_id: str) -> bool:
@@ -37,15 +40,10 @@ def _subject_no_type(norm_no: str) -> str | None:
     return "other"
 
 
-def _source_record_id(subject_id: str, match_rule: str) -> str:
-    h = hashlib.sha256(f"{subject_id}|{match_rule}".encode("utf-8")).hexdigest()[:28]
-    return f"SRC_{h}"
-
-
 def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> dict[str, Any]:
     """
-    从 dwd_inv_header 的销方/购方归集写入 dim_subject_master，并写入最多两条 dim_subject_source_record
-   （match_rule=dwd_invoice_seller / dwd_invoice_buyer），供主体库「交易角色」统计。
+    从 dwd_inv_header 的销方/购方归集写入 dim_subject_master。
+    不再写入 dim_subject_source_record 的购销 match_rule 行（拍板 1-B：购销语义不在主体库来源表承载）。
     """
     init_all_tables(conn)
     try:
@@ -120,9 +118,7 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
                 min_by(bid, coalesce(inv, DATE '9999-12-31')) AS first_bid,
                 max_by(bid, coalesce(inv, DATE '1900-01-01')) AS last_bid,
                 min_by(sid, coalesce(inv, DATE '9999-12-31')) AS first_sid,
-                max_by(sid, coalesce(inv, DATE '1900-01-01')) AS last_sid,
-                max(CASE WHEN side = 'seller' THEN 1 ELSE 0 END) AS has_seller,
-                max(CASE WHEN side = 'buyer' THEN 1 ELSE 0 END) AS has_buyer
+                max_by(sid, coalesce(inv, DATE '1900-01-01')) AS last_sid
             FROM k
             GROUP BY mk
         )
@@ -134,15 +130,12 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
             first_bid,
             last_bid,
             first_sid,
-            last_sid,
-            has_seller,
-            has_buyer
+            last_sid
         FROM g
         """
     ).fetchall()
 
     agg: dict[str, dict[str, Any]] = {}
-    roles: dict[str, set[str]] = {}
     for (
         _mk,
         pid,
@@ -152,8 +145,6 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
         last_bid,
         first_sid,
         last_sid,
-        has_seller,
-        has_buyer,
     ) in rows:
         pid_py = str(pid or "")
         pname_py = str(pname_std or "")
@@ -175,12 +166,6 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
             "last_batch": str(last_bid or ""),
             "last_session": str(last_sid or ""),
         }
-        rs: set[str] = set()
-        if int(has_seller or 0):
-            rs.add("seller")
-        if int(has_buyer or 0):
-            rs.add("buyer")
-        roles[sid] = rs
 
     master_rows: list[tuple[Any, ...]] = []
     existing_created: dict[str, datetime] = {}
@@ -253,44 +238,6 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
             )
         )
 
-    src_rows: list[tuple[Any, ...]] = []
-    for sid, role_set in roles.items():
-        a = agg[sid]
-        raw_cat = str(a["subject_category"])
-        for role in ("seller", "buyer"):
-            if role not in role_set:
-                continue
-            rule = "dwd_invoice_seller" if role == "seller" else "dwd_invoice_buyer"
-            src_rows.append(
-                (
-                    _source_record_id(sid, rule),
-                    sid,
-                    "invoice",
-                    str(a["last_batch"] or ""),
-                    str(a["last_session"] or ""),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    str(a["subject_name"]),
-                    str(a["subject_no"] or ""),
-                    str(a["subject_no_type"] or "") or None,
-                    raw_cat,
-                    None,
-                    run_id,
-                    None,
-                    None,
-                    True,
-                    None,
-                    "matched",
-                    rule,
-                    1.0,
-                    None,
-                    now,
-                )
-            )
-
     conn.execute("BEGIN TRANSACTION")
     try:
         if master_rows:
@@ -325,50 +272,38 @@ def ingest_dim_subject_master_from_dwd(conn, *, run_id: str | None = None) -> di
                 """,
                 master_rows,
             )
-        if src_rows:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO dim_subject_source_record (
-                    source_record_id,
-                    subject_id,
-                    source_system,
-                    import_batch_id,
-                    import_session_id,
-                    ods_file_seq,
-                    source_excel_file,
-                    source_parquet_file,
-                    source_sheet,
-                    source_row_no,
-                    raw_subject_name,
-                    raw_subject_no,
-                    raw_subject_no_type,
-                    raw_subject_category,
-                    raw_org_category,
-                    subject_build_run_id,
-                    subject_snapshot_id,
-                    category_rule_version,
-                    category_rule_enabled_at_run,
-                    category_status_note,
-                    match_status,
-                    match_rule,
-                    match_confidence,
-                    payload_json,
-                    ingest_ts
-                ) VALUES (
-                    ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                )
-                """,
-                src_rows,
-            )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+    # 台账仍为 external，但发票头已能匹配税号 → 纠偏为 invoice（与主体库「平台计算」口径一致）
+    try:
+        from src.local_api.subject_library import sql_dim_subject_matches_dwd_invoice_header
+
+        inv_sql = sql_dim_subject_matches_dwd_invoice_header("m")
+        conn.execute(
+            f"""
+            UPDATE dim_subject_master AS m
+            SET
+                first_source_system = 'invoice',
+                updated_at = ?
+            WHERE lower(trim(COALESCE(m.first_source_system,''))) = 'external'
+              AND ({inv_sql})
+            """,
+            [now],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "纠偏 external→invoice（按 dwd_inv_header 税号）失败，已忽略：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
 
     return {
         "ok": True,
         "run_id": run_id,
         "header_rows_scanned": header_rows,
         "subjects_upserted": len(agg),
-        "source_rows_upserted": len(src_rows),
+        "source_rows_upserted": 0,
     }

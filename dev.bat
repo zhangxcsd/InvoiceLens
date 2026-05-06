@@ -42,10 +42,10 @@ exit /b 1
 echo.
 echo InvoiceLens dev entry (merged: start_dev / start_local_api / start_ui / restart_frontend_dev)
 echo.
-echo   dev.bat              Default: new window Local API + this window Vite
+echo   dev.bat              Default: ONE window — Local API :8765 + Vite :5173 ^(npm run dev:with-api^)
 echo   dev.bat all          Same as default
 echo   dev.bat api          Local API only (keep window open for ODS import)
-echo   dev.bat web          Vite only (start api in another window first)
+echo   dev.bat web          Vite only ^(不推荐：易导致 /api 无 8765 监听^)
 echo   dev.bat ui           python main.py
 echo   dev.bat restart-web  Kill 5173-5175 listeners, start Vite in new window
 echo   dev.bat smoke-local-api  Run local API lock/socket smoke regression
@@ -62,14 +62,71 @@ echo.
 goto :eof
 
 :all
-echo [InvoiceLens] Starting Local API in a new window (leave it open^).
-REM start first quoted token must be ASCII title to avoid cmd parse issues
-start "InvoiceLens-LocalAPI" cmd /k "chcp 65001>nul && cd /d ""%~dp0"" && for /f ""tokens=5"" %%P in ('netstat -ano ^| findstr /R /C:"":8765 .*LISTENING""') do taskkill /PID %%P /F >nul 2>nul && set INVOICELENS_LOCAL_API_HOST=127.0.0.1&& set INVOICELENS_LOCAL_API_PORT=8765&& set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& set PYTHONLEGACYWINDOWSSTDIO=utf-8&& python -m src.local_api.sheet_mapping_server"
-timeout /t 2 /nobreak >nul
-echo [InvoiceLens] Starting Vite in this window. Open the URL shown below in your browser.
+REM 默认单窗口同时起 Local API + Vite，从流程上避免「只起了前端、8765 无监听」导致 /api ECONNREFUSED / 代理 502。
+if not exist "%~dp0frontend\package.json" (
+  echo [ERROR] frontend\package.json not found. Keep dev.bat in repo root.
+  pause
+  exit /b 1
+)
+where npm.cmd >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] npm.cmd not found. Install Node.js.
+  pause
+  exit /b 1
+)
+if not exist "%~dp0frontend\node_modules" (
+  echo [InvoiceLens] frontend\node_modules 缺失，正在 npm install ^(首次需联网^)...
+  cd /d "%~dp0frontend"
+  call npm.cmd install
+  if errorlevel 1 (
+    echo [ERROR] npm install failed.
+    pause
+    exit /b 1
+  )
+  cd /d "%~dp0"
+) else if not exist "%~dp0frontend\node_modules\.bin\concurrently.cmd" (
+  echo [InvoiceLens] 前端依赖不完整（缺少 concurrently），正在 npm install ...
+  cd /d "%~dp0frontend"
+  call npm.cmd install
+  if errorlevel 1 (
+    echo [ERROR] npm install failed.
+    pause
+    exit /b 1
+  )
+  cd /d "%~dp0"
+)
+
+echo [InvoiceLens] Pre-clean listeners on 8765 / 5173-5175 ...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":8765 .*LISTENING"') do (
+  echo   taskkill /PID %%P /F   port 8765
+  taskkill /PID %%P /F >nul 2>nul
+)
+for %%L in (5173 5174 5175) do (
+  for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%%L .*LISTENING"') do (
+    echo   taskkill /PID %%P /F   port %%L
+    taskkill /PID %%P /F >nul 2>nul
+  )
+)
+timeout /t 1 /nobreak >nul
+
+echo.
+echo ============================================================
+echo   InvoiceLens 开发环境（单窗口）
+echo   Local API http://127.0.0.1:8765  +  Vite http://127.0.0.1:5173
+echo   请保持本窗口运行；结束开发请在本窗口按 Ctrl+C
+echo ============================================================
+echo.
+
 cd /d "%~dp0frontend"
-call npm run dev
-exit /b %ERRORLEVEL%
+call npm.cmd run dev:with-api
+set "IL_EXIT=%ERRORLEVEL%"
+cd /d "%~dp0"
+if not "%IL_EXIT%"=="0" (
+  echo.
+  echo [InvoiceLens] 已退出（错误码 %IL_EXIT%）。若为主动 Ctrl+C 可直接关闭窗口。
+  pause
+)
+exit /b %IL_EXIT%
 
 :api
 echo.

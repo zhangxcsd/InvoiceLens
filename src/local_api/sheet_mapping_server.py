@@ -353,6 +353,21 @@ def _multipart_file_items(fs: MultipartForm) -> list[Any]:
     return file_items
 
 
+def _multipart_first_uploaded_file(fs: MultipartForm) -> tuple[bytes | None, str]:
+    """取 multipart 中第一个上传文件；字段名支持 file（与 dim-tax 一致）或 files。"""
+    if not getattr(fs, "list", None):
+        return None, ""
+    for item in fs.list:
+        fn = getattr(item, "filename", None)
+        nm = getattr(item, "name", None)
+        if not fn or nm not in {"file", "files"}:
+            continue
+        rawv = getattr(item, "value", b"")
+        body = rawv if isinstance(rawv, bytes) else bytes(rawv)
+        return body, str(fn)
+    return None, ""
+
+
 def _norm_target_keys_tuple(v: list[str] | None) -> tuple[str, ...]:
     if not v:
         return ()
@@ -598,6 +613,9 @@ class Handler(BaseHTTPRequestHandler):
                     """,
                     [snapshot_id],
                 ).fetchall()
+                from src.local_api.subject_library import get_org_category_display_names
+
+                _org_cat_names = get_org_category_display_names()
                 rel_agg = conn.execute(
                     """
                     SELECT
@@ -626,6 +644,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "by_org_category": [
                                     {
                                         "org_category": str(r[0] or "UNCLASSIFIED"),
+                                        "org_category_display_name": (
+                                            ""
+                                            if str(r[0] or "") == "UNCLASSIFIED"
+                                            else _org_cat_names.get(str(r[0] or "").strip(), "")
+                                        ),
                                         "count": int(r[1] or 0),
                                     }
                                     for r in cat_by_code
@@ -655,9 +678,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/subject-library/summary":
             qs = parse_qs(parsed.query or "")
-            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip()
             subject_type = (qs.get("subject_type", ["all"])[0] or "all").strip()
             source_type = (qs.get("source_type", ["all"])[0] or "all").strip()
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
@@ -667,9 +690,9 @@ class Handler(BaseHTTPRequestHandler):
                 init_all_tables(conn)
                 payload = api_subject_library_summary(
                     conn,
-                    snapshot_year=snapshot_year,
                     subject_type=subject_type,
                     source_type=source_type,
+                    keyword=keyword,
                 )
                 self._send(200, payload)
             except Exception as exc:
@@ -688,12 +711,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/subject-library/rows":
             qs = parse_qs(parsed.query or "")
-            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip()
             keyword = (qs.get("keyword", [""])[0] or "").strip()
             subject_type = (qs.get("subject_type", ["all"])[0] or "all").strip()
             source_type = (qs.get("source_type", ["all"])[0] or "all").strip()
             subject_category = (qs.get("subject_category", ["all"])[0] or "all").strip()
-            role = (qs.get("role", ["all"])[0] or "all").strip()
+            rename_signal = (qs.get("rename_signal", ["all"])[0] or "all").strip()
             batch_id = (qs.get("batch_id", [""])[0] or "").strip()
             try:
                 limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
@@ -708,12 +730,11 @@ class Handler(BaseHTTPRequestHandler):
                 init_all_tables(conn)
                 payload = api_subject_library_rows(
                     conn,
-                    snapshot_year=snapshot_year,
                     keyword=keyword,
                     subject_type=subject_type,
                     source_type=source_type,
                     subject_category=subject_category,
-                    role=role,
+                    rename_signal=rename_signal,
                     batch_id=batch_id,
                     limit=limit,
                 )
@@ -730,6 +751,49 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+            return
+
+        if path == "/api/subject-library/rename-rebuild-status":
+            qs = parse_qs(parsed.query or "")
+            run_id = (qs.get("run_id", [""])[0] or "").strip()
+            try:
+                from src.local_api.subject_library_rename_build import get_subject_rename_rebuild_status
+
+                payload = get_subject_rename_rebuild_status(run_id)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"查询更名信号重建状态失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            # 始终 200：由 payload.ok 表达业务成败（兼容只认 2xx 的代理与客户端）
+            self._send(200, payload, cors=True)
+            return
+
+        if path == "/api/subject-library/rename-timeline":
+            qs = parse_qs(parsed.query or "")
+            subject_id = (qs.get("subject_id", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library import api_subject_library_rename_timeline
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_subject_library_rename_timeline(conn, subject_id=subject_id)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"读取更名轨迹失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
             return
 
         if path == "/api/dim/task-runs":
@@ -1293,6 +1357,85 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/subject-library/import-external":
+            ctype = (self.headers.get("Content-Type") or "").lower()
+            if "multipart/form-data" not in ctype:
+                self._send(
+                    400,
+                    {"ok": False, "error": {"message": "Content-Type 须为 multipart/form-data"}},
+                    cors=True,
+                )
+                return
+            fs, err = _parse_multipart_fields(self, for_batch=False)
+            if err:
+                self._send(400, err, cors=True)
+                return
+            assert fs is not None
+            snapshot_year = str(_multipart_first_field(fs, "snapshot_year") or "").strip()
+            file_bytes, upload_name = _multipart_first_uploaded_file(fs)
+            if not file_bytes:
+                self._send(
+                    400,
+                    {
+                        "ok": False,
+                        "error": {"message": "须上传文件（multipart 字段名 file 或 files）"},
+                    },
+                    cors=True,
+                )
+                return
+            outer_exc = False
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library_external_import import api_import_external_subjects_from_file
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_import_external_subjects_from_file(
+                    conn,
+                    file_bytes=file_bytes,
+                    filename=upload_name or "upload",
+                    snapshot_year=snapshot_year,
+                )
+            except Exception as exc:
+                outer_exc = True
+                payload = {
+                    "ok": False,
+                    "file_blocking": True,
+                    "error": {
+                        "message": f"外部主体导入异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            if payload.get("ok"):
+                self._send(200, payload, cors=True)
+                return
+            self._send(500 if outer_exc else 400, payload, cors=True)
+            return
+
+        if path == "/api/subject-library/repair":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library_repair import api_subject_library_repair_from_request
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_subject_library_repair_from_request(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"主体数据修复异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
         if path == "/api/subject-library/ingest-from-dwd":
             try:
                 from db.duckdb_conn import get_conn
@@ -1334,6 +1477,36 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     },
                 )
+            return
+
+        if path == "/api/subject-library/rebuild-rename-signals":
+            body = self._read_json()
+
+            def _rename_rebuild_want_async(b: object) -> bool:
+                if not isinstance(b, dict) or "async" not in b:
+                    return True
+                v = b.get("async")
+                if v is False or v == 0:
+                    return False
+                if isinstance(v, str) and v.strip().lower() in {"0", "false", "no", "off"}:
+                    return False
+                return True
+
+            try:
+                from src.local_api.subject_library_rename_build import start_subject_rename_signal_rebuild
+
+                payload = start_subject_rename_signal_rebuild(async_mode=_rename_rebuild_want_async(body))
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"启动重建更名信号失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            # 始终 200：异步受理与同步失败均用 JSON.ok 区分（避免 202/400 在部分网关下的兼容问题）
+            self._send(200, payload, cors=True)
             return
 
         if path == "/api/quality/red-invoice-parse":
@@ -2453,6 +2626,9 @@ def main() -> int:
                 pass
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"[InvoiceLensLocalAPI] listening on http://{host}:{port}")  # noqa: T201
+    print(  # noqa: T201
+        "[InvoiceLensLocalAPI] 请保持本窗口运行；关闭后 Vite 的 /api 代理将出现 ECONNREFUSED（浏览器侧常显示为 502）。"
+    )
     httpd.serve_forever()
     return 0
 

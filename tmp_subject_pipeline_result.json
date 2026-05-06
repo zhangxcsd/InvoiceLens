@@ -1,0 +1,32 @@
+{
+  "ok": true,
+  "ingest": {
+    "ok": true,
+    "run_id": "subject_dwd_ingest_20260430114001_f12ca1ad",
+    "header_rows_scanned": 74637,
+    "subjects_upserted": 2166,
+    "source_rows_upserted": 2191
+  },
+  "recompute": {
+    "run_id": "subject_run_20260430114818_7e6c7d1f",
+    "snapshot_id": "subject_snapshot_20260430114818_01125f43",
+    "category": {
+      "run_id": "subject_run_20260430114818_7e6c7d1f",
+      "snapshot_id": "subject_snapshot_20260430114818_01125f43",
+      "rule_version": "scm-985cf2551d52",
+      "total": 1842,
+      "matched": 1585,
+      "needs_review": 258,
+      "disabled_blocked": 0
+    },
+    "relation": {
+      "snapshot_id": "subject_snapshot_20260430114818_01125f43",
+      "run_id": "subject_run_20260430114818_7e6c7d1f",
+      "relation_total": 2163,
+      "header_total": 74636,
+      "header_unresolved": 1326
+    }
+  },
+  "subject_master_total": 2166,
+  "relation_current_total": 2163
+}

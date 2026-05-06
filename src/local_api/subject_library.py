@@ -1,6 +1,39 @@
 from __future__ import annotations
 
+"""
+主体库列表 API：dim_subject_master 仅持久化 org_category（编码）。
+机构类别中文名（category_name）一律在展示层由本模块调用 get_org_category_display_names()
+对照 config/subject_category*.yaml 解析，不向主表冗余写入。
+"""
+
 from typing import Any
+
+
+def _org_category_code_to_display_name() -> dict[str, str]:
+    """从 subject_category 规则文件解析 category_code → category_name。"""
+    from src.subject_category.infer import load_category_doc
+
+    doc = load_category_doc()
+    out: dict[str, str] = {}
+    rows = doc.get("categories")
+    if not isinstance(rows, list):
+        return out
+    for it in rows:
+        if not isinstance(it, dict):
+            continue
+        code = str(it.get("category_code") or "").strip()
+        name = str(it.get("category_name") or "").strip()
+        if code and name:
+            out[code] = name
+    return out
+
+
+def get_org_category_display_names() -> dict[str, str]:
+    """
+    供主体库相关 API 复用：编码 → 类别中文名（与 dim_subject_master.org_category 对照）。
+    数据来自 load_category_doc() 指向的 YAML，与重算分类使用的类别定义一致。
+    """
+    return _org_category_code_to_display_name()
 
 
 def _norm_subject_type(v: str) -> str:
@@ -19,47 +52,128 @@ def _norm_source_type(v: str) -> str:
     return "all"
 
 
-def _norm_role(v: str) -> str:
-    s = str(v or "").strip().lower()
-    if s in {"seller", "buyer", "both"}:
-        return s
-    return "all"
+def sql_dim_subject_matches_dwd_invoice_header(table_alias: str) -> str:
+    """
+    与 dwd_inv_header 销/购方税号归一化口径一致：主体 subject_no 是否曾在发票头出现。
+    用于单次 UPDATE（如 DWD 归集后纠偏）；列表查询请用 sql_invoice_pid_left_join + inv_hit，避免相关子查询扫全表。
+    """
+    m = table_alias
+    pid = f"upper(regexp_replace(trim(COALESCE({m}.subject_no,'')), '[\\s-]+', '', 'g'))"
+    return f"""EXISTS (
+        SELECT 1 FROM dwd_inv_header h
+        WHERE length(trim(COALESCE({m}.subject_no,''))) > 0
+          AND length({pid}) > 0
+          AND {pid} IN (
+            upper(regexp_replace(trim(COALESCE(h.xfsbh,'')), '[\\s-]+', '', 'g')),
+            upper(regexp_replace(trim(COALESCE(h.gfsbh,'')), '[\\s-]+', '', 'g'))
+          )
+    )"""
 
 
-def _derive_role(subject_no: str, has_seller: bool, has_buyer: bool) -> str:
-    if has_seller and has_buyer:
-        return "both"
-    if has_seller:
-        return "seller"
-    if has_buyer:
-        return "buyer"
-    # 兜底：历史库缺角色字段时，按 subject_no 前缀粗分（仅展示用途）
-    return "both" if str(subject_no or "").startswith("91") else "seller"
+def sql_invoice_pid_left_join(table_alias: str) -> str:
+    """
+    将 dwd_inv_header 销/购归一化税号做成去重集 inv_hit，与主体 subject_no 一次 LEFT JOIN。
+    避免在 SELECT/WHERE 中对每行执行 EXISTS 相关子查询（大数据量下易拖垮请求、前端代理表现为 502）。
+    """
+    m = table_alias
+    pid = f"upper(regexp_replace(trim(COALESCE({m}.subject_no,'')), '[\\s-]+', '', 'g'))"
+    return (
+        " LEFT JOIN ("
+        " SELECT DISTINCT u.pid FROM ("
+        " SELECT upper(regexp_replace(trim(COALESCE(xfsbh,'')), '[\\s-]+', '', 'g')) AS pid"
+        " FROM dwd_inv_header WHERE length(trim(COALESCE(xfsbh,''))) > 0"
+        " UNION "
+        " SELECT upper(regexp_replace(trim(COALESCE(gfsbh,'')), '[\\s-]+', '', 'g')) AS pid"
+        " FROM dwd_inv_header WHERE length(trim(COALESCE(gfsbh,''))) > 0"
+        " ) AS u WHERE length(u.pid) > 0"
+        f" ) AS inv_hit ON inv_hit.pid = {pid}"
+    )
+
+
+def _sql_subject_source_bucket(table_alias: str) -> str:
+    """
+    dim_subject_master.first_source_system 语义（DDL）：invoice / external / manual。
+    列表「数据来源」对外只暴露 platform（平台计算）与 external（外部导入）：
+    - platform：非 external；或台账为 external 但 inv_hit 命中（发票头曾出现该税号）；
+    - external：纯外部且 inv_hit 未命中。
+    调用方 SQL 须包含 sql_invoice_pid_left_join(主表别名) 且子查询别名为 inv_hit。
+    """
+    m = table_alias
+    return (
+        f"CASE WHEN lower(trim(COALESCE({m}.first_source_system,''))) <> 'external' "
+        f"THEN 'platform' WHEN inv_hit.pid IS NOT NULL THEN 'platform' ELSE 'external' END"
+    )
+
+
+def _append_subject_keyword_clause(
+    where_parts: list[str],
+    args: list[Any],
+    *,
+    table_alias: str,
+    keyword: str,
+) -> None:
+    """主体名称 / 规范化名称 / 识别号 / subject_id 子串模糊（ILIKE %kw%）。"""
+    k = str(keyword or "").strip()
+    if not k:
+        return
+    m = table_alias
+    kw = f"%{k}%"
+    where_parts.append(
+        f"(COALESCE({m}.subject_name,'') ILIKE ? OR COALESCE({m}.subject_name_std,'') ILIKE ? OR "
+        f"COALESCE({m}.subject_no,'') ILIKE ? OR COALESCE({m}.subject_id,'') ILIKE ?)"
+    )
+    args.extend([kw, kw, kw, kw])
+
+
+def _master_where_parts(
+    *,
+    subject_type: str,
+    source_type: str,
+    table_alias: str,
+) -> tuple[list[str], list[Any]]:
+    """dim_subject_master 公共筛选片段（与 _master_where_sql_and_args 一致）。"""
+    st = _norm_subject_type(subject_type)
+    src = _norm_source_type(source_type)
+    m = table_alias
+    where_parts: list[str] = ["1=1"]
+    args: list[Any] = []
+
+    if st != "all":
+        where_parts.append(f"{m}.subject_category = ?")
+        args.append(st)
+    if src != "all":
+        where_parts.append(f"{_sql_subject_source_bucket(m)} = ?")
+        args.append(src)
+    return where_parts, args
+
+
+def _master_where_sql_and_args(
+    *,
+    subject_type: str,
+    source_type: str,
+    table_alias: str,
+) -> tuple[str, list[Any]]:
+    """dim_subject_master 公共筛选（无年度、无购销角色）。table_alias 如 'm' 或 'dim_subject_master'。"""
+    parts, args = _master_where_parts(
+        subject_type=subject_type, source_type=source_type, table_alias=table_alias
+    )
+    return " AND ".join(parts), args
 
 
 def api_subject_library_summary(
     conn,
     *,
-    snapshot_year: str = "",
     subject_type: str = "all",
     source_type: str = "all",
+    keyword: str = "",
 ) -> dict[str, Any]:
-    st = _norm_subject_type(subject_type)
+    wp1, args1 = _master_where_parts(
+        subject_type=subject_type, source_type=source_type, table_alias="dim_subject_master"
+    )
+    _append_subject_keyword_clause(wp1, args1, table_alias="dim_subject_master", keyword=keyword)
+    where_sql = " AND ".join(wp1)
     src = _norm_source_type(source_type)
-    where_parts = ["1=1"]
-    args: list[Any] = []
-
-    if st != "all":
-        where_parts.append("subject_category = ?")
-        args.append(st)
-    if src != "all":
-        where_parts.append("COALESCE(first_source_system,'platform') = ?")
-        args.append(src)
-    if snapshot_year.strip():
-        where_parts.append("COALESCE(subject_snapshot_id,'') LIKE ?")
-        args.append(f"%{snapshot_year.strip()}%")
-
-    where_sql = " AND ".join(where_parts)
+    inv_join_1 = sql_invoice_pid_left_join("dim_subject_master") if src != "all" else ""
     row = conn.execute(
         f"""
         SELECT
@@ -68,10 +182,38 @@ def api_subject_library_summary(
             SUM(CASE WHEN subject_category='person' THEN 1 ELSE 0 END) AS person_count,
             SUM(CASE WHEN COALESCE(category_status_note,'')='needs_review' THEN 1 ELSE 0 END) AS needs_review_count
         FROM dim_subject_master
+        {inv_join_1}
         WHERE {where_sql}
         """,
-        args,
+        args1,
     ).fetchone()
+    rename_subjects = 0
+    wp2, args_m = _master_where_parts(
+        subject_type=subject_type, source_type=source_type, table_alias="m"
+    )
+    _append_subject_keyword_clause(wp2, args_m, table_alias="m", keyword=keyword)
+    where_m = " AND ".join(wp2)
+    inv_join_2 = sql_invoice_pid_left_join("m") if src != "all" else ""
+    try:
+        r2 = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT m.subject_id)::BIGINT AS c
+            FROM dim_subject_master m
+            {inv_join_2}
+            INNER JOIN (
+                SELECT DISTINCT normalized_subject_no
+                FROM dim_subject_rename_signal
+            ) z
+            ON upper(regexp_replace(trim(COALESCE(m.subject_no,'')), '[\\s-]+', '', 'g')) = z.normalized_subject_no
+            WHERE length(trim(COALESCE(m.subject_no,''))) > 0
+              AND {where_m}
+            """,
+            args_m,
+        ).fetchone()
+        rename_subjects = int(r2[0] or 0) if r2 else 0
+    except Exception:
+        rename_subjects = 0
+
     return {
         "ok": True,
         "summary": {
@@ -79,6 +221,7 @@ def api_subject_library_summary(
             "enterprise_count": int(row[1] or 0),
             "person_count": int(row[2] or 0),
             "needs_review_count": int(row[3] or 0),
+            "rename_signal_subject_count": rename_subjects,
         },
     }
 
@@ -86,83 +229,86 @@ def api_subject_library_summary(
 def api_subject_library_rows(
     conn,
     *,
-    snapshot_year: str = "",
     keyword: str = "",
     subject_type: str = "all",
     source_type: str = "all",
     subject_category: str = "all",
-    role: str = "all",
+    rename_signal: str = "all",
     batch_id: str = "",
     limit: int = 500,
 ) -> dict[str, Any]:
-    st = _norm_subject_type(subject_type)
-    src = _norm_source_type(source_type)
-    role_wanted = _norm_role(role)
-    where_parts = ["1=1"]
-    args: list[Any] = []
+    """
+    主体库列表：主数据 + 血缘 + 发票侧更名信号聚合（无年度/购销角色列）。
+    rename_signal: all | yes | no — 是否仅看存在/不存在更名边的主体。
+    """
+    rs = str(rename_signal or "all").strip().lower()
+    if rs not in {"all", "yes", "no"}:
+        rs = "all"
 
-    if st != "all":
-        where_parts.append("m.subject_category = ?")
-        args.append(st)
-    if src != "all":
-        where_parts.append("COALESCE(m.first_source_system,'platform') = ?")
-        args.append(src)
+    where_parts, args = _master_where_parts(subject_type=subject_type, source_type=source_type, table_alias="m")
+
     if subject_category.strip() and subject_category.strip().lower() != "all":
         where_parts.append("COALESCE(m.org_category,'') = ?")
         args.append(subject_category.strip())
-    if keyword.strip():
-        kw = f"%{keyword.strip()}%"
-        where_parts.append(
-            "(COALESCE(m.subject_name,'') ILIKE ? OR COALESCE(m.subject_no,'') ILIKE ? OR COALESCE(m.subject_id,'') ILIKE ?)"
-        )
-        args.extend([kw, kw, kw])
+    _append_subject_keyword_clause(where_parts, args, table_alias="m", keyword=keyword)
     if batch_id.strip():
         where_parts.append("COALESCE(m.last_import_batch_id,'') ILIKE ?")
         args.append(f"%{batch_id.strip()}%")
-    if snapshot_year.strip():
-        where_parts.append("COALESCE(m.subject_snapshot_id,'') LIKE ?")
-        args.append(f"%{snapshot_year.strip()}%")
+
+    rename_filter_sql = ""
+    if rs == "yes":
+        rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) > 0"
+    elif rs == "no":
+        rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) = 0"
 
     where_sql = " AND ".join(where_parts)
+
+    inv_join_rows = sql_invoice_pid_left_join("m")
     rows = conn.execute(
         f"""
         SELECT
             m.subject_id,
             COALESCE(m.subject_name,'') AS subject_name,
             COALESCE(m.subject_no,'') AS subject_no,
-            COALESCE(m.first_source_system,'platform') AS source_type,
+            {_sql_subject_source_bucket('m')} AS source_type,
             COALESCE(m.subject_category,'org') AS subject_type,
             COALESCE(m.org_category,'') AS org_category,
-            COALESCE(m.subject_snapshot_id,'') AS snapshot_id,
+            COALESCE(m.subject_snapshot_id,'') AS subject_snapshot_id,
             COALESCE(m.quality_status,'ok') AS quality_status,
             COALESCE(m.category_status_note,'') AS category_status_note,
             COALESCE(m.first_import_batch_id,'') AS first_batch,
             COALESCE(m.last_import_batch_id,'') AS last_batch,
             COALESCE(m.created_at::VARCHAR,'') AS created_at,
             COALESCE(m.updated_at::VARCHAR,'') AS updated_at,
-            COALESCE(MAX(CASE WHEN COALESCE(s.match_rule,'') = 'dwd_invoice_seller' AND COALESCE(s.raw_subject_name,'')<>'' THEN 1 ELSE 0 END),0) AS has_seller,
-            COALESCE(MAX(CASE WHEN COALESCE(s.match_rule,'') = 'dwd_invoice_buyer' AND COALESCE(s.raw_subject_name,'')<>'' THEN 1 ELSE 0 END),0) AS has_buyer
+            COALESCE(m.subject_build_run_id,'') AS subject_build_run_id,
+            COALESCE(m.category_rule_version,'') AS category_rule_version,
+            COALESCE(rs.rename_edge_count, 0)::BIGINT AS rename_edge_count
         FROM dim_subject_master m
-        LEFT JOIN dim_subject_source_record s ON s.subject_id = m.subject_id
+        {inv_join_rows}
+        LEFT JOIN (
+            SELECT normalized_subject_no, COUNT(*)::BIGINT AS rename_edge_count
+            FROM dim_subject_rename_signal
+            GROUP BY normalized_subject_no
+        ) rs
+        ON upper(regexp_replace(trim(COALESCE(m.subject_no,'')), '[\\s-]+', '', 'g')) = rs.normalized_subject_no
         WHERE {where_sql}
-        GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13
-        ORDER BY updated_at DESC, subject_id DESC
+        {rename_filter_sql}
+        ORDER BY m.updated_at DESC, m.subject_id DESC
         LIMIT ?
         """,
         [*args, max(1, min(int(limit), 2000))],
     ).fetchall()
 
+    cat_names = get_org_category_display_names()
     out: list[dict[str, Any]] = []
     for r in rows:
-        role_tag = _derive_role(str(r[2] or ""), bool(r[13]), bool(r[14]))
-        if role_wanted != "all" and role_tag != role_wanted:
-            continue
-        snap = str(r[6] or "")
-        snap_year = ""
-        for seg in snap.split("_"):
-            if seg.isdigit() and len(seg) == 4:
-                snap_year = seg
-                break
+        edge_ct = int(r[15] or 0)
+        has_sig = edge_ct > 0
+        if has_sig:
+            rename_hint = f"发票事实推断 {edge_ct} 段名称变化（全历史）"
+        else:
+            rename_hint = "—"
+        org_code = str(r[5] or "").strip()
         out.append(
             {
                 "enterprise_id": str(r[0] or ""),
@@ -170,16 +316,86 @@ def api_subject_library_rows(
                 "taxpayer_id": str(r[2] or ""),
                 "source_type": str(r[3] or "platform"),
                 "subject_type": "enterprise" if str(r[4] or "org") == "org" else "person",
-                "subject_category_code": str(r[5] or ""),
-                "snapshot_year": snap_year,
-                "role_tag": role_tag,
-                "renamed_in_year": str(r[8] or "") == "needs_review",
-                "rename_hint": str(r[8] or "-") or "-",
+                "subject_category_code": org_code,
+                "subject_category_name": cat_names.get(org_code, ""),
+                "has_rename_signal": has_sig,
+                "rename_edge_count": edge_ct,
+                "rename_hint": rename_hint,
                 "rename_timeline": [],
                 "first_seen_batch_id": str(r[9] or ""),
                 "last_seen_batch_id": str(r[10] or ""),
                 "first_seen_date": str(r[11] or ""),
                 "last_seen_date": str(r[12] or ""),
+                "subject_snapshot_id": str(r[6] or ""),
+                "quality_status": str(r[7] or "ok"),
+                "category_status_note": str(r[8] or ""),
+                "subject_build_run_id": str(r[13] or ""),
+                "category_rule_version": str(r[14] or ""),
             }
         )
     return {"ok": True, "rows": out, "total": len(out)}
+
+
+def api_subject_library_rename_timeline(conn, *, subject_id: str) -> dict[str, Any]:
+    """某主体在 dim_subject_rename_signal 中的全历史更名边（按 transition_date）。"""
+    sid = str(subject_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": {"message": "subject_id 不能为空"}}
+
+    row = conn.execute(
+        "SELECT COALESCE(subject_no,'') FROM dim_subject_master WHERE subject_id = ?",
+        [sid],
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": {"message": "未找到该主体"}}
+
+    pid = str(row[0] or "").strip()
+    pid_norm = ""
+    if pid:
+        try:
+            pr = conn.execute(
+                "SELECT upper(regexp_replace(trim(?), '[\\s-]+', '', 'g')) AS x",
+                [pid],
+            ).fetchone()
+            pid_norm = str(pr[0] or "") if pr else ""
+        except Exception:
+            pid_norm = ""
+
+    try:
+        ev_rows = conn.execute(
+            """
+            SELECT
+                COALESCE(from_name_raw, from_name_norm, '') AS from_name,
+                COALESCE(to_name_raw, to_name_norm, '') AS to_name,
+                CAST(transition_date AS VARCHAR) AS transition_date,
+                COALESCE(confidence, '') AS confidence,
+                evidence_invoice_count
+            FROM dim_subject_rename_signal
+            WHERE subject_id = ?
+               OR (length(?) > 0 AND normalized_subject_no = ?)
+            ORDER BY transition_date ASC, signal_id ASC
+            """,
+            [sid, pid_norm, pid_norm],
+        ).fetchall()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": {"message": f"读取更名轨迹失败：{type(exc).__name__}: {exc}"},
+        }
+
+    events: list[dict[str, Any]] = []
+    for er in ev_rows:
+        events.append(
+            {
+                "from_name": str(er[0] or ""),
+                "to_name": str(er[1] or ""),
+                "transition_date": str(er[2] or ""),
+                "confidence": str(er[3] or ""),
+                "evidence_invoice_count": int(er[4] or 0),
+            }
+        )
+    lines = [
+        f"{e['transition_date']}：{e['from_name']} → {e['to_name']}（置信 {e['confidence']}）"
+        for e in events
+    ]
+    return {"ok": True, "subject_id": sid, "events": events, "timeline_lines": lines}

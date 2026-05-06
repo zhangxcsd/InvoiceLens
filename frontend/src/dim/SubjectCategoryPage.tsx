@@ -438,7 +438,6 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.pageDesc}
-        badgeText={ui.prototypeBadge}
         showExpandableNote={false}
         actions={
           <div className="flex items-center gap-2">
@@ -698,6 +697,7 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
                     <thead className="bg-[#f8fafc] text-text-3">
                       <tr>
                         <th className="px-2.5 py-1.5">{ui.recomputeLatestDistColCategory}</th>
+                        <th className="px-2.5 py-1.5">{ui.recomputeLatestDistColCategoryName}</th>
                         <th className="px-2.5 py-1.5 text-right">{ui.recomputeLatestDistColCount}</th>
                         <th className="px-2.5 py-1.5 text-right">{ui.recomputeLatestDistColRatio}</th>
                       </tr>
@@ -721,6 +721,9 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
                                   {ui.recomputeLatestTop1Badge}
                                 </span>
                               ) : null}
+                            </td>
+                            <td className="max-w-[200px] px-2.5 py-1.5 text-text-2">
+                              {it.org_category_display_name || '—'}
                             </td>
                             <td className="px-2.5 py-1.5 text-right tabular-nums">{it.count.toLocaleString('zh-CN')}</td>
                             <td className="px-2.5 py-1.5 text-right tabular-nums">{ratio}%</td>

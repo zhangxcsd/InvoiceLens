@@ -1806,7 +1806,11 @@ export type SubjectCategoryRecomputeSummary = {
     matched: number
     needs_review: number
     disabled_blocked: number
-    by_org_category: Array<{ org_category: string; count: number }>
+    by_org_category: Array<{
+      org_category: string
+      count: number
+      org_category_display_name?: string
+    }>
   }
   relation_summary: {
     relation_total: number
@@ -1864,6 +1868,106 @@ export async function postSubjectLibraryIngestFromDwd(signal?: AbortSignal): Pro
   }
 }
 
+export type SubjectLibraryImportRejectSample = {
+  seq_no?: string | number
+  sheet?: string
+  field?: string
+  reason?: string
+  exception_type?: string
+}
+
+/** multipart：file + 可选 snapshot_year（四位年度，写入快照口径） */
+export async function postSubjectLibraryExternalImport(params: {
+  file: File
+  snapshotYear?: string
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  message?: string
+  subjects_upserted?: number
+  source_rows_written?: number
+  import_batch_id?: string
+  reject_row_samples?: SubjectLibraryImportRejectSample[]
+  file_blocking?: boolean
+  error?: { message?: string; detail?: string; exception_type?: string }
+}> {
+  const fd = new FormData()
+  fd.append('file', params.file, params.file.name)
+  if (params.snapshotYear?.trim()) fd.append('snapshot_year', params.snapshotYear.trim())
+  try {
+    const res = await fetch(apiUrl('/api/subject-library/import-external'), {
+      method: 'POST',
+      body: fd,
+      signal: params.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    const samples = Array.isArray(json?.reject_row_samples) ? json.reject_row_samples : []
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+        reject_row_samples: samples as SubjectLibraryImportRejectSample[],
+        file_blocking: Boolean(json?.file_blocking),
+      }
+    }
+    return {
+      ok: true,
+      message: json.message != null ? String(json.message) : undefined,
+      subjects_upserted:
+        json.subjects_upserted != null ? Number(json.subjects_upserted) : undefined,
+      source_rows_written:
+        json.source_rows_written != null ? Number(json.source_rows_written) : undefined,
+      import_batch_id: json.import_batch_id != null ? String(json.import_batch_id) : undefined,
+      reject_row_samples: samples as SubjectLibraryImportRejectSample[],
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+/** POST /api/subject-library/repair — 人工修正 dim_subject_master（见 docs/subject_library_data_repair.md） */
+export async function postSubjectLibraryRepair(
+  body: {
+    subject_id: string
+    subject_category?: 'org' | 'person'
+    org_category?: string
+    reason?: string
+    client_hint?: string
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  message?: string
+  changed?: Array<{
+    field: string
+    old_value: string
+    new_value: string
+    old_display_name?: string
+    new_display_name?: string
+  }>
+  error?: { message?: string; detail?: string; exception_type?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/subject-library/repair'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      message: json.message != null ? String(json.message) : undefined,
+      changed: Array.isArray(json.changed) ? json.changed : [],
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
 export async function postSubjectCategoryRecompute(
   payload?: { with_relations?: boolean; run_id?: string; snapshot_id?: string },
   signal?: AbortSignal,
@@ -1898,35 +2002,50 @@ export type SubjectLibraryRowDto = {
   enterprise_id: string
   enterprise_name: string
   taxpayer_id: string
-  source_type: 'platform' | 'external'
+  /** 常见：platform | external；库侧 invoice/manual 等也可能原样出现（前端应归一化展示） */
+  source_type: string
   subject_type: 'enterprise' | 'person'
   subject_category_code: string
-  snapshot_year: string
-  role_tag: 'seller' | 'buyer' | 'both'
-  renamed_in_year: boolean
+  subject_category_name?: string
+  has_rename_signal: boolean
+  rename_edge_count: number
   rename_hint: string
   rename_timeline: string[]
   first_seen_batch_id: string
   last_seen_batch_id: string
   first_seen_date: string
   last_seen_date: string
+  subject_snapshot_id: string
+  quality_status: string
+  category_status_note: string
+  subject_build_run_id: string
+  category_rule_version: string
+}
+
+export type SubjectLibrarySummaryDto = {
+  total: number
+  enterprise_count: number
+  person_count: number
+  needs_review_count: number
+  rename_signal_subject_count: number
 }
 
 export async function fetchSubjectLibrarySummary(params: {
-  snapshotYear?: string
   subjectType?: 'all' | 'enterprise' | 'person'
   sourceType?: 'all' | 'platform' | 'external'
+  keyword?: string
   signal?: AbortSignal
 }): Promise<{
   ok: boolean
-  summary?: { total: number; enterprise_count: number; person_count: number; needs_review_count: number }
+  summary?: SubjectLibrarySummaryDto
   error?: { message?: string }
 }> {
   try {
     const sp = new URLSearchParams()
-    if (params.snapshotYear) sp.set('snapshot_year', params.snapshotYear)
     if (params.subjectType) sp.set('subject_type', params.subjectType)
     if (params.sourceType) sp.set('source_type', params.sourceType)
+    const kwSum = (params.keyword ?? '').trim()
+    if (kwSum) sp.set('keyword', kwSum)
     const res = await fetch(apiUrl(`/api/subject-library/summary?${sp.toString()}`), { signal: params.signal })
     const json = (await res.json().catch(() => ({}))) as any
     if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
@@ -1937,24 +2056,23 @@ export async function fetchSubjectLibrarySummary(params: {
 }
 
 export async function fetchSubjectLibraryRows(params: {
-  snapshotYear?: string
   keyword?: string
   subjectType?: 'all' | 'enterprise' | 'person'
   sourceType?: 'all' | 'platform' | 'external'
   subjectCategory?: string
-  role?: 'all' | 'seller' | 'buyer' | 'both'
+  renameSignal?: 'all' | 'yes' | 'no'
   batchId?: string
   limit?: number
   signal?: AbortSignal
 }): Promise<{ ok: boolean; rows: SubjectLibraryRowDto[]; total: number; error?: { message?: string } }> {
   try {
     const sp = new URLSearchParams()
-    if (params.snapshotYear) sp.set('snapshot_year', params.snapshotYear)
-    if (params.keyword) sp.set('keyword', params.keyword)
+    const kwRows = (params.keyword ?? '').trim()
+    if (kwRows) sp.set('keyword', kwRows)
     if (params.subjectType) sp.set('subject_type', params.subjectType)
     if (params.sourceType) sp.set('source_type', params.sourceType)
     if (params.subjectCategory) sp.set('subject_category', params.subjectCategory)
-    if (params.role) sp.set('role', params.role)
+    if (params.renameSignal && params.renameSignal !== 'all') sp.set('rename_signal', params.renameSignal)
     if (params.batchId) sp.set('batch_id', params.batchId)
     sp.set('limit', String(Math.max(1, Math.min(2000, Math.floor(params.limit ?? 500)))))
     const res = await fetch(apiUrl(`/api/subject-library/rows?${sp.toString()}`), { signal: params.signal })
@@ -1967,5 +2085,123 @@ export async function fetchSubjectLibraryRows(params: {
     }
   } catch (e) {
     return { ok: false, rows: [], total: 0, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postSubjectLibraryRebuildRenameSignals(
+  signal?: AbortSignal,
+  opts?: { sync?: boolean },
+): Promise<{
+  ok: boolean
+  async?: boolean
+  message?: string
+  run_id?: string
+  signals_written?: number
+  error?: { message?: string }
+}> {
+  try {
+    const asyncMode = opts?.sync !== true
+    const res = await fetch(apiUrl('/api/subject-library/rebuild-rename-signals'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ async: asyncMode }),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    if (!json?.ok) {
+      return {
+        ok: false,
+        async: json.async === false,
+        run_id: json.run_id != null ? String(json.run_id) : undefined,
+        error: json?.error ?? { message: '重建更名信号失败' },
+      }
+    }
+    return {
+      ok: true,
+      async: json.async === true,
+      message: json.message != null ? String(json.message) : undefined,
+      run_id: json.run_id != null ? String(json.run_id) : undefined,
+      signals_written: json.signals_written != null ? Number(json.signals_written) : undefined,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export type SubjectRenameRebuildStatus = 'queued' | 'running' | 'success' | 'failed' | string
+
+export async function fetchSubjectLibraryRenameRebuildStatus(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  status?: SubjectRenameRebuildStatus
+  message?: string
+  signals_written?: number
+  restored_from_task_log?: boolean
+  error?: { message?: string; exception_type?: string; detail?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    sp.set('run_id', runId)
+    const res = await fetch(apiUrl(`/api/subject-library/rename-rebuild-status?${sp.toString()}`), {
+      method: 'GET',
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    if (!json?.ok) {
+      return { ok: false, error: json?.error ?? { message: '查询状态失败' } }
+    }
+    return {
+      ok: true,
+      status: json.status != null ? String(json.status) : undefined,
+      message: json.message != null ? String(json.message) : undefined,
+      signals_written: json.signals_written != null ? Number(json.signals_written) : undefined,
+      restored_from_task_log: json.restored_from_task_log === true,
+      error: json.error != null && typeof json.error === 'object' ? json.error : undefined,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export type SubjectLibraryRenameEventDto = {
+  from_name: string
+  to_name: string
+  transition_date: string
+  confidence: string
+  evidence_invoice_count: number
+}
+
+export async function fetchSubjectLibraryRenameTimeline(
+  subjectId: string,
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  events?: SubjectLibraryRenameEventDto[]
+  timeline_lines?: string[]
+  error?: { message?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    sp.set('subject_id', subjectId.trim())
+    const res = await fetch(apiUrl(`/api/subject-library/rename-timeline?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      events: Array.isArray(json.events) ? json.events : [],
+      timeline_lines: Array.isArray(json.timeline_lines) ? json.timeline_lines : [],
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
   }
 }

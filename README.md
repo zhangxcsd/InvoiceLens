@@ -31,9 +31,9 @@
 
 根目录 **`dev.bat`** 合并了原 `start_dev.bat` / `start_local_api.bat` / `start_ui.bat` / `restart_frontend_dev.bat`（脚本内 **`chcp 65001`**，并设置 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`，`start` 窗口标题为英文，避免 CMD 默认 GBK 下乱码或把命令截断成 `rt` 等误报）：
 
-- **`dev.bat`** 或 **`dev.bat all`**：新窗口启动本地 API + 当前窗口启动 Vite（日常开发最常用）
+- **`dev.bat`** 或 **`dev.bat all`**：**单窗口**同时启动本地 API（8765）与 Vite（5173，`npm run dev:with-api`），避免只起前端导致 `/api` 代理失败（日常开发最常用）
 - **`dev.bat api`**：仅本地 API（导入写 ODS 须保持此进程）
-- **`dev.bat web`**：仅前端（需已另开 API）
+- **`dev.bat web`**：仅前端（不推荐单独使用；须已另开 `dev.bat api`，否则 `/api` 不可用）
 - **`dev.bat restart-web`**：结束 5173~5175 监听并新开窗口启动 Vite
 - **`dev.bat smoke-local-api`**：本地 API 锁/断连回归冒烟（验证 `dim-tax-code` 关键接口不再 `socket hang up`）
 - **`dev.bat smoke-tree-ui`**：树形 UI 回归冒烟（Playwright，覆盖默认收起/展开级次同步/敏感类目过滤/层级连线存在）
@@ -47,7 +47,7 @@
 更新截图基线：`cd frontend && npm run test:tree-regression:update`
 打开最新回归报告：`cd frontend && npm run test:tree-regression:report`
 
-`dev.bat all` / `dev.bat api` 启动本地 API 前会自动清理端口 `8765` 的历史监听进程，避免旧进程抢占导致新接口返回 404。
+`dev.bat` / `dev.bat all` 启动前会清理 `8765` 与 `5173`–`5175` 上的旧监听；`dev.bat api` 仅清理 `8765`。
 
 失败截图/视频/trace 固定输出到：`frontend/test-results/tree-regression-artifacts/`  
 HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
@@ -66,5 +66,7 @@ HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
 - 企业年度关系回填运行手册（Runbook）：`docs/dim_enterprise_year_rel_runbook.md`
 - 主体库命名收敛清单（术语/字段统一基准）：`docs/subject_naming_convergence.md`
 - 主体库分域规则（组织机构主体/自然人主体）：`docs/subject_dimension_split_rules.md`
+- 主体库范围与数据职责（主数据/血缘/更名口径决策）：`docs/subject_library_scope_decision.md`
+- 主体更名检测规则（评审稿，发票事实推断）：`docs/subject_library_rename_detection_spec.md`
 - 主体类别机器匹配（规则 YAML + 推断函数说明）：`docs/subject_category_matching_engine.md`
 

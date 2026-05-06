@@ -2,6 +2,29 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+function localApiProxyErrorBanner(err: NodeJS.ErrnoException): void {
+  const code = err.code ?? ''
+  const msg = String(err.message ?? err)
+  const lines = [
+    '',
+    '========== InvoiceLens /api 代理失败 ==========',
+    `原因: ${code || 'unknown'} — ${msg}`,
+  ]
+  if (code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(msg)) {
+    lines.push(
+      '说明: 127.0.0.1:8765 上没有 Local API（Python sheet_mapping_server）在监听。',
+      '处理（任选其一）:',
+      '  • 推荐：在仓库根目录双击 dev.bat（单窗口同时起 API + Vite）',
+      '  • 或：仓库根目录执行 dev.bat api；或 frontend 下 npm run dev:with-api',
+      '  • 若你只用了 npm run dev：必须先有进程监听 8765，否则会反复出现本错误',
+    )
+  } else {
+    lines.push('说明: 上游 Local API 异常或无响应；查看 API 窗口内的 Python 报错。')
+  }
+  lines.push('===============================================', '')
+  console.error(lines.join('\n'))
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -14,6 +37,11 @@ export default defineConfig({
         // DWD 构建可能较长；默认代理超时过短会表现为 HTTP 502（浏览器仅见网关错误）
         timeout: 3_600_000,
         proxyTimeout: 3_600_000,
+        configure(proxy) {
+          proxy.on('error', (err: NodeJS.ErrnoException) => {
+            localApiProxyErrorBanner(err)
+          })
+        },
       },
     },
   },

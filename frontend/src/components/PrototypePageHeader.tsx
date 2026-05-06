@@ -6,7 +6,8 @@ type PrototypePageHeaderProps = {
   description: string
   /** 折叠说明正文；仅当 showExpandableNote 为 true 时需要 */
   note?: string
-  badgeText: string
+  /** 不传或空字符串则不展示角标（如主体库等已接后端数据的页面） */
+  badgeText?: string
   expandLabel?: string
   collapseLabel?: string
   actions?: ReactNode
@@ -25,9 +26,11 @@ export function PrototypePageHeader(props: PrototypePageHeaderProps) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <h1 className="text-il-page-title font-semibold text-text">{props.title}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
-            {props.badgeText}
-          </span>
+          {props.badgeText ? (
+            <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
+              {props.badgeText}
+            </span>
+          ) : null}
         </div>
         {props.actions ? <div className="flex shrink-0 items-center gap-2">{props.actions}</div> : null}
       </div>

@@ -448,6 +448,30 @@ CREATE INDEX IF NOT EXISTS idx_subject_master_snapshot ON dim_subject_master (su
 CREATE INDEX IF NOT EXISTS idx_subject_master_rulever  ON dim_subject_master (category_rule_version);
 
 -- -----------------------------------------------------------------------------
+-- dim_subject_rename_signal：发票事实推断的「同识别号、异名」全历史更名边（与 category_status_note 解耦）
+-- 审计含义：每条边表示在 transition_date 起观测到展示名从 from_* 过渡到 to_*；confidence 供人工抽样复核。
+-- 粒度：一行 = 一条有向更名边；同一 subject_id 可有多行（链式）。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dim_subject_rename_signal (
+    signal_id                 VARCHAR NOT NULL PRIMARY KEY,
+    subject_id                VARCHAR,                      -- 可关联 dim_subject_master；无匹配时为空
+    normalized_subject_no     VARCHAR NOT NULL,             -- 与 DWD 归集侧 pid 规范化一致（大写、去空白与连字符）
+    from_name_norm            VARCHAR NOT NULL,
+    to_name_norm              VARCHAR NOT NULL,
+    from_name_raw             VARCHAR,
+    to_name_raw               VARCHAR,
+    transition_date           DATE NOT NULL,                -- to 侧名称首次不晚于该日的观测（按发票日期 min）
+    evidence_invoice_count    BIGINT NOT NULL DEFAULT 0,    -- 参与该边两侧名称出现的票头行数近似（from_cnt+to_cnt）
+    confidence                VARCHAR NOT NULL DEFAULT 'medium', -- high / medium / low（弱规则下以票量为粗置信度）
+    build_run_id              VARCHAR NOT NULL,
+    built_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_rename_signal_subject ON dim_subject_rename_signal (subject_id);
+CREATE INDEX IF NOT EXISTS idx_rename_signal_normno ON dim_subject_rename_signal (normalized_subject_no);
+CREATE INDEX IF NOT EXISTS idx_rename_signal_run ON dim_subject_rename_signal (build_run_id);
+
+-- -----------------------------------------------------------------------------
 -- dim_enterprise_year_rel：企业-年度关系物理表（推荐主事实表）
 -- 设计定位：
 -- 1) dim_subject_master 只存“主体是谁”的稳定信息（不按年度拆行）；
@@ -910,6 +934,27 @@ CREATE INDEX IF NOT EXISTS idx_subject_src_name       ON dim_subject_source_reco
 CREATE INDEX IF NOT EXISTS idx_subject_src_no         ON dim_subject_source_record (raw_subject_no);
 CREATE INDEX IF NOT EXISTS idx_subject_src_runid      ON dim_subject_source_record (subject_build_run_id);
 CREATE INDEX IF NOT EXISTS idx_subject_src_snapshot   ON dim_subject_source_record (subject_snapshot_id);
+
+-- -----------------------------------------------------------------------------
+-- dim_subject_master_repair_log：主体主表「人工数据修复」审计（追加式）
+-- 审计含义：
+-- 1) 记录谁在何时把 dim_subject_master 的哪些字段从旧值改为新值；用于事后追溯与对账，不提供撤销。
+-- 2) 与业务导入/归集链路分离：本表仅承载「显式人工修正」，避免与 invoice/external 写入混淆。
+-- 3) 同一 subject_id 可多次修复：每次修复追加一行或多行（每变更字段一行）；最新有效值以主表为准。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dim_subject_master_repair_log (
+    repair_id       VARCHAR NOT NULL PRIMARY KEY, -- 单次写入生成的修复记录 ID（如 RPR_ 前缀 + 时间戳 + 随机）
+    subject_id      VARCHAR NOT NULL,             -- 对应 dim_subject_master.subject_id
+    field_name      VARCHAR NOT NULL,             -- 被修改字段名：subject_category / org_category 等
+    old_value       VARCHAR,                      -- 修改前取值（NULL 表示原为空或未设置）
+    new_value       VARCHAR,                      -- 修改后取值
+    reason          VARCHAR,                      -- 操作者填写的说明（可为空；本地单用户场景不做登录区分）
+    repaired_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- 修复生效时间
+    client_hint     VARCHAR                       -- 可选：调用端标识（如 web-enterprise-library）
+);
+
+CREATE INDEX IF NOT EXISTS idx_subj_repair_subject ON dim_subject_master_repair_log (subject_id);
+CREATE INDEX IF NOT EXISTS idx_subj_repair_time   ON dim_subject_master_repair_log (repaired_at);
 
 -- 主体分类快照（可重算追溯）
 CREATE TABLE IF NOT EXISTS dim_subject_category_snapshot (
