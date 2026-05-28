@@ -13,6 +13,8 @@ data/ods/*
 data/ods_raw/*
 data/database/*
 data/tmp/*
+data/warehouse.duckdb
+*.duckdb
 output/*
 
 # Keep directory placeholders
