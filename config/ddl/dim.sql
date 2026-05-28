@@ -227,7 +227,7 @@ CREATE INDEX IF NOT EXISTS idx_ent_seen_date_rng ON dim_enterprise (data_first_s
 -- 1) 企业主题页面默认仅消费企业主体表（dim_enterprise_subject）。
 -- 2) 个人主体单独入表（dim_person_subject），用于对私交易与风险专题，不默认计入企业 KPI。
 -- 3) 字段命名尽量复用 dwd_inv_header 票面语义（xfsbh/xfmc/gfsbh/gfmc），降低映射与维护成本。
--- 4) 两表均按年度快照（stat_year）管理，支持“同主体跨年度”的连续追踪。
+-- 4) 两表均按快照年度（stat_year）管理，支持“同主体跨年度”的连续追踪。
 --
 -- -----------------------------------------------------------------------------
 -- 建议抽取流程（伪代码，仅口径说明，不直接执行）
@@ -243,7 +243,7 @@ CREATE INDEX IF NOT EXISTS idx_ent_seen_date_rng ON dim_enterprise (data_first_s
 --   B2. subject_no 命中身份证号规则 -> subject_type = 'person'
 --   B3. 其余 -> subject_type = 'unknown'（不入两张主体维表，进入异常清单）
 --
--- Step C) 年度快照聚合（按 stat_year + 主体识别号）
+-- Step C) 快照年度聚合（按 stat_year + 主体识别号）
 --   C1. 同年度同主体去重
 --   C2. 聚合角色标记：
 --       has_seller_role = BOOL_OR(role='seller')
@@ -269,14 +269,14 @@ CREATE INDEX IF NOT EXISTS idx_ent_seen_date_rng ON dim_enterprise (data_first_s
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- dim_enterprise_subject：企业主体维表（年度快照）
+-- dim_enterprise_subject：企业主体维表（快照年度）
 -- 含义：由 dwd_inv_header 中识别为“企业税号”的主体抽取而来，沉淀企业口径主数据。
 -- 粒度：一行 = 一个年度（stat_year）下的一个企业主体（taxpayer_id）。
--- 用途：全量企业数据库、票企关联视图、组织树等企业主题页面的默认主体底座。
+-- 用途：全量企业数据库、发票报送覆盖与组织树等企业主题页面的默认主体底座。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_enterprise_subject (
     enterprise_subject_id  VARCHAR NOT NULL PRIMARY KEY, -- 企业主体主键（建议 ETL 生成稳定 ID）
-    stat_year              SMALLINT NOT NULL,            -- 年度快照（与 dwd_inv_header.stat_year 对齐）
+    stat_year              SMALLINT NOT NULL,            -- 快照年度（与 dwd_inv_header.stat_year 对齐）
 
     -- 复用发票主表命名（dwd_inv_header）：保留销/购两侧票面字段，避免口径映射歧义
     xfsbh                 VARCHAR, -- 销方纳税人识别号（同名复用）
@@ -311,7 +311,7 @@ CREATE INDEX IF NOT EXISTS idx_ent_subj_year_name   ON dim_enterprise_subject (s
 CREATE INDEX IF NOT EXISTS idx_ent_subj_last_batch  ON dim_enterprise_subject (last_seen_batch_id);
 
 -- -----------------------------------------------------------------------------
--- dim_person_subject：个人主体维表（年度快照，明文）
+-- dim_person_subject：个人主体维表（快照年度，明文）
 -- 含义：由 dwd_inv_header 中识别为“身份证号”的主体抽取而来。
 -- 粒度：一行 = 一个年度（stat_year）下的一个个人主体（id_card_no）。
 -- 用途：企业对私交易分析、采购对私风险识别等专题；默认不计入企业口径 KPI。
@@ -319,7 +319,7 @@ CREATE INDEX IF NOT EXISTS idx_ent_subj_last_batch  ON dim_enterprise_subject (l
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_person_subject (
     person_subject_id      VARCHAR NOT NULL PRIMARY KEY, -- 个人主体主键（建议 ETL 生成稳定 ID）
-    stat_year              SMALLINT NOT NULL,            -- 年度快照（与 dwd_inv_header.stat_year 对齐）
+    stat_year              SMALLINT NOT NULL,            -- 快照年度（与 dwd_inv_header.stat_year 对齐）
 
     -- 复用发票主表命名（dwd_inv_header）：保留销/购两侧票面字段，避免口径映射歧义
     xfsbh                 VARCHAR, -- 销方识别号（同名复用；识别为个人时通常为身份证号）
@@ -414,8 +414,8 @@ CREATE TABLE IF NOT EXISTS dim_subject_master (
     subject_id             VARCHAR NOT NULL PRIMARY KEY, -- 统一主体 ID（建议 ETL 生成稳定 ID，如 SUB_xxx）
     subject_name           VARCHAR NOT NULL,             -- 主体名称（当前展示主名称）
     subject_name_std       VARCHAR,                      -- 主体规范化名称（检索/去重）
-    subject_category       VARCHAR NOT NULL,             -- 主体类别：org/person
-    org_category           VARCHAR,                      -- 机构类别（仅组织机构主体适用）
+    subject_category       VARCHAR NOT NULL,             -- 主体分域：org / person；机读命中 SC-TEMP 时归为 person，org_category 仍存 SC-TEMP 作子类
+    org_category           VARCHAR,                      -- 机构类别编码（组织主体；person+SC-TEMP 表示自然人侧临时登记等）
     subject_no             VARCHAR,                      -- 主体标识号（统一社会信用代码/身份证号/其他）
     subject_no_type        VARCHAR,                      -- 标识号类型：uscc/id_card/taxpayer_id/other
     source_status          VARCHAR DEFAULT 'single',     -- 来源状态：single/merged/conflict/pending
@@ -475,7 +475,8 @@ CREATE INDEX IF NOT EXISTS idx_rename_signal_run ON dim_subject_rename_signal (b
 -- dim_enterprise_year_rel：企业-年度关系物理表（推荐主事实表）
 -- 设计定位：
 -- 1) dim_subject_master 只存“主体是谁”的稳定信息（不按年度拆行）；
--- 2) 本表存“主体在哪些年度参与业务”的关系事实（按年度拆行）；
+-- 2) 本表存「主体在哪些年度参与业务」的关系事实（按年度拆行）；**重算口径**下仅保留
+--    「当年 dim_group_enterprise_year 台账成员」且能映射到 org 主体的 subject_id（与报送覆盖分母一致）；
 -- 3) 前端主体库默认查主表，按年度筛选时联接本表，兼顾全集视角与年度追溯。
 --
 -- 粒度：
@@ -554,16 +555,153 @@ FROM dim_enterprise_year_rel
 GROUP BY stat_year;
 
 -- -----------------------------------------------------------------------------
+-- vw_audit_invoice_coverage_group_member：集团年度成员 × 主体库 × 年度购销角色（发票报送覆盖明细）
+-- 审计含义：
+-- 1) 以 dim_group_enterprise_year 为集团「成员清单」权威口径（stat_year + enterprise_id）；
+-- 2) 纳税人标识与主体库对齐：成员 enterprise_id 与 dim_subject_master.subject_no 使用同一规范化
+--    （大写、去首尾空白、去空白与连字符），且仅 subject_category='org' 参与匹配；
+-- 3) 「已报送」采用严口径：dim_enterprise_year_rel 中该年度 has_seller_role 与 has_buyer_role 同时为真
+--    （本表行仅覆盖台账成员映射后的主体，与第 2 点一致）；
+--    （购销双向均在发票事实中出现过）；
+-- 4) 国家出资企业分组锚点：优先显式产权根 enterprise_id，其次管理根，二者皆空时回落一级集团
+--    level1_group_id（与业务约定「双根不一致时以产权根为主」一致：本视图以 COALESCE 顺序体现优先级）；
+-- 5) in_coverage_denominator：仅「成员行且已成功映射到 org 主体」计入报送覆盖率分母；未映射成员仍保留在
+--    明细中便于补录主体或核对税号，但不进入分母，避免分母虚增。
+-- 粒度：一行 = 一条集团年度成员记录（与 dim_group_enterprise_year 主键一致）。
+-- -----------------------------------------------------------------------------
+CREATE VIEW IF NOT EXISTS vw_audit_invoice_coverage_group_member AS
+WITH org_subject_ranked AS (
+    SELECT
+        subject_id,
+        subject_name,
+        subject_no,
+        upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g')) AS norm_no,
+        ROW_NUMBER() OVER (
+            PARTITION BY upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g'))
+            ORDER BY subject_id
+        ) AS rn
+    FROM dim_subject_master
+    WHERE subject_category = 'org'
+      AND trim(COALESCE(subject_no, '')) <> ''
+),
+org_subject_dedup AS (
+    SELECT subject_id, subject_name, subject_no, norm_no
+    FROM org_subject_ranked
+    WHERE rn = 1
+)
+SELECT
+    g.stat_year,
+    g.enterprise_id,
+    g.enterprise_name,
+    g.is_member,
+    upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g')) AS norm_enterprise_id,
+    g.level1_group_id,
+    g.level1_group_name,
+    g.mgmt_root_enterprise_id,
+    g.mgmt_root_enterprise_name,
+    g.equity_root_enterprise_id,
+    g.equity_root_enterprise_name,
+    -- 国家出资企业锚点（上卷维度）：产权根 > 管理根 > 一级集团
+    CASE
+        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN g.equity_root_enterprise_id
+        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN g.mgmt_root_enterprise_id
+        ELSE g.level1_group_id
+    END AS soe_anchor_enterprise_id,
+    CASE
+        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN g.equity_root_enterprise_name
+        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN g.mgmt_root_enterprise_name
+        ELSE g.level1_group_name
+    END AS soe_anchor_enterprise_name,
+    CASE
+        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN 'equity_root'
+        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN 'mgmt_root'
+        ELSE 'level1_group'
+    END AS soe_anchor_source,
+    m.subject_id AS subject_id,
+    m.subject_name AS subject_name,
+    COALESCE(r.has_seller_role, FALSE) AS has_seller_role,
+    COALESCE(r.has_buyer_role, FALSE) AS has_buyer_role,
+    -- 已报送（严口径）：映射主体存在且年度关系行上购销双向均为真
+    (m.subject_id IS NOT NULL
+        AND COALESCE(r.has_seller_role, FALSE)
+        AND COALESCE(r.has_buyer_role, FALSE)) AS is_reported_both,
+    -- 报送覆盖分析分母（映射后的集团成员）
+    (COALESCE(g.is_member, TRUE)
+        AND m.subject_id IS NOT NULL
+        AND length(upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g'))) > 0
+    ) AS in_coverage_denominator
+FROM dim_group_enterprise_year g
+LEFT JOIN org_subject_dedup m
+    ON m.norm_no = upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g'))
+LEFT JOIN dim_enterprise_year_rel r
+    ON r.subject_id = m.subject_id
+   AND r.stat_year = g.stat_year;
+
+-- -----------------------------------------------------------------------------
+-- vw_audit_invoice_coverage_soe_year：按「国家出资企业锚点 × 统计年度」上卷的报送覆盖汇总
+-- 审计含义：
+-- 1) 在 vw_audit_invoice_coverage_group_member 明细之上，按 stat_year 与 soe_anchor_enterprise_id 聚合；
+-- 2) denominator_mapped_members 为进入覆盖率分母的成员数（已映射到 org 主体）；
+-- 3) reported_both_members 为分母成员中购销双向均已报送（严口径）的成员数（与分母同口径，比率不超过 1）；
+-- 4) coverage_ratio = reported_both / denominator，分母为 0 时比率为 NULL（表示无可比对的映射成员）；
+-- 5) unmapped_member_rows 为成员行中「成员有效 enterprise_id 但未命中主体库 org」的数量，用于驱动补录主体。
+-- -----------------------------------------------------------------------------
+CREATE VIEW IF NOT EXISTS vw_audit_invoice_coverage_soe_year AS
+SELECT
+    stat_year,
+    soe_anchor_enterprise_id,
+    any_value(soe_anchor_enterprise_name) AS soe_anchor_enterprise_name,
+    any_value(soe_anchor_source) AS soe_anchor_source,
+    COUNT(*) FILTER (WHERE COALESCE(is_member, TRUE)) AS member_row_count,
+    COUNT(*) FILTER (WHERE in_coverage_denominator) AS denominator_mapped_members,
+    -- 仅统计「进入分母」的成员，避免非成员行或空税号行抬高已报送计数
+    COUNT(*) FILTER (WHERE is_reported_both AND in_coverage_denominator) AS reported_both_members,
+    COUNT(*) FILTER (
+        WHERE COALESCE(is_member, TRUE)
+          AND subject_id IS NULL
+          AND length(trim(COALESCE(enterprise_id, ''))) > 0
+    ) AS unmapped_member_rows,
+    CASE
+        WHEN COUNT(*) FILTER (WHERE in_coverage_denominator) = 0 THEN CAST(NULL AS DOUBLE)
+        ELSE CAST(COUNT(*) FILTER (WHERE is_reported_both AND in_coverage_denominator) AS DOUBLE)
+            / CAST(COUNT(*) FILTER (WHERE in_coverage_denominator) AS DOUBLE)
+    END AS coverage_ratio
+FROM vw_audit_invoice_coverage_group_member
+GROUP BY stat_year, soe_anchor_enterprise_id;
+
+-- -----------------------------------------------------------------------------
 -- 回填模板（示例 SQL，不会自动执行）
 -- 目标：从 dwd_inv_header 回填 dim_enterprise_year_rel
 -- 说明：
 -- 1) 仅示例口径，可按业务改造（例如金额口径改为净额 net_jshj）；
 -- 2) 默认只处理组织机构主体（dim_subject_master.subject_category='org'）；
--- 3) 通过 subject_no 关联主体主表；若需更严格，可叠加名称相似度或规则版本约束。
+-- 3) **行范围**须与加工中心重算任务一致：以当年 dim_group_enterprise_year 台账成员为起点
+--    （规范化 enterprise_id），JOIN org_subject_dedup，再 LEFT JOIN dwd 聚合购销；
+-- 4) 关联主体须与 vw_audit_invoice_coverage_group_member / 主体库发票归集一致：
+--    使用规范化税号 norm_no（upper + 去空白与连字符）+ org 主体按 norm_no 去重（rn=1），
+--    禁止仅用 m.subject_no = TRIM(发票税号) 精确匹配，否则 DWD 有购销仍可能写不进 dim_enterprise_year_rel。
 -- -----------------------------------------------------------------------------
 --
--- Step A) 拉平销/购主体候选（统一为 subject_no + role）
--- WITH dwd_subject_union AS (
+-- Step A) 拉平销/购主体候选（subject_no 为票面 TRIM 后原样，供规范化）
+-- WITH org_subject_ranked AS (
+--     SELECT
+--         subject_id,
+--         subject_no,
+--         upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g')) AS norm_no,
+--         ROW_NUMBER() OVER (
+--             PARTITION BY upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g'))
+--             ORDER BY subject_id
+--         ) AS rn
+--     FROM dim_subject_master
+--     WHERE subject_category = 'org'
+--       AND trim(COALESCE(subject_no, '')) <> ''
+-- ),
+-- org_subject_dedup AS (
+--     SELECT subject_id, subject_no, norm_no
+--     FROM org_subject_ranked
+--     WHERE rn = 1
+-- ),
+-- dwd_subject_union AS (
 --     SELECT
 --         h.stat_year,
 --         TRIM(h.xfsbh) AS subject_no,
@@ -588,6 +726,12 @@ GROUP BY stat_year;
 --     FROM dwd_inv_header h
 --     WHERE TRIM(COALESCE(h.gfsbh, '')) <> ''
 -- ),
+-- norm_dwd_subject AS (
+--     SELECT
+--         d.*,
+--         upper(regexp_replace(trim(COALESCE(d.subject_no, '')), '[\s-]+', '', 'g')) AS norm_no
+--     FROM dwd_subject_union d
+-- ),
 --
 -- Step B) 关联主体主表并做年度聚合
 -- year_agg AS (
@@ -604,10 +748,10 @@ GROUP BY stat_year;
 --         MAX(u.import_batch_id) AS year_last_seen_batch_id,
 --         MIN(u.import_session_id) AS year_first_seen_session_id,
 --         MAX(u.import_session_id) AS year_last_seen_session_id
---     FROM dwd_subject_union u
---     JOIN dim_subject_master m
---       ON m.subject_no = u.subject_no
---      AND m.subject_category = 'org'
+--     FROM norm_dwd_subject u
+--     JOIN org_subject_dedup m
+--       ON m.norm_no = u.norm_no
+--     WHERE length(u.norm_no) > 0
 --     GROUP BY m.subject_id, u.stat_year
 -- )
 --
@@ -692,7 +836,25 @@ GROUP BY stat_year;
 -- -- 可选：先清理目标年度（谨慎执行）
 -- -- DELETE FROM dim_enterprise_year_rel WHERE stat_year = :target_year;
 --
--- WITH dwd_subject_union AS (
+-- WITH org_subject_ranked AS (
+--     SELECT
+--         subject_id,
+--         subject_no,
+--         upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g')) AS norm_no,
+--         ROW_NUMBER() OVER (
+--             PARTITION BY upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g'))
+--             ORDER BY subject_id
+--         ) AS rn
+--     FROM dim_subject_master
+--     WHERE subject_category = 'org'
+--       AND trim(COALESCE(subject_no, '')) <> ''
+-- ),
+-- org_subject_dedup AS (
+--     SELECT subject_id, subject_no, norm_no
+--     FROM org_subject_ranked
+--     WHERE rn = 1
+-- ),
+-- dwd_subject_union AS (
 --     SELECT
 --         h.stat_year,
 --         TRIM(h.xfsbh) AS subject_no,
@@ -719,6 +881,12 @@ GROUP BY stat_year;
 --     WHERE h.stat_year = :target_year
 --       AND TRIM(COALESCE(h.gfsbh, '')) <> ''
 -- ),
+-- norm_dwd_subject AS (
+--     SELECT
+--         d.*,
+--         upper(regexp_replace(trim(COALESCE(d.subject_no, '')), '[\s-]+', '', 'g')) AS norm_no
+--     FROM dwd_subject_union d
+-- ),
 -- year_agg AS (
 --     SELECT
 --         m.subject_id,
@@ -733,10 +901,10 @@ GROUP BY stat_year;
 --         MAX(u.import_batch_id) AS year_last_seen_batch_id,
 --         MIN(u.import_session_id) AS year_first_seen_session_id,
 --         MAX(u.import_session_id) AS year_last_seen_session_id
---     FROM dwd_subject_union u
---     JOIN dim_subject_master m
---       ON m.subject_no = u.subject_no
---      AND m.subject_category = 'org'
+--     FROM norm_dwd_subject u
+--     JOIN org_subject_dedup m
+--       ON m.norm_no = u.norm_no
+--     WHERE length(u.norm_no) > 0
 --     GROUP BY m.subject_id, u.stat_year
 -- )
 -- INSERT INTO dim_enterprise_year_rel (
@@ -796,7 +964,25 @@ GROUP BY stat_year;
 -- - 将 :batch_from / :batch_to 替换为批次区间（字符串比较，建议统一批次格式）
 -- - 若需仅针对某年，可在 WHERE 再叠加 stat_year 条件
 -- -----------------------------------------------------------------------------
--- WITH dwd_subject_union AS (
+-- WITH org_subject_ranked AS (
+--     SELECT
+--         subject_id,
+--         subject_no,
+--         upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g')) AS norm_no,
+--         ROW_NUMBER() OVER (
+--             PARTITION BY upper(regexp_replace(trim(COALESCE(subject_no, '')), '[\s-]+', '', 'g'))
+--             ORDER BY subject_id
+--         ) AS rn
+--     FROM dim_subject_master
+--     WHERE subject_category = 'org'
+--       AND trim(COALESCE(subject_no, '')) <> ''
+-- ),
+-- org_subject_dedup AS (
+--     SELECT subject_id, subject_no, norm_no
+--     FROM org_subject_ranked
+--     WHERE rn = 1
+-- ),
+-- dwd_subject_union AS (
 --     SELECT
 --         h.stat_year,
 --         TRIM(h.xfsbh) AS subject_no,
@@ -825,6 +1011,12 @@ GROUP BY stat_year;
 --       AND TRIM(COALESCE(h.import_batch_id, '')) >= ':batch_from'
 --       AND TRIM(COALESCE(h.import_batch_id, '')) <= ':batch_to'
 -- ),
+-- norm_dwd_subject AS (
+--     SELECT
+--         d.*,
+--         upper(regexp_replace(trim(COALESCE(d.subject_no, '')), '[\s-]+', '', 'g')) AS norm_no
+--     FROM dwd_subject_union d
+-- ),
 -- year_agg AS (
 --     SELECT
 --         m.subject_id,
@@ -839,10 +1031,10 @@ GROUP BY stat_year;
 --         MAX(u.import_batch_id) AS year_last_seen_batch_id,
 --         MIN(u.import_session_id) AS year_first_seen_session_id,
 --         MAX(u.import_session_id) AS year_last_seen_session_id
---     FROM dwd_subject_union u
---     JOIN dim_subject_master m
---       ON m.subject_no = u.subject_no
---      AND m.subject_category = 'org'
+--     FROM norm_dwd_subject u
+--     JOIN org_subject_dedup m
+--       ON m.norm_no = u.norm_no
+--     WHERE length(u.norm_no) > 0
 --     GROUP BY m.subject_id, u.stat_year
 -- )
 -- INSERT INTO dim_enterprise_year_rel (
@@ -1036,4 +1228,57 @@ CREATE TABLE IF NOT EXISTS dim_ind_rule (
     rule_note        VARCHAR,
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 被审企业「管理与产权层级信息」主数据（按快照年度 + 统一社会信用代码唯一；与发票明细解耦，供层级与出资口径核对）
+CREATE TABLE IF NOT EXISTS dim_audited_enterprise_registry (
+    row_id VARCHAR NOT NULL PRIMARY KEY, -- 行主键：手工录入为 UUID；演示种子以 demo_seed_ 前缀便于批量替换
+    snapshot_year SMALLINT NOT NULL, -- 快照年度（与界面筛选一致）
+    unified_social_credit_code VARCHAR NOT NULL, -- 统一社会信用代码
+    enterprise_name VARCHAR NOT NULL, -- 企业名称
+    domestic_overseas VARCHAR, -- 境内/境外
+    detail_address VARCHAR, -- 详细地址
+    currency VARCHAR, -- 币种
+    registered_capital VARCHAR, -- 注册资本（保留导出原文含单位）
+    registration_date VARCHAR, -- 注册日期
+    national_economy_industry_major VARCHAR, -- 国民经济行业大类
+    enterprise_category VARCHAR, -- 企业类别
+    sasac_authority VARCHAR, -- 所属国资监管机构
+    sasac_relation VARCHAR, -- 与国资监管机构的关系
+    consolidated_reporting VARCHAR, -- 是否并表
+    listed_company VARCHAR, -- 是否上市公司
+    main_business VARCHAR, -- 主业情况
+    state_investor VARCHAR, -- 国家出资企业
+    mgmt_level SMALLINT, -- 管理层级
+    mgmt_parent VARCHAR, -- 上级管理单位
+    equity_level SMALLINT, -- 产权层级
+    shareholders VARCHAR, -- 上级产权单位（单一股东展示口径，可含持股比例文案）
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (snapshot_year, unified_social_credit_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_audited_ent_reg_year ON dim_audited_enterprise_registry (snapshot_year);
+CREATE INDEX IF NOT EXISTS idx_audited_ent_reg_state ON dim_audited_enterprise_registry (state_investor);
+
+-- 被审企业「出资与股权比例信息」明细（同一快照年度、同一标的企业下可有多行出资人）
+CREATE TABLE IF NOT EXISTS dim_audited_enterprise_contribution (
+    row_id VARCHAR NOT NULL PRIMARY KEY,
+    snapshot_year SMALLINT NOT NULL,
+    investee_unified_credit_code VARCHAR NOT NULL, -- 企业统一社会信用代码
+    investee_name VARCHAR NOT NULL, -- 企业名称
+    state_investor_enterprise VARCHAR, -- 国家出资企业
+    state_investor_unified_credit_code VARCHAR, -- 国家出资企业统一社会信用代码
+    contributor_name VARCHAR NOT NULL, -- 出资人名称
+    contributor_org_code VARCHAR, -- 出资人组织机构代码
+    contributor_category VARCHAR, -- 出资人类别
+    contribution_info VARCHAR, -- 出资信息
+    relation_to_target VARCHAR, -- 与标的企业关系
+    currency VARCHAR, -- 币种
+    subscribed_amount_wan DECIMAL(22, 6), -- 认缴金额（万元）
+    share_ratio DECIMAL(14, 6), -- 股权比例（数值口径，如 20 表示 20%）
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audited_ent_contrib_year ON dim_audited_enterprise_contribution (snapshot_year);
+CREATE INDEX IF NOT EXISTS idx_audited_ent_contrib_investee
+    ON dim_audited_enterprise_contribution (snapshot_year, investee_unified_credit_code);
 

@@ -7,6 +7,8 @@ export type NavKey =
   | 'ods_to_dwd_center'
   | 'dwd_to_dim_center'
   | 'dwd_data_preview'
+  /** 加工中心：DWD 落盘后的派生维/台账重算与运行记录（如 dim_enterprise_year_rel） */
+  | 'processing_derived_dim_tasks'
   | 'import_history'
   | 'import_quality_overview'
   | 'import_quality_detail'

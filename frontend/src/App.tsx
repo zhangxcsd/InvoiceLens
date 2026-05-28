@@ -24,6 +24,7 @@ import { ImportHistoryPage } from './import/ImportHistoryPage'
 import { DwdPreviewPage } from './dwd/DwdPreviewPage'
 import { OdsToDwdCenterPage } from './dwd/OdsToDwdCenterPage'
 import { DwdToDimCenterPage } from './dwd/DwdToDimCenterPage'
+import { ProcessingDerivedDimTasksPage } from './dwd/ProcessingDerivedDimTasksPage'
 import { navToDwdDimWithTask, SUBJECT_DIM_TASK } from './dwd/dwdDimNav'
 import { FieldMappingConfigPrototype } from './fieldMapping/FieldMappingConfigPrototype'
 import { MappingTemplatesPrototype } from './fieldMapping/MappingTemplatesPrototype'
@@ -276,6 +277,12 @@ function Sidebar(props: {
     if (props.nav !== 'import_mapping_config' && props.nav !== 'import_mapping_templates') return
     setOpenParents((p) => ({ ...p, import: true }))
     setOpenChildren((c) => ({ ...c, mapping: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'processing_derived_dim_tasks') return
+    setOpenParents((p) => ({ ...p, import: true }))
+    setOpenChildren((c) => ({ ...c, processing: true }))
   }, [props.nav])
 
   useEffect(() => {
@@ -634,6 +641,9 @@ function Sidebar(props: {
             })}
             {navGrand('dwd_data_preview', t.sidebar.dwdDataPreview, {
               active: props.nav === 'dwd_data_preview',
+            })}
+            {navGrand('processing_derived_dim_tasks', t.sidebar.processingDerivedDimTasks, {
+              active: props.nav === 'processing_derived_dim_tasks',
             })}
           </div>
           {navChild('history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />, {
@@ -2565,6 +2575,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dwdToDim}</b>
         </>
       )
+    if (props.nav === 'processing_derived_dim_tasks')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.processingDerivedDimTasks}</b>
+        </>
+      )
     if (props.nav === 'import_history')
       return (
         <>
@@ -2739,6 +2756,8 @@ function AppShell(props: {
             <OdsToDwdCenterPage />
           ) : props.nav === 'dwd_to_dim_center' ? (
             <DwdToDimCenterPage />
+          ) : props.nav === 'processing_derived_dim_tasks' ? (
+            <ProcessingDerivedDimTasksPage onNav={props.onNav} />
           ) : props.nav === 'dwd_data_preview' ? (
             <DwdPreviewPage onNav={props.onNav} />
           ) : props.nav === 'import_history' ? (

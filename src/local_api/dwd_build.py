@@ -199,6 +199,40 @@ def _pending_dwd_sessions(conn: Any, import_batch_id: str) -> list[str]:
     return [str(r[0]) for r in rows if r and r[0] is not None]
 
 
+def _attach_enterprise_year_rel_rebuild_if_requested(
+    conn: Any, out: dict[str, Any], rebuild_enterprise_year_rel: bool
+) -> None:
+    """DWD 成功后可选：按本次构建涉及年度重算 dim_enterprise_year_rel（写入 out 子键）。"""
+    if not rebuild_enterprise_year_rel or not out.get("ok"):
+        return
+    sy = out.get("stat_years_built") or []
+    if not isinstance(sy, list) or not sy:
+        return
+    years_int: list[int] = []
+    for y in sy:
+        try:
+            years_int.append(int(y))
+        except (TypeError, ValueError):
+            continue
+    if not years_int:
+        return
+    try:
+        from src.local_api.enterprise_year_rel_build import (
+            merge_stat_years_for_chain_rebuild,
+            rebuild_dim_enterprise_year_rel,
+        )
+
+        chain_years = merge_stat_years_for_chain_rebuild(conn, years_int)
+        out["enterprise_year_rel_rebuild"] = rebuild_dim_enterprise_year_rel(
+            conn, stat_years=chain_years, trigger_source="dwd_build_chain"
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["enterprise_year_rel_rebuild"] = {
+            "ok": False,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+
+
 def _mark_sessions_dwd_processed(conn: Any, import_batch_id: str, session_ids: list[str]) -> None:
     if not session_ids:
         return
@@ -358,6 +392,7 @@ def build_dwd_for_batch(
     stat_year: int | None = None,
     incremental: bool = True,
     import_session_ids: list[str] | None = None,
+    rebuild_enterprise_year_rel: bool = False,
 ) -> dict[str, Any]:
     """
     执行 ODS→DWD 落盘。import_batch_id 与 ODS 目录「批次=」及 ods_load_log 一致。
@@ -366,6 +401,9 @@ def build_dwd_for_batch(
     - `import_session_ids`：在 incremental=True 时可选；若传入非空列表，则仅在该批次的**待处理**会话中取交集（用于批量中只跑所选 session）。不传或传 None 表示该批次全部待处理会话。
     - incremental=False：对该批次全量会话跑清洗（不按水位跳过），成功后为**本批次全部会话**写入水位；`import_session_ids` 忽略。
     - stat_year 可选。省略时：在筛选范围内枚举可解析开票年度，按年依次 run_cleaner。
+    - rebuild_enterprise_year_rel=True：在**本次构建成功**且 `stat_years_built` 非空时，按
+      **本次构建年度 ∪ dim_group_enterprise_year 中出现的年度** 重算 `dim_enterprise_year_rel`
+      （仅集团台账成员行；结果置于返回 JSON 的 `enterprise_year_rel_rebuild`）。
 
     正常增量构建**不会**删除或回滚已落盘 DWD；运维「强制重洗」请使用 `force_rebuild_dwd_session`。
     """
@@ -416,6 +454,7 @@ def build_dwd_for_batch(
         )
         if out.get("ok"):
             out["incremental"] = True
+            _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
         return out
 
     all_sess = _all_sessions_in_batch(conn, bid)
@@ -428,6 +467,7 @@ def build_dwd_for_batch(
     )
     if out.get("ok"):
         out["incremental"] = False
+        _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
     return out
 
 

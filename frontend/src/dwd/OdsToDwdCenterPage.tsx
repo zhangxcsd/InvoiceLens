@@ -88,6 +88,34 @@ type BatchBuildOverlay = {
   statYear?: string | number
 }
 
+/** 将 DWD 响应中的 enterprise_year_rel_rebuild 摘要追加到构建日志 */
+function formatEnterpriseYearRelRebuildLog(rel: unknown): string[] {
+  if (rel == null || typeof rel !== 'object') return []
+  const o = rel as Record<string, unknown>
+  if (o.skipped === true) {
+    const msg = o.message != null ? String(o.message) : ''
+    return msg.trim() ? [`企业年度购销关系：跳过（${msg}）`] : ['企业年度购销关系：跳过']
+  }
+  if (o.ok === false) {
+    const err = o.error
+    const msg =
+      err && typeof err === 'object' && 'message' in err
+        ? String((err as { message?: unknown }).message ?? '')
+        : String(o.error ?? '未知错误')
+    return [`企业年度购销关系重算失败：${msg || '—'}`]
+  }
+  if (o.ok === true && o.dry_run === true) {
+    return [`企业年度购销关系：预演（dry_run）将写入约 ${String(o.rows_that_would_insert ?? '—')} 行`]
+  }
+  if (o.ok === true) {
+    const years = Array.isArray(o.stat_years) ? o.stat_years.map(String).join('、') : '—'
+    return [
+      `企业年度购销关系：已重算 年度=[${years}]，写入后行数=${String(o.rows_after_insert ?? '—')}（删前=${String(o.rows_before_delete ?? '—')}）`,
+    ]
+  }
+  return []
+}
+
 function aggregateToDwdRows(list: OdsPreviewBatchMeta[]): DwdBatchRow[] {
   const by: Record<string, OdsPreviewBatchMeta[]> = {}
   for (const m of list) {
@@ -154,6 +182,8 @@ export function OdsToDwdCenterPage() {
   const [bulkPick, setBulkPick] = useState<Record<string, string[]>>({})
   const [expandedBatchId, setExpandedBatchId] = useState<string | null>(null)
   const [bulkProgressLabel, setBulkProgressLabel] = useState<string | null>(null)
+  /** 与 POST /api/dwd/build 的 rebuild_enterprise_year_rel 对齐；单次与批量增量构建共用 */
+  const [rebuildEnterpriseYearRelAfterDwd, setRebuildEnterpriseYearRelAfterDwd] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -274,7 +304,16 @@ export function OdsToDwdCenterPage() {
       const sid = r.import_session_id != null ? String(r.import_session_id) : ''
       const forceNote = r.force_rebuild && sid ? ` · 强制重洗 import_session_id=${sid}` : ''
       const logLines = skipped
-        ? [`${ts} · 增量构建${forceNote}`, String(r.message ?? ''), `stat_year_source=${r.stat_year_source}`]
+        ? [
+            `${ts} · 增量构建${forceNote}`,
+            String(r.message ?? ''),
+            `stat_year_source=${r.stat_year_source}`,
+            ...formatEnterpriseYearRelRebuildLog(
+              'enterprise_year_rel_rebuild' in r
+                ? (r as { enterprise_year_rel_rebuild?: unknown }).enterprise_year_rel_rebuild
+                : undefined,
+            ),
+          ]
             .filter((x) => String(x).trim().length > 0)
             .join('\n')
         : [
@@ -284,6 +323,9 @@ export function OdsToDwdCenterPage() {
               String(cl.message ?? ''),
               warn ? '提示：存在 header 拒收行，详见 cleaner.reject_row_samples / 日志' : '',
               ...buildDqCleanerLogLines(cl),
+              ...formatEnterpriseYearRelRebuildLog(
+                'enterprise_year_rel_rebuild' in r ? (r as { enterprise_year_rel_rebuild?: unknown }).enterprise_year_rel_rebuild : undefined,
+              ),
             ]
               .filter((x) => String(x).trim().length > 0)
               .join('\n')
@@ -346,7 +388,10 @@ export function OdsToDwdCenterPage() {
       }
     })
     try {
-      const r = await postDwdBuild({ import_batch_id: current.batchId })
+      const r = await postDwdBuild({
+        import_batch_id: current.batchId,
+        ...(rebuildEnterpriseYearRelAfterDwd ? { rebuild_enterprise_year_rel: true } : {}),
+      })
       applyDwdResult(current.batchId, r, t0)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -454,6 +499,7 @@ export function OdsToDwdCenterPage() {
           import_batch_id: batchId,
           incremental: true,
           ...(useFilter ? { import_session_ids: ids } : {}),
+          ...(rebuildEnterpriseYearRelAfterDwd ? { rebuild_enterprise_year_rel: true } : {}),
         })
         applyDwdResult(batchId, r, t0, { skipReload: true })
         if (!r.ok) {
@@ -568,6 +614,21 @@ export function OdsToDwdCenterPage() {
                     : `${t.odsToDwdCenterUi.bulkIncrementalBuild}（${t.odsToDwdCenterUi.bulkIncrementalSummary.replace('{b}', String(bulkStats.batchN)).replace('{s}', String(bulkStats.sessN))}）`}
                 </button>
                 <span className="text-il-meta text-text-3">{t.odsToDwdCenterUi.bulkToolbarHint}</span>
+                <label className="mt-1 flex w-full max-w-[56rem] cursor-pointer items-start gap-2 rounded-[6px] border border-border-light/80 bg-white/80 px-2 py-2 text-[12px] text-text-2">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={rebuildEnterpriseYearRelAfterDwd}
+                    disabled={building}
+                    onChange={(e) => setRebuildEnterpriseYearRelAfterDwd(e.target.checked)}
+                  />
+                  <span>
+                    <span className="font-medium text-text">{t.odsToDwdCenterUi.rebuildEnterpriseYearRelLabel}</span>
+                    <span className="mt-0.5 block text-il-meta leading-relaxed text-text-3">
+                      {t.odsToDwdCenterUi.rebuildEnterpriseYearRelHint}
+                    </span>
+                  </span>
+                </label>
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
@@ -798,6 +859,22 @@ export function OdsToDwdCenterPage() {
                       <div className="mt-0.5 text-[13px] font-semibold text-text-2">{current.durationLabel}</div>
                     </div>
                   </div>
+
+                  <label className="mb-3 flex cursor-pointer items-start gap-2 rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2.5 text-[12px] text-text-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={rebuildEnterpriseYearRelAfterDwd}
+                      disabled={building}
+                      onChange={(e) => setRebuildEnterpriseYearRelAfterDwd(e.target.checked)}
+                    />
+                    <span>
+                      <span className="font-medium text-text">{t.odsToDwdCenterUi.rebuildEnterpriseYearRelLabel}</span>
+                      <span className="mt-0.5 block text-il-meta leading-relaxed text-text-3">
+                        {t.odsToDwdCenterUi.rebuildEnterpriseYearRelHint}
+                      </span>
+                    </span>
+                  </label>
 
                   <p className="mb-3 text-[11px] leading-relaxed text-text-3">{t.odsToDwdCenterUi.detailForceRebuildHint}</p>
 
