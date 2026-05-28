@@ -95,8 +95,10 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
         title={ui.pageTitle}
-        description={ui.pageDesc}
-        note={ui.pageNote}
+        description={ui.pageNote}
+        descriptionTone="compact"
+        note={ui.pageDesc}
+        noteTone="plain"
         badgeText={ui.prototypeBadge}
         expandLabel={ui.moreTipsToggle}
         collapseLabel={ui.lessTipsToggle}

@@ -1,0 +1,47 @@
+[
+  {
+    "snapshotYear": "2026",
+    "unifiedCreditCode": "91110000MA01DEMO01",
+    "investeeName": "华能示范集团有限公司",
+    "stateInvestorEnterprise": "国务院国资委",
+    "stateInvestorUnifiedCreditCode": "91110000999999999X",
+    "contributorName": "国务院国资委",
+    "contributorOrgCode": "91110000999999999X",
+    "contributorCategory": "国家出资人",
+    "contributionInfo": "初始出资",
+    "relationToTarget": "直接出资",
+    "currency": "人民币",
+    "subscribedAmountWan": 500000.0,
+    "shareRatio": 100.0
+  },
+  {
+    "snapshotYear": "2026",
+    "unifiedCreditCode": "91310000MA01DEMO02",
+    "investeeName": "华东能源开发有限公司",
+    "stateInvestorEnterprise": "华能示范集团有限公司",
+    "stateInvestorUnifiedCreditCode": "91110000MA01DEMO01",
+    "contributorName": "华能示范集团有限公司",
+    "contributorOrgCode": "91110000MA01DEMO01",
+    "contributorCategory": "国有法人",
+    "contributionInfo": "增资扩股",
+    "relationToTarget": "直接出资",
+    "currency": "人民币",
+    "subscribedAmountWan": 96000.0,
+    "shareRatio": 80.0
+  },
+  {
+    "snapshotYear": "2026",
+    "unifiedCreditCode": "91440000MA01DEMO03",
+    "investeeName": "粤电新能源科技有限公司",
+    "stateInvestorEnterprise": "华能示范集团有限公司",
+    "stateInvestorUnifiedCreditCode": "91110000MA01DEMO01",
+    "contributorName": "华东能源开发有限公司",
+    "contributorOrgCode": "91310000MA01DEMO02",
+    "contributorCategory": "国有法人",
+    "contributionInfo": "合资设立",
+    "relationToTarget": "直接出资",
+    "currency": "人民币",
+    "subscribedAmountWan": 15300.0,
+    "shareRatio": 51.0
+  }
+]

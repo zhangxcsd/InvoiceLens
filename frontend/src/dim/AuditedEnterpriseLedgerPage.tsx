@@ -1,98 +1,18 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
+import {
+  fetchAuditedEnterpriseRegistry,
+  postAuditedEnterpriseRegistryBootstrapDemo,
+  postAuditedEnterpriseRegistryRow,
+  type AuditedEnterpriseRegistryRow,
+} from '../config/localApi'
 
 type StateCapitalStatus = 'state_owned' | 'non_state_owned' | 'unmaintained'
 
-function inferStateCapitalStatus(stateInvestor: string): StateCapitalStatus {
-  const v = stateInvestor.trim()
-  if (!v) return 'unmaintained'
-  if (v === '非国资') return 'non_state_owned'
-  return 'state_owned'
+function cellOrDash(value: string): string {
+  return value.trim() ? value : '—'
 }
-
-const seedRows = [
-  {
-    code: '91370000123456789A',
-    name: '山东XX能源集团有限公司',
-    mainBusiness: '能源投资与产业运营',
-    mgmtLevel: 1,
-    equityLevel: 1,
-    stateInvestor: '山东XX能源集团有限公司',
-    shareholders: '山东省国资委(100%)',
-    snapshotYear: '2026',
-  },
-  {
-    code: '91370200111222333B',
-    name: '青岛XX工程建设有限公司',
-    mainBusiness: '工程建设与运维',
-    mgmtLevel: 2,
-    equityLevel: 3,
-    stateInvestor: '山东XX能源集团有限公司',
-    shareholders: '山东XX建设投资控股有限公司(60%)；员工持股平台(40%)',
-    snapshotYear: '2026',
-  },
-  {
-    code: '91370100999888777C',
-    name: '济南XX贸易有限公司',
-    mainBusiness: '大宗贸易',
-    mgmtLevel: 3,
-    equityLevel: 2,
-    stateInvestor: '非国资',
-    shareholders: '社会资本A(55%)；社会资本B(45%)',
-    snapshotYear: '2026',
-  },
-  {
-    code: '91371300123410000F',
-    name: '临沂XX新材料有限公司',
-    mainBusiness: '新材料研发与加工',
-    mgmtLevel: 2,
-    equityLevel: 2,
-    stateInvestor: '',
-    shareholders: '待维护',
-    snapshotYear: '2026',
-  },
-  {
-    code: '91370000123456789A',
-    name: '山东XX能源集团有限公司',
-    mainBusiness: '能源投资与产业运营',
-    mgmtLevel: 1,
-    equityLevel: 1,
-    stateInvestor: '山东XX能源集团有限公司',
-    shareholders: '山东省国资委(100%)',
-    snapshotYear: '2025',
-  },
-  {
-    code: '91370200111222333B',
-    name: '青岛XX工程建设有限公司',
-    mainBusiness: '工程建设与运维',
-    mgmtLevel: 2,
-    equityLevel: 2,
-    stateInvestor: '山东XX能源集团有限公司',
-    shareholders: '山东XX建设投资控股有限公司(80%)；员工持股平台(20%)',
-    snapshotYear: '2025',
-  },
-  {
-    code: '91370600101010101D',
-    name: '烟台XX物流有限公司',
-    mainBusiness: '仓储与物流',
-    mgmtLevel: 2,
-    equityLevel: 3,
-    stateInvestor: '非国资',
-    shareholders: '社会资本C(100%)',
-    snapshotYear: '2025',
-  },
-  {
-    code: '91370700777766666E',
-    name: '潍坊XX设备制造有限公司',
-    mainBusiness: '装备制造',
-    mgmtLevel: 3,
-    equityLevel: 3,
-    stateInvestor: '',
-    shareholders: '待维护',
-    snapshotYear: '2025',
-  },
-]
 
 export function AuditedEnterpriseLedgerPage() {
   const ui = t.auditedEnterpriseLedgerUi
@@ -101,117 +21,164 @@ export function AuditedEnterpriseLedgerPage() {
   const [stateCapitalStatus, setStateCapitalStatus] = useState<StateCapitalStatus>('state_owned')
   const [mgmtParent, setMgmtParent] = useState('')
   const [stateInvestorName, setStateInvestorName] = useState('山东XX能源集团有限公司')
-  const [equityParents, setEquityParents] = useState([{ id: 1, name: '', ratio: '' }])
-  const snapshotYears = useMemo(
-    () => [...new Set(seedRows.map((r) => r.snapshotYear))].sort((a, b) => b.localeCompare(a, 'zh-CN')),
-    [],
-  )
-  const [selectedYear, setSelectedYear] = useState(snapshotYears[0] ?? '2026')
-  const [stateFilter, setStateFilter] = useState<'all' | StateCapitalStatus>('all')
+  const [equityParentName, setEquityParentName] = useState('')
+  const [equityParentRatio, setEquityParentRatio] = useState('')
+  const [createSnapshotYear, setCreateSnapshotYear] = useState('2026')
+  const [createCode, setCreateCode] = useState('')
+  const [createName, setCreateName] = useState('')
+  const [createDomesticOverseas, setCreateDomesticOverseas] = useState('境内')
+  const [createDetailAddress, setCreateDetailAddress] = useState('')
+  const [createCurrency, setCreateCurrency] = useState('')
+  const [createRegisteredCapital, setCreateRegisteredCapital] = useState('')
+  const [createRegistrationDate, setCreateRegistrationDate] = useState('')
+  const [createNationalEconomyIndustryMajor, setCreateNationalEconomyIndustryMajor] = useState('')
+  const [createEnterpriseCategory, setCreateEnterpriseCategory] = useState('')
+  const [createSasacAuthority, setCreateSasacAuthority] = useState('')
+  const [createSasacRelation, setCreateSasacRelation] = useState('')
+  const [createConsolidatedReporting, setCreateConsolidatedReporting] = useState('')
+  const [createListedCompany, setCreateListedCompany] = useState('')
+  const [createMainBusiness, setCreateMainBusiness] = useState('')
+  const [createMgmtLevel, setCreateMgmtLevel] = useState('1')
+  const [createEquityLevel, setCreateEquityLevel] = useState('1')
+
+  const [snapshotYears, setSnapshotYears] = useState<string[]>(['2026'])
+  const [selectedYear, setSelectedYear] = useState('2026')
   const [stateInvestorFilter, setStateInvestorFilter] = useState('')
   const [enterpriseFilter, setEnterpriseFilter] = useState('')
-  const filteredRows = useMemo(
-    () =>
-      seedRows.filter((r) => {
-        if (r.snapshotYear !== selectedYear) return false
-        if (stateFilter !== 'all' && inferStateCapitalStatus(r.stateInvestor) !== stateFilter) return false
-        const stateInvestorKeyword = stateInvestorFilter.trim().toLowerCase()
-        if (stateInvestorKeyword && !r.stateInvestor.toLowerCase().includes(stateInvestorKeyword)) return false
-        const enterpriseKeyword = enterpriseFilter.trim().toLowerCase()
-        if (enterpriseKeyword && !r.name.toLowerCase().includes(enterpriseKeyword)) return false
-        return true
-      }),
-    [enterpriseFilter, selectedYear, stateFilter, stateInvestorFilter],
-  )
+  const [rows, setRows] = useState<AuditedEnterpriseRegistryRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [saveError, setSaveError] = useState('')
+  const [importBanner, setImportBanner] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
+    const res = await fetchAuditedEnterpriseRegistry({
+      snapshotYear: selectedYear,
+      stateInvestor: stateInvestorFilter,
+      enterprise: enterpriseFilter,
+    })
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.loadFailed)
+      setRows([])
+      setLoading(false)
+      return
+    }
+    const years = res.snapshot_years?.length ? res.snapshot_years : ['2026']
+    setSnapshotYears(years)
+    if (!years.includes(selectedYear)) {
+      setSelectedYear(res.selected_year ?? years[0])
+    }
+    setRows(res.rows ?? [])
+    setLoading(false)
+  }, [enterpriseFilter, selectedYear, stateInvestorFilter, ui.loadFailed])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const filteredRows = rows
 
   const summary = useMemo(
     () => ({
       total: filteredRows.length,
-      stateOwned: filteredRows.filter((r) => inferStateCapitalStatus(r.stateInvestor) === 'state_owned').length,
-      nonStateOwned: filteredRows.filter((r) => inferStateCapitalStatus(r.stateInvestor) === 'non_state_owned').length,
-      unmaintained: filteredRows.filter((r) => inferStateCapitalStatus(r.stateInvestor) === 'unmaintained').length,
-      multiShareholder: filteredRows.filter((r) => r.shareholders.includes('；')).length,
+      listedCompany: filteredRows.filter((r) => r.listedCompany.trim() === '是').length,
+      overseas: filteredRows.filter((r) => r.domesticOverseas.includes('境外')).length,
+      mgmtParentMaintained: filteredRows.filter((r) => r.mgmtParent.trim() !== '').length,
+      equityParentMaintained: filteredRows.filter((r) => {
+        const s = r.shareholders.trim()
+        return Boolean(s) && s !== '待维护'
+      }).length,
+      mainBusinessMaintained: filteredRows.filter((r) => r.mainBusiness.trim() !== '').length,
     }),
     [filteredRows],
   )
 
+  const openCreate = () => {
+    setCreateSnapshotYear(selectedYear)
+    setCreateCode('')
+    setCreateName('')
+    setCreateDomesticOverseas('境内')
+    setCreateDetailAddress('')
+    setCreateCurrency('')
+    setCreateRegisteredCapital('')
+    setCreateRegistrationDate('')
+    setCreateNationalEconomyIndustryMajor('')
+    setCreateEnterpriseCategory('')
+    setCreateSasacAuthority('')
+    setCreateSasacRelation('')
+    setCreateConsolidatedReporting('')
+    setCreateListedCompany('')
+    setCreateMainBusiness('')
+    setCreateMgmtLevel('1')
+    setMgmtParent('')
+    setCreateEquityLevel('1')
+    setStateCapitalStatus('state_owned')
+    setStateInvestorName('山东XX能源集团有限公司')
+    setEquityParentName('')
+    setEquityParentRatio('')
+    setSaveError('')
+    setShowCreateModal(true)
+  }
+
+  const submitCreate = async () => {
+    setSaveError('')
+    const body: Record<string, unknown> = {
+      snapshotYear: createSnapshotYear.trim(),
+      code: createCode.trim(),
+      name: createName.trim(),
+      domesticOverseas: createDomesticOverseas.trim(),
+      detailAddress: createDetailAddress.trim(),
+      currency: createCurrency.trim(),
+      registeredCapital: createRegisteredCapital.trim(),
+      registrationDate: createRegistrationDate.trim(),
+      nationalEconomyIndustryMajor: createNationalEconomyIndustryMajor.trim(),
+      enterpriseCategory: createEnterpriseCategory.trim(),
+      stateCapitalStatus,
+      stateInvestor: stateInvestorName.trim(),
+      sasacAuthority: createSasacAuthority.trim(),
+      sasacRelation: createSasacRelation.trim(),
+      consolidatedReporting: createConsolidatedReporting.trim(),
+      listedCompany: createListedCompany.trim(),
+      mainBusiness: createMainBusiness.trim(),
+      mgmtLevel: Number.parseInt(createMgmtLevel.trim(), 10) || 1,
+      mgmtParent: mgmtParent.trim(),
+      equityLevel: Number.parseInt(createEquityLevel.trim(), 10) || 1,
+      equityParentName: equityParentName.trim(),
+      equityParentRatio: equityParentRatio.trim(),
+    }
+    const res = await postAuditedEnterpriseRegistryRow(body)
+    if (!res.ok) {
+      setSaveError(res.error?.message ?? ui.saveFailed)
+      return
+    }
+    setShowCreateModal(false)
+    await load()
+  }
+
+  const runBootstrapDemo = async () => {
+    setImportBusy(true)
+    setImportBanner('')
+    const res = await postAuditedEnterpriseRegistryBootstrapDemo()
+    setImportBusy(false)
+    if (!res.ok) {
+      setImportBanner(ui.bootstrapDemoFail + (res.error?.message ? `：${res.error.message}` : ''))
+      return
+    }
+    setImportBanner(ui.bootstrapDemoOk)
+    await load()
+  }
+
   return (
     <div className="w-full px-5 py-6">
       <div className="mb-5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">{ui.prototypeBadge}</span>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
-      </div>
-
-      <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-5">
-        {[
-          { label: ui.kpiTotal, value: summary.total },
-          { label: ui.kpiStateOwned, value: summary.stateOwned },
-          { label: ui.kpiNonStateOwned, value: summary.nonStateOwned },
-          { label: ui.kpiUnmaintained, value: summary.unmaintained },
-          { label: ui.kpiMultiShareholder, value: summary.multiShareholder },
-        ].map((item) => (
-          <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
-            <div className="text-il-label text-text-3">{item.label}</div>
-            <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
           </div>
-        ))}
-      </div>
-
-      <Card title={ui.tableTitle}>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <div className="text-il-meta text-text-3">{ui.tableHint.replace('{year}', selectedYear)}</div>
-            <label className="flex items-center gap-2 text-il-label text-text-2">
-              {ui.snapshotFilterLabel}
-              <select
-                className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(e.target.value)}
-              >
-                {snapshotYears.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-il-label text-text-2">
-              {ui.stateStatusFilterLabel}
-              <select
-                className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                value={stateFilter}
-                onChange={(e) => setStateFilter(e.target.value as 'all' | StateCapitalStatus)}
-              >
-                <option value="all">{ui.stateStatusAll}</option>
-                <option value="state_owned">{ui.stateStatusStateOwned}</option>
-                <option value="non_state_owned">{ui.stateStatusNonStateOwned}</option>
-                <option value="unmaintained">{ui.stateStatusUnmaintained}</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-il-label text-text-2">
-              {ui.stateInvestorFilterLabel}
-              <input
-                className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
-                value={stateInvestorFilter}
-                onChange={(e) => setStateInvestorFilter(e.target.value)}
-                placeholder={ui.stateInvestorFilterPlaceholder}
-              />
-            </label>
-            <label className="flex items-center gap-2 text-il-label text-text-2">
-              {ui.enterpriseFilterLabel}
-              <input
-                className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
-                value={enterpriseFilter}
-                onChange={(e) => setEnterpriseFilter(e.target.value)}
-                placeholder={ui.enterpriseFilterPlaceholder}
-              />
-            </label>
-          </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
               className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
@@ -222,39 +189,128 @@ export function AuditedEnterpriseLedgerPage() {
             <button
               type="button"
               className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90"
-              onClick={() => setShowCreateModal(true)}
+              onClick={openCreate}
             >
               {ui.createBtn}
             </button>
           </div>
         </div>
+        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
+        <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
+        {loadError ? <p className="mt-2 text-il-meta text-red-600">{loadError}</p> : null}
+      </div>
+
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+        {[
+          { label: ui.kpiTotal, value: summary.total },
+          { label: ui.kpiListedCompany, value: summary.listedCompany },
+          { label: ui.kpiOverseasEnterprises, value: summary.overseas },
+          { label: ui.kpiMgmtParentMaintained, value: summary.mgmtParentMaintained },
+          { label: ui.kpiEquityParentMaintained, value: summary.equityParentMaintained },
+          { label: ui.kpiMainBusinessMaintained, value: summary.mainBusinessMaintained },
+        ].map((item) => (
+          <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
+            <div className="text-il-label text-text-3">{item.label}</div>
+            <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <Card title={ui.tableTitle}>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <div className="text-il-meta text-text-3">{loading ? '…' : ui.tableHint.replace('{year}', selectedYear)}</div>
+          <label className="flex items-center gap-2 text-il-label text-text-2">
+            {ui.snapshotFilterLabel}
+            <select
+              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value)}
+            >
+              {snapshotYears.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-il-label text-text-2">
+            {ui.stateInvestorFilterLabel}
+            <input
+              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
+              value={stateInvestorFilter}
+              onChange={(e) => setStateInvestorFilter(e.target.value)}
+              placeholder={ui.stateInvestorFilterPlaceholder}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-il-label text-text-2">
+            {ui.enterpriseFilterLabel}
+            <input
+              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
+              value={enterpriseFilter}
+              onChange={(e) => setEnterpriseFilter(e.target.value)}
+              placeholder={ui.enterpriseFilterPlaceholder}
+            />
+          </label>
+        </div>
         <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1240px] border-collapse text-il-page-desc">
+          <table className="w-full min-w-[2940px] border-collapse text-il-page-desc">
             <thead>
               <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
+                <th className="px-3 py-2 font-medium">{ui.colSnapshotYear}</th>
                 <th className="px-3 py-2 font-medium">{ui.colCode}</th>
                 <th className="px-3 py-2 font-medium">{ui.colName}</th>
-                <th className="px-3 py-2 font-medium">{ui.colMainBusiness}</th>
+                <th className="px-3 py-2 font-medium">{ui.colDomesticOverseas}</th>
+                <th className="px-3 py-2 font-medium">{ui.colDetailAddress}</th>
+                <th className="px-3 py-2 font-medium">{ui.colCurrency}</th>
+                <th className="px-3 py-2 font-medium">{ui.colRegisteredCapital}</th>
+                <th className="px-3 py-2 font-medium">{ui.colRegistrationDate}</th>
+                <th className="px-3 py-2 font-medium">{ui.colNationalEconomyIndustryMajor}</th>
+                <th className="px-3 py-2 font-medium">{ui.colEnterpriseCategory}</th>
                 <th className="px-3 py-2 font-medium">{ui.colStateInvestor}</th>
+                <th className="px-3 py-2 font-medium">{ui.colSasacAuthority}</th>
+                <th className="px-3 py-2 font-medium">{ui.colSasacRelation}</th>
+                <th className="px-3 py-2 font-medium">{ui.colConsolidatedReporting}</th>
+                <th className="px-3 py-2 font-medium">{ui.colListedCompany}</th>
+                <th className="px-3 py-2 font-medium">{ui.colMainBusiness}</th>
                 <th className="px-3 py-2 font-medium">{ui.colMgmtLevel}</th>
+                <th className="px-3 py-2 font-medium">{ui.colMgmtParent}</th>
                 <th className="px-3 py-2 font-medium">{ui.colEquityLevel}</th>
                 <th className="px-3 py-2 font-medium">{ui.colShareholders}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSnapshotYear}</th>
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {filteredRows.map((row) => (
-                <tr key={row.code} className="border-b border-border-light last:border-b-0">
-                  <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
-                  <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
-                  <td className="px-3 py-2.5">{row.mainBusiness}</td>
-                  <td className="px-3 py-2.5">{row.stateInvestor.trim() || ui.stateStatusUnmaintained}</td>
-                  <td className="px-3 py-2.5">{row.mgmtLevel}</td>
-                  <td className="px-3 py-2.5">{row.equityLevel}</td>
-                  <td className="px-3 py-2.5">{row.shareholders}</td>
-                  <td className="px-3 py-2.5">{row.snapshotYear}</td>
+              {filteredRows.length === 0 ? (
+                <tr>
+                  <td colSpan={20} className="px-3 py-8 text-center text-il-page-desc text-text-3">
+                    {ui.tableEmpty}
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                filteredRows.map((row) => (
+                  <tr key={`${row.code}-${row.snapshotYear}`} className="border-b border-border-light last:border-b-0">
+                    <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
+                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
+                    <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
+                    <td className="px-3 py-2.5">{row.domesticOverseas}</td>
+                    <td className="px-3 py-2.5 max-w-[220px]">{row.detailAddress}</td>
+                    <td className="px-3 py-2.5">{row.currency}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{row.registeredCapital}</td>
+                    <td className="px-3 py-2.5 tabular-nums">{row.registrationDate}</td>
+                    <td className="px-3 py-2.5 max-w-[220px]">{row.nationalEconomyIndustryMajor}</td>
+                    <td className="px-3 py-2.5 max-w-[240px]">{row.enterpriseCategory}</td>
+                    <td className="px-3 py-2.5">{row.stateInvestor.trim() || ui.stateStatusUnmaintained}</td>
+                    <td className="px-3 py-2.5 max-w-[200px]">{cellOrDash(row.sasacAuthority)}</td>
+                    <td className="px-3 py-2.5 max-w-[180px]">{cellOrDash(row.sasacRelation)}</td>
+                    <td className="px-3 py-2.5">{row.consolidatedReporting}</td>
+                    <td className="px-3 py-2.5">{row.listedCompany}</td>
+                    <td className="px-3 py-2.5">{row.mainBusiness}</td>
+                    <td className="px-3 py-2.5">{row.mgmtLevel}</td>
+                    <td className="px-3 py-2.5">{row.mgmtParent.trim() ? row.mgmtParent : '—'}</td>
+                    <td className="px-3 py-2.5">{row.equityLevel}</td>
+                    <td className="px-3 py-2.5">{row.shareholders}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -269,114 +325,221 @@ export function AuditedEnterpriseLedgerPage() {
                 {ui.modalClose}
               </button>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="text-il-label text-text-2">
-                {ui.colCode}
-                <input className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent" placeholder="9137..." />
-              </label>
-              <label className="text-il-label text-text-2">
-                {ui.colName}
-                <input className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent" placeholder="输入企业名称" />
-              </label>
-              <label className="text-il-label text-text-2 md:col-span-2">
-                {ui.colMgmtParent}
-                <input
-                  className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                  value={mgmtParent}
-                  onChange={(e) => setMgmtParent(e.target.value)}
-                  placeholder="输入上级管理单位"
-                />
-              </label>
-              <label className="text-il-label text-text-2 md:col-span-2">
-                {ui.colMainBusiness}
-                <input className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent" placeholder="输入主业情况" />
-              </label>
-              <label className="text-il-label text-text-2 md:col-span-2">
-                {ui.colStateInvestor}
-                <div className="mt-1 grid gap-2 md:grid-cols-[140px_1fr]">
-                  <select
-                    className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                    value={stateCapitalStatus}
-                    onChange={(e) => {
-                      const next = e.target.value as StateCapitalStatus
-                      setStateCapitalStatus(next)
-                      if (next !== 'state_owned') setStateInvestorName('')
-                    }}
-                  >
-                    <option value="state_owned">{ui.stateStatusStateOwned}</option>
-                    <option value="non_state_owned">{ui.stateStatusNonStateOwned}</option>
-                    <option value="unmaintained">{ui.stateStatusUnmaintained}</option>
-                  </select>
+            {saveError ? <p className="mb-2 text-il-meta text-red-600">{saveError}</p> : null}
+            <div className="max-h-[min(72vh,640px)] overflow-y-auto pr-1">
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-il-label text-text-2">
+                  {ui.colSnapshotYear}
                   <input
-                    className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent disabled:bg-[#f6f8fb] disabled:text-text-3"
-                    value={stateInvestorName}
-                    onChange={(e) => setStateInvestorName(e.target.value)}
-                    placeholder={ui.stateInvestorInputPlaceholder}
-                    disabled={stateCapitalStatus !== 'state_owned'}
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createSnapshotYear}
+                    onChange={(e) => setCreateSnapshotYear(e.target.value)}
                   />
-                </div>
-              </label>
-              <label className="text-il-label text-text-2">
-                {ui.colSnapshotYear}
-                <input className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent" defaultValue="2026" />
-              </label>
-              <div className="text-il-label text-text-2 md:col-span-2">
-                {ui.colShareholders}
-                <div className="mt-1 space-y-2">
-                  {equityParents.map((row, idx) => (
-                    <div key={row.id} className="grid gap-2 md:grid-cols-[1fr_140px_72px]">
-                      <input
-                        className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                        value={row.name}
-                        onChange={(e) =>
-                          setEquityParents((prev) =>
-                            prev.map((p) => (p.id === row.id ? { ...p, name: e.target.value } : p)),
-                          )
-                        }
-                        placeholder={`上级产权单位 ${idx + 1}`}
-                      />
-                      <input
-                        className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                        value={row.ratio}
-                        onChange={(e) =>
-                          setEquityParents((prev) =>
-                            prev.map((p) => (p.id === row.id ? { ...p, ratio: e.target.value } : p)),
-                          )
-                        }
-                        placeholder="持股比例%"
-                      />
-                      <button
-                        type="button"
-                        className="rounded-[7px] border border-border bg-white px-2 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={equityParents.length === 1}
-                        onClick={() =>
-                          setEquityParents((prev) =>
-                            prev.length === 1 ? prev : prev.filter((p) => p.id !== row.id),
-                          )
-                        }
-                      >
-                        {ui.removeRowBtn}
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
-                    onClick={() =>
-                      setEquityParents((prev) => [...prev, { id: Date.now(), name: '', ratio: '' }])
-                    }
-                  >
-                    {ui.addEquityParentBtn}
-                  </button>
-                </div>
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colCode}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createCode}
+                    onChange={(e) => setCreateCode(e.target.value)}
+                    placeholder={ui.codeInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colName}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createName}
+                    onChange={(e) => setCreateName(e.target.value)}
+                    placeholder={ui.nameInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colDomesticOverseas}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createDomesticOverseas}
+                    onChange={(e) => setCreateDomesticOverseas(e.target.value)}
+                    placeholder={ui.domesticOverseasInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colCurrency}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createCurrency}
+                    onChange={(e) => setCreateCurrency(e.target.value)}
+                    placeholder={ui.currencyInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colDetailAddress}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createDetailAddress}
+                    onChange={(e) => setCreateDetailAddress(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colRegisteredCapital}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createRegisteredCapital}
+                    onChange={(e) => setCreateRegisteredCapital(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colRegistrationDate}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createRegistrationDate}
+                    onChange={(e) => setCreateRegistrationDate(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colNationalEconomyIndustryMajor}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createNationalEconomyIndustryMajor}
+                    onChange={(e) => setCreateNationalEconomyIndustryMajor(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colEnterpriseCategory}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createEnterpriseCategory}
+                    onChange={(e) => setCreateEnterpriseCategory(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colStateInvestor}
+                  <div className="mt-1 grid gap-2 md:grid-cols-[140px_1fr]">
+                    <select
+                      className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                      value={stateCapitalStatus}
+                      onChange={(e) => {
+                        const next = e.target.value as StateCapitalStatus
+                        setStateCapitalStatus(next)
+                        if (next !== 'state_owned') setStateInvestorName('')
+                      }}
+                    >
+                      <option value="state_owned">{ui.stateStatusStateOwned}</option>
+                      <option value="non_state_owned">{ui.stateStatusNonStateOwned}</option>
+                      <option value="unmaintained">{ui.stateStatusUnmaintained}</option>
+                    </select>
+                    <input
+                      className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none disabled:bg-[#f6f8fb] disabled:text-text-3 focus:border-accent"
+                      value={stateInvestorName}
+                      onChange={(e) => setStateInvestorName(e.target.value)}
+                      placeholder={ui.stateInvestorInputPlaceholder}
+                      disabled={stateCapitalStatus !== 'state_owned'}
+                    />
+                  </div>
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colSasacAuthority}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createSasacAuthority}
+                    onChange={(e) => setCreateSasacAuthority(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colSasacRelation}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createSasacRelation}
+                    onChange={(e) => setCreateSasacRelation(e.target.value)}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colConsolidatedReporting}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createConsolidatedReporting}
+                    onChange={(e) => setCreateConsolidatedReporting(e.target.value)}
+                    placeholder={ui.yesNoInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colListedCompany}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createListedCompany}
+                    onChange={(e) => setCreateListedCompany(e.target.value)}
+                    placeholder={ui.yesNoInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colMainBusiness}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createMainBusiness}
+                    onChange={(e) => setCreateMainBusiness(e.target.value)}
+                    placeholder={ui.mainBusinessInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colMgmtLevel}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createMgmtLevel}
+                    onChange={(e) => setCreateMgmtLevel(e.target.value)}
+                    inputMode="numeric"
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colMgmtParent}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={mgmtParent}
+                    onChange={(e) => setMgmtParent(e.target.value)}
+                    placeholder={ui.mgmtParentInputPlaceholder}
+                  />
+                </label>
+                <label className="text-il-label text-text-2">
+                  {ui.colEquityLevel}
+                  <input
+                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={createEquityLevel}
+                    onChange={(e) => setCreateEquityLevel(e.target.value)}
+                    inputMode="numeric"
+                  />
+                </label>
+                <label className="text-il-label text-text-2 md:col-span-2">
+                  {ui.colShareholders}
+                  <div className="mt-1 grid gap-2 md:grid-cols-[1fr_140px]">
+                    <input
+                      className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                      value={equityParentName}
+                      onChange={(e) => setEquityParentName(e.target.value)}
+                      placeholder={ui.equityParentNamePlaceholder}
+                    />
+                    <input
+                      className="w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                      value={equityParentRatio}
+                      onChange={(e) => setEquityParentRatio(e.target.value)}
+                      placeholder={ui.equityParentRatioPlaceholder}
+                    />
+                  </div>
+                </label>
               </div>
             </div>
             <div className="mt-3 rounded-sm border border-[#c8dff7] bg-[#f0f7ff] px-3 py-2 text-il-meta text-accent-mid">{ui.createModalHint}</div>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent" onClick={() => setShowCreateModal(false)}>
+              <button
+                type="button"
+                className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
+                onClick={() => setShowCreateModal(false)}
+              >
                 {ui.modalCancel}
               </button>
-              <button type="button" className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90" onClick={() => setShowCreateModal(false)}>
+              <button
+                type="button"
+                className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90"
+                onClick={() => void submitCreate()}
+              >
                 {ui.modalSubmit}
               </button>
             </div>
@@ -399,13 +562,32 @@ export function AuditedEnterpriseLedgerPage() {
               <button type="button" className="mt-3 rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent">
                 {ui.importPickFile}
               </button>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  disabled={importBusy}
+                  className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  onClick={() => void runBootstrapDemo()}
+                >
+                  {importBusy ? '…' : ui.bootstrapDemoBtn}
+                </button>
+              </div>
+              {importBanner ? <p className="mt-3 text-il-meta text-text-2">{importBanner}</p> : null}
             </div>
             <div className="mt-3 rounded-sm border border-[#fff1c7] bg-[#fffaf0] px-3 py-2 text-il-meta text-[#946200]">{ui.importModalTip}</div>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent" onClick={() => setShowImportModal(false)}>
+              <button
+                type="button"
+                className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
+                onClick={() => setShowImportModal(false)}
+              >
                 {ui.modalCancel}
               </button>
-              <button type="button" className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90" onClick={() => setShowImportModal(false)}>
+              <button
+                type="button"
+                className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:opacity-90"
+                onClick={() => setShowImportModal(false)}
+              >
                 {ui.importConfirmBtn}
               </button>
             </div>
@@ -415,4 +597,3 @@ export function AuditedEnterpriseLedgerPage() {
     </div>
   )
 }
-

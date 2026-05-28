@@ -177,6 +177,18 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
           onOpenDetail={() => props.onNav('import_quality_detail')}
         />
         <DomainCard
+          tone="rose"
+          title={q.domainTaxId_title}
+          body={q.domainTaxId_body}
+          m1Label={q.domainTaxId_metric1}
+          m1Value="127"
+          m2Label={q.domainTaxId_metric2}
+          m2Value="63"
+          warn={`127 ${q.severityWarn}`}
+          info={`63 ${q.severityInfo} · ${q.domainTaxId_breakdown}`}
+          onOpenDetail={() => props.onNav('import_quality_detail')}
+        />
+        <DomainCard
           tone="accent"
           title={q.domainB_title}
           body={q.domainB_body}
@@ -273,6 +285,7 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
             <li>{q.ruleR3}</li>
             <li>{q.ruleR4}</li>
             <li>{q.ruleR5}</li>
+            <li>{q.ruleR6}</li>
           </ul>
         ) : (
           <p className="text-il-meta text-text-3">DQ 规则 ID 与 `cleaner` 返回的 `dq_*` 键对齐后，可在此展示启用/阈值与说明链接。</p>
@@ -292,6 +305,15 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
               </tr>
             </thead>
             <tbody className="text-text-2">
+              <tr className="border-b border-border-light">
+                <td className="whitespace-nowrap px-2 py-2 font-mono text-[11px] text-text">1101…778899**</td>
+                <td className="px-2 py-2">{q.domainTaxId_title}</td>
+                <td className="px-2 py-2">{q.sampleRowTaxIdRule}</td>
+                <td className="px-2 py-2">
+                  <span className="rounded border border-[#e8d4a8] bg-[#fff9e9] px-1.5 text-warn">{q.severityWarn}</span>
+                </td>
+                <td className="px-2 py-2">{q.sampleRowTaxIdDelta}</td>
+              </tr>
               <tr className="border-b border-border-light">
                 <td className="whitespace-nowrap px-2 py-2 font-mono text-[11px] text-text">3702…091234**</td>
                 <td className="px-2 py-2">{q.domainB_title}</td>

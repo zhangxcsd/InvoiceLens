@@ -209,4 +209,3 @@ export function IconMiniMap(props: IconProps) {
     </svg>
   )
 }
-

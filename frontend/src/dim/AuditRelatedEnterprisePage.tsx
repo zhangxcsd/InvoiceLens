@@ -1,149 +1,197 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
+import {
+  fetchInvoiceCoverageMembers,
+  fetchInvoiceCoverageMeta,
+  fetchInvoiceCoverageSoeOptions,
+  fetchInvoiceCoverageSummary,
+  type InvoiceCoverageMemberRow,
+  type InvoiceCoverageSoeOption,
+} from '../config/localApi'
 
-type RoleTag = 'seller' | 'buyer' | 'both'
-
-type EnterpriseRow = {
-  enterpriseId: string
-  enterpriseName: string
-  taxpayerId: string
-  roleTag: RoleTag
-  lastSeenBatchId: string
-  mgmtLevel: number
-  mgmtParentName: string
-  propertyLevel: number
-  propertyParentName: string
-  stateInvestorEnterprise: string
+/** 与后端返回的年度合并本地近年份，避免「无集团成员表」时统计年度下拉被禁用。 */
+function buildYearOptions(apiYears: string[]): string[] {
+  const cy = new Date().getFullYear()
+  const fallback = Array.from({ length: 16 }, (_, i) => String(cy - i))
+  const s = new Set<string>()
+  for (const x of apiYears) {
+    const t = String(x ?? '').trim()
+    if (t) s.add(t)
+  }
+  for (const x of fallback) s.add(x)
+  return Array.from(s).sort((a, b) => Number(b) - Number(a))
 }
-
-const rowsSeed: EnterpriseRow[] = [
-  {
-    enterpriseId: 'ENT_001',
-    enterpriseName: '山东XX能源集团有限公司',
-    taxpayerId: '91370000123456789A',
-    roleTag: 'both',
-    lastSeenBatchId: '20260420_A03',
-    mgmtLevel: 1,
-    mgmtParentName: '省属企业',
-    propertyLevel: 1,
-    propertyParentName: '山东省国资委',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_002',
-    enterpriseName: '青岛XX工程建设有限公司',
-    taxpayerId: '91370200111222333B',
-    roleTag: 'seller',
-    lastSeenBatchId: '20260419_A02',
-    mgmtLevel: 2,
-    mgmtParentName: '山东XX能源集团有限公司',
-    propertyLevel: 3,
-    propertyParentName: '山东XX建设投资控股有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_003',
-    enterpriseName: '济南XX贸易有限公司',
-    taxpayerId: '91370100999888777C',
-    roleTag: 'buyer',
-    lastSeenBatchId: '20260420_A03',
-    mgmtLevel: 3,
-    mgmtParentName: '青岛XX工程建设有限公司',
-    propertyLevel: 2,
-    propertyParentName: '山东XX能源集团有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_004',
-    enterpriseName: '烟台XX物流有限公司',
-    taxpayerId: '91370600101010101D',
-    roleTag: 'both',
-    lastSeenBatchId: '20260420_A03',
-    mgmtLevel: 2,
-    mgmtParentName: '山东XX能源集团有限公司',
-    propertyLevel: 2,
-    propertyParentName: '山东XX能源集团有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_005',
-    enterpriseName: '潍坊XX设备制造有限公司',
-    taxpayerId: '91370700777766666E',
-    roleTag: 'seller',
-    lastSeenBatchId: '20260420_A03',
-    mgmtLevel: 2,
-    mgmtParentName: '山东XX能源集团有限公司',
-    propertyLevel: 4,
-    propertyParentName: '烟台XX物流有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_006',
-    enterpriseName: '临沂XX新材料有限公司',
-    taxpayerId: '91371300123410000F',
-    roleTag: 'buyer',
-    lastSeenBatchId: '20260419_A02',
-    mgmtLevel: 2,
-    mgmtParentName: '山东XX能源集团有限公司',
-    propertyLevel: 2,
-    propertyParentName: '山东XX能源集团有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-  {
-    enterpriseId: 'ENT_007',
-    enterpriseName: '淄博XX化工有限公司',
-    taxpayerId: '91370300999123000G',
-    roleTag: 'seller',
-    lastSeenBatchId: '20260420_A03',
-    mgmtLevel: 3,
-    mgmtParentName: '烟台XX物流有限公司',
-    propertyLevel: 3,
-    propertyParentName: '山东XX化工投资有限公司',
-    stateInvestorEnterprise: '山东XX能源集团有限公司',
-  },
-]
 
 export function AuditRelatedEnterprisePage() {
   const ui = t.auditRelatedEnterpriseUi
-  const [statYear, setStatYear] = useState('2026')
-  const [groupName, setGroupName] = useState('山东省属企业-能源口径')
-  const [stateInvestor, setStateInvestor] = useState('山东XX能源集团有限公司')
+  const [statYears, setStatYears] = useState<string[]>([])
+  const [statYear, setStatYear] = useState('')
+  const [viewsReady, setViewsReady] = useState<boolean | null>(null)
+  const [metaHint, setMetaHint] = useState<string | undefined>(undefined)
+  const [level1Kw, setLevel1Kw] = useState('')
+  const [soeSelectId, setSoeSelectId] = useState('')
+  const [soeKw, setSoeKw] = useState('')
   const [enterpriseKeyword, setEnterpriseKeyword] = useState('')
   const [listView, setListView] = useState<'unreported' | 'reported' | 'all'>('unreported')
+  const [soeOptions, setSoeOptions] = useState<InvoiceCoverageSoeOption[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [summary, setSummary] = useState<{
+    member_row_count: number
+    denominator_mapped_members: number
+    reported_both_members: number
+    unmapped_member_rows: number
+    coverage_ratio: number | null
+  } | null>(null)
+  const [listRows, setListRows] = useState<InvoiceCoverageMemberRow[]>([])
+  const [listTotal, setListTotal] = useState(0)
+  const [listLimit, setListLimit] = useState(2000)
 
-  const auditRelatedRows = useMemo(() => rowsSeed.filter((r) => r.roleTag === 'both'), [])
-  const groupMemberRows = useMemo(() => rowsSeed.filter((r) => r.enterpriseName !== '山东XX能源集团有限公司'), [])
-  const keywordFilteredGroupRows = useMemo(() => {
-    const keyword = enterpriseKeyword.trim().toLowerCase()
-    if (!keyword) return groupMemberRows
-    return groupMemberRows.filter(
-      (r) =>
-        r.enterpriseName.toLowerCase().includes(keyword) ||
-        r.taxpayerId.toLowerCase().includes(keyword) ||
-        r.enterpriseId.toLowerCase().includes(keyword),
-    )
-  }, [enterpriseKeyword, groupMemberRows])
+  const yearOptions = useMemo(() => buildYearOptions(statYears), [statYears])
+  const effectiveStatYear = useMemo(() => {
+    const t = statYear.trim()
+    if (t && yearOptions.includes(t)) return t
+    return yearOptions[0] ?? ''
+  }, [statYear, yearOptions])
 
-  const unreportedRows = useMemo(() => {
-    const uploadedTaxSet = new Set(auditRelatedRows.map((r) => r.taxpayerId))
-    return keywordFilteredGroupRows.filter((r) => !uploadedTaxSet.has(r.taxpayerId))
-  }, [auditRelatedRows, keywordFilteredGroupRows])
-  const reportedRows = useMemo(() => {
-    const uploadedTaxSet = new Set(auditRelatedRows.map((r) => r.taxpayerId))
-    return keywordFilteredGroupRows.filter((r) => uploadedTaxSet.has(r.taxpayerId))
-  }, [auditRelatedRows, keywordFilteredGroupRows])
+  const fetchParams = useMemo(
+    () => ({
+      statYear: effectiveStatYear,
+      soeAnchorId: soeSelectId.trim(),
+      soeAnchorKw: soeSelectId.trim() ? '' : soeKw.trim(),
+      level1GroupKw: level1Kw.trim(),
+      enterpriseKw: enterpriseKeyword.trim(),
+    }),
+    [effectiveStatYear, soeSelectId, soeKw, level1Kw, enterpriseKeyword],
+  )
 
-  const coverageRate = useMemo(() => {
-    if (!groupMemberRows.length) return '0.00%'
-    const reported = groupMemberRows.length - unreportedRows.length
-    return `${((reported / groupMemberRows.length) * 100).toFixed(2)}%`
-  }, [groupMemberRows, unreportedRows])
-  const currentListRows = useMemo(() => {
-    if (listView === 'reported') return reportedRows
-    if (listView === 'all') return keywordFilteredGroupRows
-    return unreportedRows
-  }, [keywordFilteredGroupRows, listView, reportedRows, unreportedRows])
+  const reloadMeta = useCallback(async (signal?: AbortSignal) => {
+    setLoading(true)
+    try {
+      const m = await fetchInvoiceCoverageMeta(signal)
+      if (signal?.aborted || m.aborted) return
+      if (!m.ok) {
+        setLoadErr(m.error?.message ?? '加载失败')
+        setStatYears([])
+        setViewsReady(false)
+        return
+      }
+      setViewsReady(Boolean(m.views_ready))
+      setMetaHint(m.hint)
+      const ys = m.stat_years ?? []
+      setStatYears(ys)
+      const merged = buildYearOptions(ys)
+      const defRaw = m.default_stat_year != null ? String(m.default_stat_year).trim() : ''
+      const def =
+        defRaw && merged.includes(defRaw) ? defRaw : (merged[0] ?? '')
+      setStatYear((prev) => {
+        const p = prev.trim()
+        if (p && merged.includes(p)) return prev
+        return def
+      })
+      if (!m.views_ready) setLoadErr(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const reloadSoeOptions = useCallback(
+    async (year: string, signal?: AbortSignal) => {
+      if (!year) {
+        setSoeOptions([])
+        return
+      }
+      const o = await fetchInvoiceCoverageSoeOptions(year, signal)
+      if (signal?.aborted || o.aborted) return
+      if (o.ok && o.options) setSoeOptions(o.options)
+      else setSoeOptions([])
+    },
+    [],
+  )
+
+  const reloadData = useCallback(
+    async (signal?: AbortSignal) => {
+      const y = fetchParams.statYear
+      if (!y) {
+        setSummary(null)
+        setListRows([])
+        setListTotal(0)
+        setLoading(false)
+        return
+      }
+      setLoading(true)
+      setLoadErr(null)
+      try {
+        const [su, mem] = await Promise.all([
+          fetchInvoiceCoverageSummary(fetchParams, signal),
+          fetchInvoiceCoverageMembers({ ...fetchParams, listView, limit: 2000 }, signal),
+        ])
+        if (signal?.aborted) return
+        if (!su.ok) {
+          if (!su.aborted) {
+            setLoadErr(su.error?.message ?? '汇总失败')
+            setSummary(null)
+          }
+        } else {
+          setViewsReady((v) => (su.views_ready != null ? Boolean(su.views_ready) : v))
+          setSummary({
+            member_row_count: su.member_row_count ?? 0,
+            denominator_mapped_members: su.denominator_mapped_members ?? 0,
+            reported_both_members: su.reported_both_members ?? 0,
+            unmapped_member_rows: su.unmapped_member_rows ?? 0,
+            coverage_ratio: su.coverage_ratio ?? null,
+          })
+        }
+        if (!mem.ok) {
+          if (!mem.aborted) {
+            setLoadErr(mem.error?.message ?? '列表失败')
+            setListRows([])
+            setListTotal(0)
+          }
+        } else {
+          setListRows(mem.rows ?? [])
+          setListTotal(mem.total ?? 0)
+          setListLimit(mem.limit ?? 2000)
+        }
+      } finally {
+        setLoading(false)
+      }
+    },
+    [fetchParams, listView],
+  )
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void reloadMeta(ac.signal)
+    return () => ac.abort()
+  }, [reloadMeta])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    if (effectiveStatYear) void reloadSoeOptions(effectiveStatYear, ac.signal)
+    return () => ac.abort()
+  }, [effectiveStatYear, reloadSoeOptions])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void reloadData(ac.signal)
+    return () => ac.abort()
+  }, [reloadData])
+
+  const coverageRateStr = useMemo(() => {
+    if (!summary) return '—'
+    if (summary.coverage_ratio == null) return '—'
+    return `${(summary.coverage_ratio * 100).toFixed(2)}%`
+  }, [summary])
+
+  const pendingInDenominator = useMemo(() => {
+    if (!summary) return 0
+    const d = summary.denominator_mapped_members
+    const r = summary.reported_both_members
+    return Math.max(0, d - r)
+  }, [summary])
+
   const currentListTitle =
     listView === 'reported'
       ? ui.reportedTitle
@@ -152,49 +200,87 @@ export function AuditRelatedEnterprisePage() {
         : ui.unreportedTitle
   const currentListHint =
     listView === 'reported'
-      ? ui.reportedHint.replace('{year}', statYear).replace('{count}', String(currentListRows.length))
+      ? ui.reportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
       : listView === 'all'
-        ? ui.allListHint.replace('{year}', statYear).replace('{count}', String(currentListRows.length))
-        : ui.unreportedHint.replace('{year}', statYear).replace('{count}', String(currentListRows.length))
-  const hasBaseData = rowsSeed.length > 0
+        ? ui.allListHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
+        : ui.unreportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
+
+  const hasApiGroupYears = statYears.length > 0
+  const emptyListMessage =
+    viewsReady === false || viewsReady === null
+      ? ui.emptyByData
+      : viewsReady && !hasApiGroupYears
+        ? ui.emptyNoGroupYear
+        : ui.emptyByFilter
+  const showBadge = String(ui.prototypeBadge ?? '').trim().length > 0
 
   return (
     <div className="w-full px-5 py-6">
       <div className="mb-5">
         <div className="flex items-center gap-2">
           <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">{ui.prototypeBadge}</span>
+          {showBadge ? (
+            <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
+              {ui.prototypeBadge}
+            </span>
+          ) : null}
         </div>
         <p className="mt-2 max-w-[820px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
         <p className="mt-2 text-il-meta text-text-3">{ui.prototypeNote}</p>
+        {metaHint ? <p className="mt-2 text-il-meta text-amber-800">{metaHint}</p> : null}
+        {loadErr ? <p className="mt-2 text-il-meta text-red-600">{loadErr}</p> : null}
+        {loading ? <p className="mt-2 text-il-meta text-text-3">加载中…</p> : null}
       </div>
 
       <Card title={ui.compareTitle}>
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-x-3 sm:gap-y-3">
           <div className="w-full shrink-0 sm:w-[7.25rem]">
             <label className="mb-1 block text-il-label font-medium text-text-2">{ui.compareYearLabel}</label>
-            <select className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent" value={statYear} onChange={(e) => setStatYear(e.target.value)}>
-              <option value="2026">2026</option>
-              <option value="2025">2025</option>
-              <option value="2024">2024</option>
+            <select
+              className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={effectiveStatYear}
+              onChange={(e) => setStatYear(e.target.value)}
+            >
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
             </select>
           </div>
           <div className="w-full shrink-0 sm:w-[15.5rem]">
             <label className="mb-1 block text-il-label font-medium text-text-2">{ui.compareGroupLabel}</label>
             <input
               className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-              value={groupName}
-              onChange={(e) => setGroupName(e.target.value)}
+              value={level1Kw}
+              onChange={(e) => setLevel1Kw(e.target.value)}
               placeholder={ui.compareGroupPlaceholder}
             />
           </div>
           <div className="w-full shrink-0 sm:w-[15.5rem]">
-            <label className="mb-1 block text-il-label font-medium text-text-2">{ui.compareStateInvestorLabel}</label>
+            <label className="mb-1 block text-il-label font-medium text-text-2">国家出资企业（精确）</label>
+            <select
+              className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={soeSelectId}
+              onChange={(e) => setSoeSelectId(e.target.value)}
+              disabled={!effectiveStatYear}
+            >
+              <option value="">全部（不按锚点过滤）</option>
+              {soeOptions.map((o) => (
+                <option key={o.soe_anchor_enterprise_id} value={o.soe_anchor_enterprise_id}>
+                  {o.soe_anchor_enterprise_name || o.soe_anchor_enterprise_id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="w-full shrink-0 sm:w-[15.5rem]">
+            <label className="mb-1 block text-il-label font-medium text-text-2">{ui.compareStateInvestorLabel}（关键字）</label>
             <input
               className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-              value={stateInvestor}
-              onChange={(e) => setStateInvestor(e.target.value)}
+              value={soeKw}
+              onChange={(e) => setSoeKw(e.target.value)}
               placeholder={ui.compareStateInvestorPlaceholder}
+              disabled={Boolean(soeSelectId.trim())}
             />
           </div>
           <div className="min-w-0 w-full flex-1 sm:min-w-[12rem]">
@@ -208,16 +294,16 @@ export function AuditRelatedEnterprisePage() {
           </div>
         </div>
         <div className="mb-3 rounded-sm border border-[#c8dff7] bg-[#f0f7ff] px-3 py-2 text-il-meta text-accent-mid">
-          {ui.compareCaliberHint.replace('{year}', statYear)}
+          {ui.compareCaliberHint.replace('{year}', effectiveStatYear || '—')}
         </div>
         <div className="rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2.5">
           <div className="mb-2 text-il-label text-text-3">{ui.coreMetricsTitle}</div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {[
-              { label: ui.auditKpiAll, value: rowsSeed.length },
-              { label: ui.auditKpiRelated, value: auditRelatedRows.length },
-              { label: ui.compareUnreported, value: unreportedRows.length },
-              { label: ui.compareCoverageLabel, value: coverageRate },
+              { label: ui.auditKpiAll, value: summary ? String(summary.member_row_count) : '—' },
+              { label: ui.auditKpiRelated, value: summary ? String(summary.reported_both_members) : '—' },
+              { label: ui.auditKpiUnreported, value: summary ? String(pendingInDenominator) : '—' },
+              { label: ui.compareCoverageLabel, value: coverageRateStr },
             ].map((item) => (
               <div key={item.label}>
                 <div className="text-il-label text-text-3">{item.label}</div>
@@ -225,6 +311,11 @@ export function AuditRelatedEnterprisePage() {
               </div>
             ))}
           </div>
+          {summary && summary.unmapped_member_rows > 0 ? (
+            <div className="mt-2 text-il-meta text-text-3">
+              未映射到主体库 org 的成员行：{summary.unmapped_member_rows}（不参与覆盖率分母）
+            </div>
+          ) : null}
         </div>
       </Card>
 
@@ -251,6 +342,11 @@ export function AuditRelatedEnterprisePage() {
           ))}
         </div>
         <div className="mb-2 text-il-meta text-text-3">{currentListHint}</div>
+        {listTotal > listLimit ? (
+          <div className="mb-2 text-il-meta text-amber-800">
+            当前仅展示前 {listLimit} 条，共命中 {listTotal} 条，请缩小筛选条件。
+          </div>
+        ) : null}
         <div className="overflow-x-auto rounded-sm border border-border-light">
           <table className="w-full min-w-[1320px] border-collapse text-il-page-desc">
             <thead>
@@ -266,23 +362,23 @@ export function AuditRelatedEnterprisePage() {
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {currentListRows.length > 0 ? (
-                currentListRows.map((row) => (
-                  <tr key={`gap_${row.enterpriseId}`} className="border-b border-border-light last:border-b-0">
-                    <td className="px-3 py-2.5 font-medium text-text">{row.enterpriseName}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.taxpayerId}</td>
-                    <td className="px-3 py-2.5">{row.stateInvestorEnterprise}</td>
-                    <td className="px-3 py-2.5">{row.mgmtLevel}</td>
-                    <td className="px-3 py-2.5">{row.mgmtParentName}</td>
-                    <td className="px-3 py-2.5">{row.propertyLevel}</td>
-                    <td className="px-3 py-2.5">{row.propertyParentName}</td>
-                    <td className="px-3 py-2.5">{row.lastSeenBatchId}</td>
+              {listRows.length > 0 ? (
+                listRows.map((row) => (
+                  <tr key={`${row.enterprise_id}_${row.soe_anchor_enterprise_id}`} className="border-b border-border-light last:border-b-0">
+                    <td className="px-3 py-2.5 font-medium text-text">{row.enterprise_name || '—'}</td>
+                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.enterprise_id || '—'}</td>
+                    <td className="px-3 py-2.5">{row.soe_anchor_enterprise_name || row.soe_anchor_enterprise_id || '—'}</td>
+                    <td className="px-3 py-2.5">{row.mgmt_level != null ? row.mgmt_level : '—'}</td>
+                    <td className="px-3 py-2.5">{row.mgmt_parent_enterprise_name || '—'}</td>
+                    <td className="px-3 py-2.5">{row.equity_level != null ? row.equity_level : '—'}</td>
+                    <td className="px-3 py-2.5">{row.equity_parent_enterprise_name || '—'}</td>
+                    <td className="px-3 py-2.5">{row.year_last_seen_batch_id || '—'}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
                   <td className="px-3 py-6 text-center text-text-3" colSpan={8}>
-                    {hasBaseData ? ui.emptyByFilter : ui.emptyByData}
+                    {emptyListMessage}
                   </td>
                 </tr>
               )}
