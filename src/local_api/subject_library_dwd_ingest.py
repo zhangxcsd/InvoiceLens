@@ -506,6 +506,17 @@ def ingest_dim_subject_master_from_dwd(
             exc,
         )
 
+    try:
+        from src.local_api.subject_library_display_cache import refresh_subject_library_display_cache
+
+        refresh_subject_library_display_cache(conn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "归集后刷新主体库展示缓存失败，已忽略：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
     return {
         "ok": True,
         "run_id": run_id,

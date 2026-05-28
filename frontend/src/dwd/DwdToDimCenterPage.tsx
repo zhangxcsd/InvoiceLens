@@ -89,6 +89,20 @@ const TASKS: DimTask[] = [
     owner: '维度组',
   },
   {
+    taskCode: SUBJECT_DIM_TASK.pipeline,
+    taskName: '主体库 · 一键全流程（归集→重算→更名）',
+    domain: '主体库',
+    subjectCategory: 'SC-ENT',
+    outputTable: 'dim_subject_master / dim_subject_rename_signal',
+    triggerMode: ['manual', 'chained'],
+    dependsOn: ['dwd_inv_header'],
+    queueDepth: 0,
+    status: 'idle',
+    lastRunAt: '—',
+    lastDuration: '—',
+    owner: '维度组',
+  },
+  {
     taskCode: 'enterprise_master_build',
     taskName: '全量企业主数据构建',
     domain: '企业组织维度',
@@ -254,6 +268,7 @@ export function DwdToDimCenterPage() {
     { from: 'dwd_inv_header', to: 'subject_master_ingest_from_dwd' },
     { from: 'subject_master_ingest_from_dwd', to: 'subject_category_recompute' },
     { from: 'subject_category_recompute', to: SUBJECT_DIM_TASK.rename },
+    { from: 'dwd_inv_header', to: SUBJECT_DIM_TASK.pipeline },
     { from: 'dwd_inv_header', to: 'enterprise_master_build' },
     { from: 'enterprise_master_build', to: 'enterprise_mapping_check' },
     { from: 'enterprise_master_build', to: 'enterprise_profile_agg' },
@@ -389,6 +404,32 @@ export function DwdToDimCenterPage() {
     [allRunsFiltered, allRunsPageSafe],
   )
 
+  const pollRenameRebuild = async (runId: string): Promise<{ ok: true; message?: string } | { ok: false; message: string }> => {
+    const pollMs = 1500
+    const deadline = Date.now() + 2 * 60 * 60 * 1000
+    const endStates = new Set(['success', 'failed'])
+    for (;;) {
+      if (Date.now() > deadline) {
+        return { ok: false, message: '等待重建结果超时' }
+      }
+      const st = await fetchSubjectLibraryRenameRebuildStatus(runId)
+      if (!st.ok) {
+        return { ok: false, message: String(st.error?.message ?? 'unknown') }
+      }
+      if (endStates.has(String(st.status ?? ''))) {
+        if (st.status === 'success') {
+          return { ok: true, message: st.message ? String(st.message) : undefined }
+        }
+        const em =
+          st.error && typeof st.error === 'object' && 'message' in st.error
+            ? String((st.error as { message?: string }).message)
+            : st.message
+        return { ok: false, message: String(em ?? 'failed') }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+  }
+
   const handleConfirmRun = async () => {
     if (!activeTask) return
     const effectiveScope = subjectCategoryFilter === 'all' ? activeTask.subjectCategory : subjectCategoryFilter
@@ -396,7 +437,64 @@ export function DwdToDimCenterPage() {
     setSubmitMsg(null)
     setSubmitBusy(true)
     try {
-      if (activeTask.taskCode === 'subject_master_ingest_from_dwd') {
+      if (activeTask.taskCode === SUBJECT_DIM_TASK.pipeline) {
+        setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepIngest)
+        const ingest = await postSubjectLibraryIngestFromDwd({ overwrite_manual_repairs: overwriteManualRepairs })
+        if (!ingest.ok) {
+          setSubmitMsg(
+            t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(ingest.error?.message ?? 'unknown')),
+          )
+        } else {
+          const ingestCount = ingest.result?.subjects_upserted ?? 0
+          setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepRecompute)
+          const recompute = await postSubjectCategoryRecompute({
+            with_relations: recomputeWithRelations,
+            overwrite_manual_repairs: overwriteManualRepairs,
+          })
+          if (!recompute.ok) {
+            setSubmitMsg(
+              t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(recompute.error?.message ?? 'unknown')),
+            )
+          } else {
+            const recomputeRunId =
+              recompute.result?.run_id ??
+              recompute.result?.category?.run_id ??
+              (typeof recompute.result === 'object' && recompute.result
+                ? String((recompute.result as { run_id?: string }).run_id ?? '—')
+                : '—')
+            setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepRename)
+            const start = await postSubjectLibraryRebuildRenameSignals()
+            if (!start.ok) {
+              setSubmitMsg(
+                t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(start.error?.message ?? 'unknown')),
+              )
+            } else if (start.async !== true) {
+              const renameExtra = start.message ? `：${start.message}` : ''
+              setSubmitMsg(
+                t.dwdToDimCenterUi.subjectPipelineSuccess
+                  .replace('{ingestCount}', String(ingestCount))
+                  .replace('{recomputeRunId}', String(recomputeRunId))
+                  .replace('{renameExtra}', renameExtra),
+              )
+            } else if (!start.run_id) {
+              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
+            } else {
+              const polled = await pollRenameRebuild(start.run_id)
+              if (polled.ok) {
+                const renameExtra = polled.message ? `：${polled.message}` : ''
+                setSubmitMsg(
+                  t.dwdToDimCenterUi.subjectPipelineSuccess
+                    .replace('{ingestCount}', String(ingestCount))
+                    .replace('{recomputeRunId}', String(recomputeRunId))
+                    .replace('{renameExtra}', renameExtra),
+                )
+              } else {
+                setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+              }
+            }
+          }
+        }
+      } else if (activeTask.taskCode === 'subject_master_ingest_from_dwd') {
         const r = await postSubjectLibraryIngestFromDwd({ overwrite_manual_repairs: overwriteManualRepairs })
         if (r.ok) {
           const n = r.result?.subjects_upserted ?? 0
@@ -442,43 +540,16 @@ export function DwdToDimCenterPage() {
         } else if (!start.run_id) {
           setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
         } else {
-          const runId = start.run_id
-          const pollMs = 1500
-          const deadline = Date.now() + 2 * 60 * 60 * 1000
-          const endStates = new Set(['success', 'failed'])
-          let done = false
-          for (;;) {
-            if (Date.now() > deadline) {
-              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '等待重建结果超时'))
-              break
-            }
-            const st = await fetchSubjectLibraryRenameRebuildStatus(runId)
-            if (!st.ok) {
-              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(st.error?.message ?? 'unknown')))
-              break
-            }
-            if (endStates.has(String(st.status ?? ''))) {
-              if (st.status === 'success') {
-                setSubmitMsg(
-                  t.dwdToDimCenterUi.subjectRenameSuccess.replace(
-                    '{extra}',
-                    st.message ? `：${st.message}` : '',
-                  ),
-                )
-              } else {
-                const em =
-                  st.error && typeof st.error === 'object' && 'message' in st.error
-                    ? String((st.error as { message?: string }).message)
-                    : st.message
-                setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(em ?? 'failed')))
-              }
-              done = true
-              break
-            }
-            await new Promise((resolve) => setTimeout(resolve, pollMs))
-          }
-          if (!done && Date.now() <= deadline) {
-            /* already set error */
+          const polled = await pollRenameRebuild(start.run_id)
+          if (polled.ok) {
+            setSubmitMsg(
+              t.dwdToDimCenterUi.subjectRenameSuccess.replace(
+                '{extra}',
+                polled.message ? `：${polled.message}` : '',
+              ),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
           }
         }
       } else if (activeTask.taskCode === 'enterprise_profile_agg') {
@@ -935,7 +1006,8 @@ export function DwdToDimCenterPage() {
               {activeTask && isSubjectLibraryTask(activeTask.taskCode) ? (
                 <>
                   {(activeTask.taskCode === 'subject_master_ingest_from_dwd' ||
-                    activeTask.taskCode === 'subject_category_recompute') && (
+                    activeTask.taskCode === 'subject_category_recompute' ||
+                    activeTask.taskCode === SUBJECT_DIM_TASK.pipeline) && (
                     <label className="flex cursor-pointer items-start gap-2 text-il-page-desc text-text-2">
                       <input
                         type="checkbox"
@@ -951,7 +1023,8 @@ export function DwdToDimCenterPage() {
                       </span>
                     </label>
                   )}
-                  {activeTask.taskCode === 'subject_category_recompute' ? (
+                  {activeTask.taskCode === 'subject_category_recompute' ||
+                  activeTask.taskCode === SUBJECT_DIM_TASK.pipeline ? (
                     <label className="flex cursor-pointer items-center gap-2 text-il-page-desc text-text-2">
                       <input
                         type="checkbox"

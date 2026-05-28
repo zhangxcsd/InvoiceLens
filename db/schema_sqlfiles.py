@@ -378,6 +378,37 @@ def migrate_dwd_inv_detail_unique_header_line(conn) -> None:
         logger.debug("dwd_inv_detail UNIQUE 迁移跳过（可能已存在）: %s", exc)
 
 
+def migrate_dim_subject_display_cache_columns(conn) -> None:
+    """
+    主体库列表读路径物化字段（P2）：
+    - source_bucket：platform / external（与列表「数据来源」一致）
+    - rename_edge_count：dim_subject_rename_signal 按税号聚合边数
+    """
+    tbl = "dim_subject_master"
+    if not _table_exists(conn, tbl):
+        return
+    cols = (
+        ("source_bucket", "VARCHAR"),
+        ("rename_edge_count", "BIGINT DEFAULT 0"),
+    )
+    for col, ddl in cols:
+        if _column_exists(conn, tbl, col):
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+            logger.info("已迁移：%s.%s", tbl, col)
+        except Exception as exc:
+            logger.debug("主体库展示缓存补列跳过：%s.%s (%s)", tbl, col, exc)
+    if _column_exists(conn, tbl, "source_bucket"):
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subject_master_source_bucket "
+                "ON dim_subject_master (source_bucket)"
+            )
+        except Exception as exc:
+            logger.debug("idx_subject_master_source_bucket 跳过：%s", exc)
+
+
 def migrate_dim_subject_governance_columns(conn) -> None:
     """
     主体库治理字段迁移（Step B）：
@@ -465,6 +496,7 @@ def _init_all_tables_impl(conn) -> dict:
     migrate_ods_load_log_dwd_watermark(conn)
     migrate_dwd_spc_buyer_seller_columns(conn)
     migrate_dim_subject_governance_columns(conn)
+    migrate_dim_subject_display_cache_columns(conn)
     migrate_dim_enterprise_year_rel_columns(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]

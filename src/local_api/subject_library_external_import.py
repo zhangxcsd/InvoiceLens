@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import time
 from datetime import datetime
@@ -21,6 +22,8 @@ from src.local_api.subject_library_manual_guard import (
 )
 from src.subject_category.infer import normalize_party_name, subject_category_for_ingest
 from src.subject_category.recompute import _make_run_id
+
+logger = logging.getLogger(__name__)
 
 
 def _norm_header(s: str) -> str:
@@ -526,6 +529,17 @@ def api_import_external_subjects_from_file(
             },
             "reject_row_samples": reject_samples[:50],
         }
+
+    try:
+        from src.local_api.subject_library_display_cache import refresh_subject_library_display_cache
+
+        refresh_subject_library_display_cache(conn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "外部导入后刷新主体库展示缓存失败，已忽略：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
 
     return {
         "ok": True,

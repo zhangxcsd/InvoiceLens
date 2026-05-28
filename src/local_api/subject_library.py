@@ -125,11 +125,18 @@ def _append_subject_keyword_clause(
     args.extend([kw, kw, kw, kw])
 
 
+def _use_materialized_display_cache(conn) -> bool:
+    from src.local_api.subject_library_display_cache import display_cache_columns_ready
+
+    return display_cache_columns_ready(conn)
+
+
 def _master_where_parts(
     *,
     subject_type: str,
     source_type: str,
     table_alias: str,
+    use_display_cache: bool = False,
 ) -> tuple[list[str], list[Any]]:
     """dim_subject_master 公共筛选片段（与 _master_where_sql_and_args 一致）。"""
     st = _norm_subject_type(subject_type)
@@ -142,7 +149,10 @@ def _master_where_parts(
         where_parts.append(f"{m}.subject_category = ?")
         args.append(st)
     if src != "all":
-        where_parts.append(f"{_sql_subject_source_bucket(m)} = ?")
+        if use_display_cache:
+            where_parts.append(f"COALESCE({m}.source_bucket,'platform') = ?")
+        else:
+            where_parts.append(f"{_sql_subject_source_bucket(m)} = ?")
         args.append(src)
     return where_parts, args
 
@@ -198,13 +208,21 @@ def api_subject_library_summary(
     source_type: str = "all",
     keyword: str = "",
 ) -> dict[str, Any]:
+    from src.local_api.subject_library_display_cache import ensure_subject_library_display_cache_fresh
+
+    ensure_subject_library_display_cache_fresh(conn)
+    use_cache = _use_materialized_display_cache(conn)
+
     wp1, args1 = _master_where_parts(
-        subject_type=subject_type, source_type=source_type, table_alias="dim_subject_master"
+        subject_type=subject_type,
+        source_type=source_type,
+        table_alias="dim_subject_master",
+        use_display_cache=use_cache,
     )
     _append_subject_keyword_clause(wp1, args1, table_alias="dim_subject_master", keyword=keyword)
     where_sql = " AND ".join(wp1)
     src = _norm_source_type(source_type)
-    inv_join_1 = sql_invoice_pid_left_join("dim_subject_master") if src != "all" else ""
+    inv_join_1 = "" if use_cache else (sql_invoice_pid_left_join("dim_subject_master") if src != "all" else "")
     row = conn.execute(
         f"""
         SELECT
@@ -220,27 +238,42 @@ def api_subject_library_summary(
     ).fetchone()
     rename_subjects = 0
     wp2, args_m = _master_where_parts(
-        subject_type=subject_type, source_type=source_type, table_alias="m"
+        subject_type=subject_type,
+        source_type=source_type,
+        table_alias="m",
+        use_display_cache=use_cache,
     )
     _append_subject_keyword_clause(wp2, args_m, table_alias="m", keyword=keyword)
     where_m = " AND ".join(wp2)
-    inv_join_2 = sql_invoice_pid_left_join("m") if src != "all" else ""
+    inv_join_2 = "" if use_cache else (sql_invoice_pid_left_join("m") if src != "all" else "")
     try:
-        r2 = conn.execute(
-            f"""
-            SELECT COUNT(DISTINCT m.subject_id)::BIGINT AS c
-            FROM dim_subject_master m
-            {inv_join_2}
-            INNER JOIN (
-                SELECT DISTINCT normalized_subject_no
-                FROM dim_subject_rename_signal
-            ) z
-            ON upper(regexp_replace(trim(COALESCE(m.subject_no,'')), '[\\s-]+', '', 'g')) = z.normalized_subject_no
-            WHERE length(trim(COALESCE(m.subject_no,''))) > 0
-              AND {where_m}
-            """,
-            args_m,
-        ).fetchone()
+        if use_cache:
+            r2 = conn.execute(
+                f"""
+                SELECT COUNT(*)::BIGINT AS c
+                FROM dim_subject_master m
+                {inv_join_2}
+                WHERE COALESCE(m.rename_edge_count, 0) > 0
+                  AND {where_m}
+                """,
+                args_m,
+            ).fetchone()
+        else:
+            r2 = conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT m.subject_id)::BIGINT AS c
+                FROM dim_subject_master m
+                {inv_join_2}
+                INNER JOIN (
+                    SELECT DISTINCT normalized_subject_no
+                    FROM dim_subject_rename_signal
+                ) z
+                ON upper(regexp_replace(trim(COALESCE(m.subject_no,'')), '[\\s-]+', '', 'g')) = z.normalized_subject_no
+                WHERE length(trim(COALESCE(m.subject_no,''))) > 0
+                  AND {where_m}
+                """,
+                args_m,
+            ).fetchone()
         rename_subjects = int(r2[0] or 0) if r2 else 0
     except Exception:
         rename_subjects = 0
@@ -276,6 +309,11 @@ def api_subject_library_rows(
     category_review: all | yes | no — yes 仅 category_status_note=needs_review（与 KPI「主体信息需复核」一致）。
     返回 total 为当前筛选条件下的总行数；rows 为 LIMIT/OFFSET 一页。
     """
+    from src.local_api.subject_library_display_cache import ensure_subject_library_display_cache_fresh
+
+    ensure_subject_library_display_cache_fresh(conn)
+    use_cache = _use_materialized_display_cache(conn)
+
     rs = str(rename_signal or "all").strip().lower()
     if rs not in {"all", "yes", "no"}:
         rs = "all"
@@ -283,7 +321,12 @@ def api_subject_library_rows(
     if cr not in {"all", "yes", "no"}:
         cr = "all"
 
-    where_parts, args = _master_where_parts(subject_type=subject_type, source_type=source_type, table_alias="m")
+    where_parts, args = _master_where_parts(
+        subject_type=subject_type,
+        source_type=source_type,
+        table_alias="m",
+        use_display_cache=use_cache,
+    )
 
     if subject_category.strip() and subject_category.strip().lower() != "all":
         where_parts.append("COALESCE(m.org_category,'') = ?")
@@ -299,23 +342,41 @@ def api_subject_library_rows(
         where_parts.append("COALESCE(m.category_status_note,'') <> 'needs_review'")
 
     rename_filter_sql = ""
-    if rs == "yes":
-        rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) > 0"
-    elif rs == "no":
-        rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) = 0"
+    if use_cache:
+        if rs == "yes":
+            rename_filter_sql = "AND COALESCE(m.rename_edge_count, 0) > 0"
+        elif rs == "no":
+            rename_filter_sql = "AND COALESCE(m.rename_edge_count, 0) = 0"
+    else:
+        if rs == "yes":
+            rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) > 0"
+        elif rs == "no":
+            rename_filter_sql = "AND COALESCE(rs.rename_edge_count, 0) = 0"
 
     where_sql = " AND ".join(where_parts)
 
-    inv_join_rows = sql_invoice_pid_left_join("m")
-    base_from = f"""
-        FROM dim_subject_master m
-        {inv_join_rows}
+    if use_cache:
+        inv_join_rows = ""
+        rename_join_sql = ""
+        source_type_expr = "COALESCE(m.source_bucket,'platform')"
+        rename_count_expr = "COALESCE(m.rename_edge_count, 0)::BIGINT"
+    else:
+        inv_join_rows = sql_invoice_pid_left_join("m")
+        rename_join_sql = """
         LEFT JOIN (
             SELECT normalized_subject_no, COUNT(*)::BIGINT AS rename_edge_count
             FROM dim_subject_rename_signal
             GROUP BY normalized_subject_no
         ) rs
         ON upper(regexp_replace(trim(COALESCE(m.subject_no,'')), '[\\s-]+', '', 'g')) = rs.normalized_subject_no
+        """
+        source_type_expr = _sql_subject_source_bucket("m")
+        rename_count_expr = "COALESCE(rs.rename_edge_count, 0)::BIGINT"
+
+    base_from = f"""
+        FROM dim_subject_master m
+        {inv_join_rows}
+        {rename_join_sql}
         WHERE {where_sql}
         {rename_filter_sql}
     """
@@ -336,7 +397,7 @@ def api_subject_library_rows(
                 m.subject_id,
                 COALESCE(m.subject_name,'') AS subject_name,
                 COALESCE(m.subject_no,'') AS subject_no,
-                {_sql_subject_source_bucket('m')} AS source_type,
+                {source_type_expr} AS source_type,
                 COALESCE(m.subject_category,'org') AS subject_type,
                 COALESCE(m.org_category,'') AS org_category,
                 COALESCE(m.subject_snapshot_id,'') AS subject_snapshot_id,
@@ -348,7 +409,7 @@ def api_subject_library_rows(
                 COALESCE(m.updated_at::VARCHAR,'') AS updated_at,
                 COALESCE(m.subject_build_run_id,'') AS subject_build_run_id,
                 COALESCE(m.category_rule_version,'') AS category_rule_version,
-                COALESCE(rs.rename_edge_count, 0)::BIGINT AS rename_edge_count
+                {rename_count_expr} AS rename_edge_count
             {base_from}
             ORDER BY m.updated_at DESC, m.subject_id DESC
             LIMIT ? OFFSET ?

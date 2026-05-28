@@ -7,6 +7,8 @@ export const SUBJECT_DIM_TASK = {
   ingest: 'subject_master_ingest_from_dwd',
   recompute: 'subject_category_recompute',
   rename: 'subject_rename_signal',
+  /** DWD→DIM：归集 → 重算（分类+关联）→ 更名信号，串行一键 */
+  pipeline: 'subject_library_pipeline',
 } as const
 
 export type SubjectDimTaskCode = (typeof SUBJECT_DIM_TASK)[keyof typeof SUBJECT_DIM_TASK]

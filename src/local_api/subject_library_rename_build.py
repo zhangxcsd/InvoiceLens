@@ -207,6 +207,17 @@ def rebuild_subject_rename_signals(conn, *, run_id: str | None = None) -> dict[s
             },
         }
 
+    try:
+        from src.local_api.subject_library_display_cache import refresh_subject_library_rename_counts
+
+        refresh_subject_library_rename_counts(conn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "更名信号重建后刷新 rename_edge_count 失败，已忽略：%s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
     return {
         "ok": True,
         "run_id": run_id,

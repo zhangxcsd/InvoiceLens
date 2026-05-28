@@ -876,6 +876,12 @@ export const zhCN = {
     subjectIngestSuccess: '归集完成：{count} 个主体（run {runId}）{extra}',
     subjectRecomputeSuccess: '分类重算完成（run {runId}）{extra}',
     subjectRenameSuccess: '更名信号重建完成{extra}',
+    subjectPipelineTaskName: '主体库 · 一键全流程（归集→重算→更名）',
+    subjectPipelineSuccess:
+      '全流程完成：归集 {ingestCount} 个主体；分类 run {recomputeRunId}；更名{renameExtra}',
+    subjectPipelineStepIngest: '正在从 DWD 归集主体…',
+    subjectPipelineStepRecompute: '正在重算分类与关联…',
+    subjectPipelineStepRename: '正在重建更名信号…',
     subjectTaskRunLogHint: '主体库任务运行记录可在下方「最近运行摘要」与「查看全部运行记录」中查看（写入 ads_etl_task_run_log）。',
   },
 
