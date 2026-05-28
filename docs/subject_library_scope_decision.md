@@ -17,7 +17,7 @@
 - 承载 **稳定身份与治理字段**：标识、名称、主体类型（org/person）、机构类别编码、来源系统、导入批次/会话、质量与类别治理备注等。
 - **不承载**以下「相对事实」作为主表固有业务含义：
   - **购方 / 销方**（依赖发票方向，相对概念）
-  - **统计年度**（依赖分析切片；主表上不将「年度快照」类展示与 `stat_year` 混同）
+  - **统计年度**（依赖分析切片；主表上不将「快照年度」类展示与 `stat_year` 混同）
 
 > 说明：表中若仍存在 `subject_snapshot_id` 等技术字段，仅表示 **某次构建/对齐标识**，不作为「主体库 = 按年清单」的产品定义。
 
@@ -66,6 +66,7 @@
 
 ## 7. 实现进展（代码）
 
+- **DWD→主体主表归集**：当全量 `dwd_inv_header` 事实下，同一 **规范化名称**（`subject_name_std`）同时存在 **仅名称键**（无税号）与 **唯一税号键** 主体时，自动将前者并入后者（保留税号侧 `subject_id`），合并批次/会话区间与治理字段，并重挂 `dim_subject_rename_signal` 等子表外键后删除名称键主表行；若同一名称对应 **多个** 税号键则 **不自动合并**（避免误并）。接口返回 `subjects_merged_name_key_into_tax` 计数。
 - 主体库列表 API / 汇总：已去掉年度与购销角色筛选；增加 `rename_signal` 筛选、`rename_signal_subject_count`、行内 `has_rename_signal` / `rename_edge_count` 及治理/技术字段供高级列展示。
 - `POST /api/subject-library/rebuild-rename-signals`：默认 `{ "async": true }` 后台全量聚合，响应 **HTTP 200** + `ok`/`run_id`；异步启动时即写入 `ads_etl_task_run_log` 为 **running**（`finished_at` 为空），完成后覆盖为 **success/failed**；`{ "async": false }` 为同步模式（网关超时自担）。`GET /api/subject-library/rename-rebuild-status?run_id=` 轮询 **HTTP 200** + `ok`；内存无任务时从台账恢复 **running / success / failed**（`restored_from_task_log`）。`GET /api/subject-library/rename-timeline`：`api_subject_library_rename_timeline`。
 - 前端「主体库」页：已按 §5 调整筛选、KPI、表格与「重建更名信号」按钮；可选勾选展示技术列（拍板 7-B）。

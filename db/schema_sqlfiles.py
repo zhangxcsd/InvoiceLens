@@ -12,9 +12,17 @@ DuckDB 建表入口（只加载外置 SQL）。
 
 import logging
 import re
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 多线程各自 duckdb.connect 同一库文件时，并发执行 CREATE OR REPLACE VIEW 会触发
+# TransactionException: Catalog write-write conflict on alter（例如 ods_inv_header）。
+# 本地 HTTP 每请求 init_all_tables + 前端并发 fetch，必须串行化目录写入。
+_INIT_ALL_TABLES_LOCK = threading.RLock()
+# 每连接只跑完整 DDL/迁移一次（线程本地 duckdb 连接复用时显著降低主体库首屏延迟）
+_INIT_DONE_CONN_IDS: set[int] = set()
 
 _DDL_ROOT = Path(__file__).resolve().parents[1] / "config" / "ddl"
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -441,7 +449,18 @@ def migrate_dim_enterprise_year_rel_columns(conn) -> None:
             logger.debug("年度关系补列跳过：%s.%s (%s)", tbl, col, exc)
 
 
-def init_all_tables(conn) -> dict:
+def init_all_tables(conn, *, force: bool = False) -> dict:
+    """加载/迁移 DuckDB DDL。多线程各持连接访问同一库文件时须串行，避免 ods_* 等视图的目录写冲突。"""
+    cid = id(conn)
+    with _INIT_ALL_TABLES_LOCK:
+        if not force and cid in _INIT_DONE_CONN_IDS:
+            return {"skipped": True, "reason": "already_initialized"}
+        out = _init_all_tables_impl(conn)
+        _INIT_DONE_CONN_IDS.add(cid)
+        return out
+
+
+def _init_all_tables_impl(conn) -> dict:
     migrate_legacy_dwd_schema(conn)
     migrate_ods_load_log_dwd_watermark(conn)
     migrate_dwd_spc_buyer_seller_columns(conn)

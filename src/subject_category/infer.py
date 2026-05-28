@@ -34,6 +34,47 @@ def normalize_party_name(raw: str) -> str:
     return s
 
 
+def party_id_is_resident_id_card_form(party_id: str) -> bool:
+    """
+    居民身份证号形态（与统一社会信用代码等区分）：
+    - 18 位：17 位数字 + 末位数字或 X；
+    - 20 位：前 18 位同上 + 后 2 位流水（数字），如 18 位身份证号后接「01」。
+    与发票/DWD 归一化口径一致，内部对 party_id 做 normalize_party_id。
+    """
+    s = normalize_party_id(party_id)
+    if not s:
+        return False
+    if re.fullmatch(r"\d{17}[\dX]", s):
+        return True
+    if re.fullmatch(r"\d{17}[\dX]\d{2}", s):
+        return True
+    return False
+
+
+# GB 32100-2015 登记管理部门代码首位：1 机构编制、5 民政、9 工商（与 subject_category_matching 码段规则一致）
+_USCC_FIRST_CHARS = frozenset("159")
+
+
+def party_id_is_uscc_form(party_id: str) -> bool:
+    """18 位统一社会信用代码形态（按登记管理部门首位 1/5/9 识别，优先于身份证形态启发式）。"""
+    s = normalize_party_id(party_id)
+    return len(s) == 18 and s[0] in _USCC_FIRST_CHARS
+
+
+def subject_category_for_ingest(party_id: str) -> str:
+    """
+    DWD/外部导入主体分域：先识别 USCC，再识别身份证形态，避免 91 等码段与 18 位身份证正则重叠误归 person。
+    """
+    pid = normalize_party_id(party_id)
+    if not pid:
+        return "org"
+    if party_id_is_uscc_form(pid):
+        return "org"
+    if party_id_is_resident_id_card_form(pid):
+        return "person"
+    return "org"
+
+
 def load_matching_doc(path: Path | None = None) -> dict[str, Any]:
     p = path or default_matching_path()
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
@@ -122,9 +163,9 @@ def _eval_one(
             ok = n == v if op == "eq" else (n >= v if op == "gte" else n <= v)
         return ok, f"id_len:{op}{v}({n})"
     if kind == "id_card_like":
-        # 18 位居民身份证号形态（全数字 + 末位数字或 X），与统一社会信用代码区分
+        # 18 位或 20 位（身份证 18 + 两位流水），与统一社会信用代码区分
         want = bool(cond.get("value", True))
-        ok = bool(re.fullmatch(r"\d{17}[\dX]", party_id))
+        ok = party_id_is_resident_id_card_form(party_id)
         if not want:
             ok = not ok
         return ok, "id_card_like" if ok else None
@@ -137,6 +178,20 @@ def _eval_one(
             if ps and party_id.startswith(ps):
                 return True, f"id_prefix:{ps}"
         return False, None
+    if kind == "id_regex":
+        # 对规范化后的 party_id 做整串匹配（默认 fullmatch），用于 20 位临时登记号等非 18 位统一码形态
+        pat = str(cond.get("pattern") or "")
+        if not pat:
+            return False, None
+        flags = 0
+        if str(cond.get("flags") or "").upper() == "IGNORECASE":
+            flags = re.IGNORECASE
+        mode = str(cond.get("mode") or "fullmatch").strip().lower()
+        if mode == "search":
+            ok = re.search(pat, party_id, flags) is not None
+        else:
+            ok = re.fullmatch(pat, party_id, flags) is not None
+        return ok, f"id_regex:{pat}" if ok else None
     if kind == "name_len":
         n = len(party_name)
         v = int(cond.get("value") or 0)
@@ -253,7 +308,11 @@ def infer_org_subject_category(
             reasons = all_rs + any_rs
         else:
             reasons = all_rs
-        return InferResult(code, True, pri, reasons, needs_review=needs_review, skipped_disabled_codes=sorted(set(skipped_disabled)))
+        # 20 位识别号已显式归入 SC-TEMP，不再沿用「非 18 位即 needs_review」的默认
+        nr = needs_review
+        if code == "SC-TEMP" and len(pid) == 20:
+            nr = False
+        return InferResult(code, True, pri, reasons, needs_review=nr, skipped_disabled_codes=sorted(set(skipped_disabled)))
 
     end_reasons = ["no_rule_matched"]
     if skipped_disabled:

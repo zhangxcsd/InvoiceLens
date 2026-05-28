@@ -5,7 +5,6 @@ import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchSubjectCategoryRules,
   fetchSubjectCategoryRecomputeLatest,
-  postSubjectCategoryRecompute,
   saveSubjectCategoryRules,
   type SubjectCategoryRecomputeSummary,
   type SubjectCategoryRuleDto,
@@ -34,7 +33,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '集团内关联购销定价偏离、收入确认与开票时点错配、异常毛利率或税负缺口、资本性支出费用化或虚列成本发票',
     enabled: true,
-    coverageCount: 11920,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-BRANCH',
@@ -46,7 +45,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '费用上划或内部服务向母体/兄弟机构转移利润、同一项目多主体分摊不合理、跨地区增值税与所得税口径不一致、与母体开票抬头混用',
     enabled: true,
-    coverageCount: 3120,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-SELF',
@@ -58,7 +57,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '经营者与关联自然人账户混同、定额或核定与实际开票严重偏离、短期内大额开票与进项结构不匹配、走账或挂靠开票',
     enabled: true,
-    coverageCount: 1380,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-COOP',
@@ -70,7 +69,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '成员及关联方购销异常、农副收购进项真实性（自开、过票）、返利或二次结算未开票、空壳社集中对外开票',
     enabled: true,
-    coverageCount: 920,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-SOCIAL',
@@ -82,7 +81,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '会费与捐赠资金流向、采购或会议服务缺乏成果印证、基金会投向关联方、免税与应税收入划分及票据支撑不足',
     enabled: true,
-    coverageCount: 214,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-INSTITUTION',
@@ -94,7 +93,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '政府采购串标围标线索、预算科目与采购品类错配、三公及培训会议费异常、供应商与经办人异常关联（利益输送）',
     enabled: true,
-    coverageCount: 648,
+    coverageCount: 0,
   },
   {
     categoryCode: 'SC-TEMP',
@@ -106,7 +105,7 @@ const seedRows: SubjectCategoryRow[] = [
     defaultRiskFocus:
       '自然人代开集中大额、身份证或支付账户复用链条、短期登记后高频开票或快速注销、无实质经营的高流水走票',
     enabled: true,
-    coverageCount: 887,
+    coverageCount: 0,
   },
 ]
 
@@ -137,7 +136,7 @@ function toDto(rows: SubjectCategoryRow[]): SubjectCategoryRuleDto[] {
     legal_form: x.legalForm,
     invoice_scene: x.invoiceScene,
     default_risk_focus: x.defaultRiskFocus,
-    coverage_count: x.coverageCount,
+    coverage_count: 0,
     enabled: x.enabled,
   }))
 }
@@ -192,7 +191,6 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
   const [formError, setFormError] = useState('')
   const [rebuildHint, setRebuildHint] = useState('')
   const [latestRecompute, setLatestRecompute] = useState<SubjectCategoryRecomputeSummary | null>(null)
-  const [recomputeBusy, setRecomputeBusy] = useState(false)
   const [form, setForm] = useState<FormState>({
     categoryCode: '',
     categoryName: '',
@@ -225,32 +223,40 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
     }
   }, [])
 
+  const mergeRulesWithCoverage = async (): Promise<boolean> => {
+    const res = await fetchSubjectCategoryRules()
+    if (!res.ok) {
+      setBanner(ui.bannerOfflineMode)
+      return false
+    }
+    const loadedRows = fromDto(res.categories)
+    if (loadedRows.length > 0) {
+      setRows(loadedRows)
+      setActiveCode((prev) => {
+        const stillExists = loadedRows.some((x) => x.categoryCode === prev)
+        return stillExists ? prev : loadedRows[0]?.categoryCode ?? ''
+      })
+      try {
+        localStorage.setItem(
+          LS_KEY,
+          JSON.stringify({
+            standardVersion: res.standard_version || standardVersion,
+            rows: loadedRows,
+          }),
+        )
+      } catch {
+        // ignore cache write error
+      }
+    }
+    if (res.standard_version) setStandardVersion(res.standard_version)
+    return true
+  }
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const res = await fetchSubjectCategoryRules()
       if (cancelled) return
-      if (!res.ok) {
-        setBanner(ui.bannerOfflineMode)
-        return
-      }
-      const loadedRows = fromDto(res.categories)
-      if (loadedRows.length > 0) {
-        setRows(loadedRows)
-        setActiveCode(loadedRows[0]?.categoryCode ?? '')
-        try {
-          localStorage.setItem(
-            LS_KEY,
-            JSON.stringify({
-              standardVersion: res.standard_version || standardVersion,
-              rows: loadedRows,
-            }),
-          )
-        } catch {
-          // ignore cache write error
-        }
-      }
-      if (res.standard_version) setStandardVersion(res.standard_version)
+      await mergeRulesWithCoverage()
     })()
     return () => {
       cancelled = true
@@ -417,22 +423,6 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
     await persistRowsToYaml(nextRows)
   }
 
-  const triggerRecompute = async () => {
-    setRecomputeBusy(true)
-    setBanner('')
-    setError('')
-    const res = await postSubjectCategoryRecompute({ with_relations: true })
-    if (!res.ok) {
-      setError(res.error?.message ?? ui.bannerSaveFailed)
-      setRecomputeBusy(false)
-      return
-    }
-    setBanner(res.message ?? ui.recomputeRunNow)
-    const latest = await fetchSubjectCategoryRecomputeLatest()
-    if (latest.ok) setLatestRecompute(latest.latest)
-    setRecomputeBusy(false)
-  }
-
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
@@ -595,6 +585,8 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
               </div>
 
               <div className="grid grid-cols-[120px_1fr] gap-y-2 text-il-meta">
+                <div className="text-text-3">{ui.detailCoverage}</div>
+                <div className="tabular-nums text-text-2">{active.coverageCount.toLocaleString('zh-CN')}</div>
                 <div className="text-text-3">{ui.detailInvoiceScene}</div>
                 <div className="whitespace-pre-wrap break-words text-text-2">
                   {active.invoiceScene || '—'}
@@ -626,14 +618,7 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
           >
             {ui.rebuildCta}
           </button>
-          <button
-            type="button"
-            disabled={recomputeBusy}
-            className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-60"
-            onClick={triggerRecompute}
-          >
-            {recomputeBusy ? ui.recomputeRunning : ui.recomputeRunNow}
-          </button>
+          <span className="text-il-meta text-text-3">{ui.recomputeMovedHint}</span>
           <span className="text-il-meta text-text-3">{ui.rebuildHint}</span>
         </div>
         {rebuildHint ? (

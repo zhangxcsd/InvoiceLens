@@ -38,11 +38,19 @@ def _make_run_id(prefix: str) -> str:
     return f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
 
 
-def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapshot_id: str | None = None) -> dict[str, Any]:
+def recompute_org_subject_categories(
+    conn,
+    *,
+    run_id: str | None = None,
+    snapshot_id: str | None = None,
+    overwrite_manual_repairs: bool = False,
+) -> dict[str, Any]:
     """
-    仅重算组织主体（subject_category='org'）的机构类别。
-    - 写入 dim_subject_category_snapshot
-    - 回写 dim_subject_master 的 org_category 与治理字段
+    重算机构类别（org_category）并回写 dim_subject_master。
+    - 扫描 subject_category='org' 的主体，已标为 person 且 org_category=SC-TEMP 的主体，以及
+      误归 person 但识别号为 18 位 USCC（首位 1/5/9）的主体（纠正入库分域偏差）。
+    - 命中 SC-TEMP 时 subject_category 固定为 person（与主体分域口径一致），其余命中为 org。
+    - 写入 dim_subject_category_snapshot；回写 org_category、subject_category 与治理字段。
     """
     init_all_tables(conn)
     matching_doc = load_matching_doc()
@@ -51,6 +59,11 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
     rule_version = _stable_rule_version(matching_doc, category_doc)
     run_id = run_id or _make_run_id("subject_run")
     snapshot_id = snapshot_id or _make_run_id("subject_snapshot")
+
+    from src.local_api.subject_library_manual_guard import load_repaired_field_map, subject_category_fields_locked
+
+    repair_map = load_repaired_field_map(conn) if not overwrite_manual_repairs else {}
+    manual_repair_skipped = 0
 
     rows = conn.execute(
         """
@@ -61,6 +74,15 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
             COALESCE(subject_category, 'org') AS subject_category
         FROM dim_subject_master
         WHERE subject_category = 'org'
+           OR (
+                subject_category = 'person'
+                AND upper(trim(COALESCE(org_category, ''))) = 'SC-TEMP'
+           )
+           OR (
+                subject_category = 'person'
+                AND length(regexp_replace(trim(COALESCE(subject_no, '')), '[\\s-]+', '', 'g')) = 18
+                AND upper(substr(regexp_replace(trim(COALESCE(subject_no, '')), '[\\s-]+', '', 'g'), 1, 1)) IN ('1', '5', '9')
+           )
         """
     ).fetchall()
 
@@ -68,12 +90,16 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
     matched = 0
     needs_review = 0
     disabled_blocked = 0
+    sc_temp_as_person = 0
 
     snapshot_rows: list[tuple[Any, ...]] = []
     update_rows: list[tuple[Any, ...]] = []
     now = datetime.now()
 
-    for subject_id, party_name, party_id, subject_category in rows:
+    for subject_id, party_name, party_id, _row_subject_category in rows:
+        if not overwrite_manual_repairs and subject_category_fields_locked(repair_map, str(subject_id)):
+            manual_repair_skipped += 1
+            continue
         result = infer_org_subject_category(
             party_id=str(party_id or ""),
             party_name=str(party_name or ""),
@@ -97,6 +123,11 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
         elif result.matched:
             status_note = "active_category"
 
+        org_code = str(result.category_code or "").strip().upper() or None
+        new_subject_category = "person" if org_code == "SC-TEMP" else "org"
+        if new_subject_category == "person":
+            sc_temp_as_person += 1
+
         snapshot_row_id = f"{snapshot_id}:{subject_id}"
         snapshot_rows.append(
             (
@@ -104,7 +135,7 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
                 snapshot_id,
                 run_id,
                 subject_id,
-                subject_category,
+                new_subject_category,
                 result.category_code,
                 rule_version,
                 is_enabled,
@@ -118,6 +149,7 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
         update_rows.append(
             (
                 result.category_code,
+                new_subject_category,
                 rule_version,
                 is_enabled,
                 status_note,
@@ -156,6 +188,7 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
                 UPDATE dim_subject_master
                 SET
                     org_category = ?,
+                    subject_category = ?,
                     category_rule_version = ?,
                     category_rule_enabled_at_run = ?,
                     category_status_note = ?,
@@ -179,13 +212,16 @@ def recompute_org_subject_categories(conn, *, run_id: str | None = None, snapsho
         "matched": matched,
         "needs_review": needs_review,
         "disabled_blocked": disabled_blocked,
+        "sc_temp_as_person": sc_temp_as_person,
+        "manual_repair_skipped": manual_repair_skipped,
+        "overwrite_manual_repairs": overwrite_manual_repairs,
     }
 
 
 def recompute_subject_relations_from_dwd(conn, *, run_id: str, snapshot_id: str) -> dict[str, Any]:
     """
     从 dwd_inv_header 重建主体关系快照（当前实现：销方 -> 购方 TRADE_COUNTERPARTY）。
-    仅处理能映射到 dim_subject_master 的组织主体（subject_category='org'）。
+    映射范围：组织主体（org），以及机构类别为 SC-TEMP 的自然人主体（person，与发票侧临时登记一致）。
     """
     init_all_tables(conn)
     subjects = conn.execute(
@@ -196,6 +232,10 @@ def recompute_subject_relations_from_dwd(conn, *, run_id: str, snapshot_id: str)
             COALESCE(subject_name_std, subject_name, '') AS subject_name
         FROM dim_subject_master
         WHERE subject_category = 'org'
+           OR (
+                subject_category = 'person'
+                AND upper(trim(COALESCE(org_category, ''))) = 'SC-TEMP'
+           )
         """
     ).fetchall()
     no_to_subject: dict[str, str] = {}
@@ -383,15 +423,21 @@ def recompute_org_subject_categories_and_relations(
     *,
     run_id: str | None = None,
     snapshot_id: str | None = None,
+    overwrite_manual_repairs: bool = False,
 ) -> dict[str, Any]:
     """
     联动重算：
-    1) 重算组织主体分类快照并回写主表
+    1) 重算机构类别快照并回写主表（SC-TEMP → subject_category=person）
     2) 基于同一 run_id/snapshot_id 重建关系快照
     """
     run_id = run_id or _make_run_id("subject_run")
     snapshot_id = snapshot_id or _make_run_id("subject_snapshot")
-    cat = recompute_org_subject_categories(conn, run_id=run_id, snapshot_id=snapshot_id)
+    cat = recompute_org_subject_categories(
+        conn,
+        run_id=run_id,
+        snapshot_id=snapshot_id,
+        overwrite_manual_repairs=overwrite_manual_repairs,
+    )
     rel = recompute_subject_relations_from_dwd(conn, run_id=run_id, snapshot_id=snapshot_id)
     return {
         "run_id": run_id,

@@ -4,6 +4,9 @@
 基于 dwd_inv_header 销/购两侧：同一规范化识别号下出现多个弱规范化展示名时，
 按名称首次出现时间排序，相邻不同名生成一条有向边（全历史，不做 stat_year 切片）。
 
+名称比对键 `name_norm`：在空白折叠、小写之外，将全角括号「（」「）」等与半角「()」等
+常见全半角标点统一，避免「凯发新泉自来水（德州）」与「凯发新泉自来水(德州)」被误判为更名。
+
 与 dim_subject_master.category_status_note（机构类别治理）解耦。
 """
 
@@ -22,6 +25,37 @@ logger = logging.getLogger(__name__)
 
 _rename_jobs_lock = threading.Lock()
 _rename_jobs: dict[str, dict[str, Any]] = {}
+
+def _sql_rename_name_norm(trimmed_expr_sql: str) -> str:
+    """
+    展示名 → 比对用 name_norm（与 dim_subject_rename_signal 聚合键一致）。
+    trimmed_expr_sql：已 trim 的列表达式，如 trim(COALESCE(name_display,''))。
+    """
+    e = trimmed_expr_sql.strip()
+    # 全角圆括号、直角/全角方括号、全角空格与逗号冒号 → 半角，便于与票面异体统一比对
+    _pairs: tuple[tuple[str, str], ...] = (
+        ("\uff08", "("),
+        ("\uff09", ")"),
+        ("\u3010", "["),
+        ("\u3011", "]"),
+        ("\uff3b", "["),
+        ("\uff3d", "]"),
+        ("\u3000", " "),
+        ("\uff0c", ","),
+        ("\uff1a", ":"),
+    )
+
+    def _sql_str_lit(s: str) -> str:
+        return "'" + s.replace("'", "''") + "'"
+
+    body = e
+    for fr, to in _pairs:
+        body = f"replace({body}, {_sql_str_lit(fr)}, {_sql_str_lit(to)})"
+    return r"lower(trim(regexp_replace(" + body + r", '\s+', ' ', 'g')))"
+
+
+_NAME_TRIM = "trim(COALESCE(name_display,''))"
+_SQL_NAME_NORM = _sql_rename_name_norm(_NAME_TRIM)
 
 # DuckDB：占位符顺序 [run_id, run_id, built_at]
 _REBUILD_RENAME_INSERT_SQL = """
@@ -59,14 +93,14 @@ WITH ev AS (
 n AS (
     SELECT
         pid,
-        lower(trim(regexp_replace(name_display, '\\s+', ' ', 'g'))) AS name_norm,
-        NULLIF(trim(name_display), '') AS name_raw,
+        """ + _SQL_NAME_NORM + r""" AS name_norm,
+        NULLIF(""" + _NAME_TRIM + r""", '') AS name_raw,
         inv,
         header_uuid
     FROM ev
     WHERE length(pid) > 0
-      AND length(trim(name_display)) > 0
-      AND length(lower(trim(regexp_replace(name_display, '\\s+', ' ', 'g')))) > 0
+      AND length(""" + _NAME_TRIM + r""") > 0
+      AND length(""" + _SQL_NAME_NORM + r""") > 0
 ),
 agg AS (
     SELECT

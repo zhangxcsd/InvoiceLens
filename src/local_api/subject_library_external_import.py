@@ -10,12 +10,16 @@ from typing import Any
 import pandas as pd
 
 from src.local_api.subject_library_dwd_ingest import (
-    _id_card_like,
     _source_record_id,
     _stable_subject_id,
     _subject_no_type,
 )
-from src.subject_category.infer import normalize_party_name
+from src.local_api.subject_library_manual_guard import (
+    load_repaired_field_map,
+    resolve_org_category_for_upsert,
+    resolve_subject_category_for_upsert,
+)
+from src.subject_category.infer import normalize_party_name, subject_category_for_ingest
 from src.subject_category.recompute import _make_run_id
 
 
@@ -205,7 +209,7 @@ def api_import_external_subjects_from_file(
                 st_raw = str(row.get(col_type) or "").strip()
             st = _parse_subject_type_cell(st_raw)
             if not st:
-                st = "person" if raw_no and _id_card_like(raw_no) else "org"
+                st = subject_category_for_ingest(raw_no)
 
             org_cat_raw = ""
             if col_org_cat is not None:
@@ -248,6 +252,7 @@ def api_import_external_subjects_from_file(
         }
 
     ids = list({r["subject_id"] for r in rows_out})
+    repair_map = load_repaired_field_map(conn)
     preserve: dict[str, dict[str, Any]] = {}
     existing_created: dict[str, datetime] = {}
     chunk = 400
@@ -263,6 +268,7 @@ def api_import_external_subjects_from_file(
                     first_source_system,
                     first_import_batch_id,
                     first_import_session_id,
+                    subject_category,
                     org_category,
                     subject_snapshot_id,
                     category_rule_version,
@@ -283,13 +289,14 @@ def api_import_external_subjects_from_file(
                     "first_source_system": str(erow[2] or ""),
                     "first_import_batch_id": str(erow[3] or ""),
                     "first_import_session_id": str(erow[4] or ""),
-                    "org_category_existing": erow[5],
-                    "subject_snapshot_id": erow[6],
-                    "category_rule_version": erow[7],
-                    "category_rule_enabled_at_run": erow[8] if erow[8] is not None else True,
-                    "category_status_note": erow[9],
-                    "quality_status": erow[10] or "ok",
-                    "quality_issue": erow[11],
+                    "subject_category_existing": erow[5],
+                    "org_category_existing": erow[6],
+                    "subject_snapshot_id": erow[7],
+                    "category_rule_version": erow[8],
+                    "category_rule_enabled_at_run": erow[9] if erow[9] is not None else True,
+                    "category_status_note": erow[10],
+                    "quality_status": erow[11] or "ok",
+                    "quality_issue": erow[12],
                 }
         except Exception as exc:
             return {
@@ -343,11 +350,27 @@ def api_import_external_subjects_from_file(
             first_bid = str(pr.get("first_import_batch_id") or "") or batch_tag
             first_sid = str(pr.get("first_import_session_id") or "") or session_tag
 
-        org_use = str(r["org_category"])
+        org_incoming = str(r["org_category"])
         if (
             prev_lower in ("invoice", "manual", "platform") or (existed_in_master and prev_raw == "")
         ) and pr.get("org_category_existing"):
-            org_use = str(pr.get("org_category_existing") or org_use)
+            org_incoming = str(pr.get("org_category_existing") or org_incoming)
+
+        subj_cat = resolve_subject_category_for_upsert(
+            subject_id=sid,
+            incoming_category=str(r["subject_category"]),
+            existing_category=str(pr.get("subject_category_existing") or "") or None,
+            repair_map=repair_map,
+            respect_manual_repairs=True,
+        )
+        org_resolved = resolve_org_category_for_upsert(
+            subject_id=sid,
+            incoming_org_category=org_incoming,
+            existing_org_category=pr.get("org_category_existing"),
+            repair_map=repair_map,
+            respect_manual_repairs=True,
+        )
+        org_use = org_incoming if org_resolved is None else org_resolved
 
         snap_use = str(pr.get("subject_snapshot_id") or "") or snapshot_id
         if year and year not in snap_use:
@@ -362,7 +385,7 @@ def api_import_external_subjects_from_file(
                 sid,
                 str(r["subject_name"]),
                 name_std,
-                str(r["subject_category"]),
+                subj_cat,
                 org_use,
                 sub_no,
                 no_type,

@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
+import { clearDwdDimFocusTask, readDwdDimFocusTask, SUBJECT_DIM_TASK } from './dwdDimNav'
 import {
   fetchDimTaskRuns,
+  fetchSubjectLibraryRenameRebuildStatus,
   postDimEnterpriseMappingBuild,
   postDimEnterpriseMasterBuild,
   postDimEnterpriseProfileBuild,
+  postSubjectCategoryRecompute,
+  postSubjectLibraryIngestFromDwd,
+  postSubjectLibraryRebuildRenameSignals,
 } from '../config/localApi'
 
 type TaskStatus = 'idle' | 'queued' | 'running' | 'failed'
@@ -34,7 +39,55 @@ type FailedRun = {
   action: 'retry' | 'inspect'
 }
 
+const SUBJECT_TASK_CODES = new Set<string>(Object.values(SUBJECT_DIM_TASK))
+
+function isSubjectLibraryTask(taskCode: string): boolean {
+  return SUBJECT_TASK_CODES.has(taskCode)
+}
+
 const TASKS: DimTask[] = [
+  {
+    taskCode: 'subject_master_ingest_from_dwd',
+    taskName: '主体库 · 从 DWD 归集',
+    domain: '主体库',
+    subjectCategory: 'SC-ENT',
+    outputTable: 'dim_subject_master',
+    triggerMode: ['manual', 'chained'],
+    dependsOn: ['dwd_inv_header'],
+    queueDepth: 0,
+    status: 'idle',
+    lastRunAt: '—',
+    lastDuration: '—',
+    owner: '维度组',
+  },
+  {
+    taskCode: 'subject_category_recompute',
+    taskName: '主体库 · 重算（分类+关联）',
+    domain: '主体库',
+    subjectCategory: 'SC-ENT',
+    outputTable: 'dim_subject_master / dim_subject_category_snapshot',
+    triggerMode: ['manual', 'chained'],
+    dependsOn: ['subject_master_ingest_from_dwd'],
+    queueDepth: 0,
+    status: 'idle',
+    lastRunAt: '—',
+    lastDuration: '—',
+    owner: '维度组',
+  },
+  {
+    taskCode: SUBJECT_DIM_TASK.rename,
+    taskName: '主体库 · 重建更名信号',
+    domain: '主体库',
+    subjectCategory: 'SC-ENT',
+    outputTable: 'dim_subject_rename_signal',
+    triggerMode: ['manual'],
+    dependsOn: ['dim_subject_master'],
+    queueDepth: 0,
+    status: 'idle',
+    lastRunAt: '—',
+    lastDuration: '—',
+    owner: '维度组',
+  },
   {
     taskCode: 'enterprise_master_build',
     taskName: '全量企业主数据构建',
@@ -169,15 +222,24 @@ export function DwdToDimCenterPage() {
   const [allRunsTaskFilter, setAllRunsTaskFilter] = useState<string>('all')
   const [allRunsStatusFilter, setAllRunsStatusFilter] = useState<string>('all')
   const [allRunsPage, setAllRunsPage] = useState(1)
+  const [runLogRefreshSeq, setRunLogRefreshSeq] = useState(0)
   const taskDetailCardRef = useRef<HTMLDivElement>(null)
   const runLogSectionRef = useRef<HTMLDivElement>(null)
 
+  const [overwriteManualRepairs, setOverwriteManualRepairs] = useState(false)
+  const [recomputeWithRelations, setRecomputeWithRelations] = useState(true)
   const activeTask = useMemo(
     () => TASKS.find((x) => x.taskCode === activeTaskCode) ?? TASKS[0] ?? null,
     [activeTaskCode],
   )
   const visibleTasks = useMemo(
-    () => TASKS.filter((x) => (subjectCategoryFilter === 'all' ? true : x.subjectCategory === subjectCategoryFilter)),
+    () =>
+      TASKS.filter((x) => {
+        if (x.domain === t.dwdToDimCenterUi.subjectTaskDomain) {
+          return subjectCategoryFilter === 'all'
+        }
+        return subjectCategoryFilter === 'all' ? true : x.subjectCategory === subjectCategoryFilter
+      }),
     [subjectCategoryFilter],
   )
   const queueTotal = TASKS.reduce((n, x) => n + x.queueDepth, 0)
@@ -189,10 +251,21 @@ export function DwdToDimCenterPage() {
     { id: 'slot-b', status: 'idle' as const, taskCode: '', priority: 'P2' },
   ]
   const dagRows = [
+    { from: 'dwd_inv_header', to: 'subject_master_ingest_from_dwd' },
+    { from: 'subject_master_ingest_from_dwd', to: 'subject_category_recompute' },
+    { from: 'subject_category_recompute', to: SUBJECT_DIM_TASK.rename },
     { from: 'dwd_inv_header', to: 'enterprise_master_build' },
     { from: 'enterprise_master_build', to: 'enterprise_mapping_check' },
     { from: 'enterprise_master_build', to: 'enterprise_profile_agg' },
   ]
+
+  useEffect(() => {
+    const focus = readDwdDimFocusTask()
+    if (focus && SUBJECT_TASK_CODES.has(focus)) {
+      setActiveTaskCode(focus)
+      clearDwdDimFocusTask()
+    }
+  }, [])
 
   useEffect(() => {
     if (failureFocus && failureFocus.taskCode !== activeTaskCode) {
@@ -263,7 +336,7 @@ export function DwdToDimCenterPage() {
       cancelled = true
       ac.abort()
     }
-  }, [activeTaskCode])
+  }, [activeTaskCode, runLogRefreshSeq])
 
   useEffect(() => {
     if (!showRunLogsDialog) return
@@ -323,7 +396,92 @@ export function DwdToDimCenterPage() {
     setSubmitMsg(null)
     setSubmitBusy(true)
     try {
-      if (activeTask.taskCode === 'enterprise_profile_agg') {
+      if (activeTask.taskCode === 'subject_master_ingest_from_dwd') {
+        const r = await postSubjectLibraryIngestFromDwd({ overwrite_manual_repairs: overwriteManualRepairs })
+        if (r.ok) {
+          const n = r.result?.subjects_upserted ?? 0
+          const runId = r.result?.run_id ?? '—'
+          const extra = r.message ? `；${r.message}` : ''
+          setSubmitMsg(
+            t.dwdToDimCenterUi.subjectIngestSuccess
+              .replace('{count}', String(n))
+              .replace('{runId}', String(runId))
+              .replace('{extra}', extra),
+          )
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        }
+      } else if (activeTask.taskCode === 'subject_category_recompute') {
+        const r = await postSubjectCategoryRecompute({
+          with_relations: recomputeWithRelations,
+          overwrite_manual_repairs: overwriteManualRepairs,
+        })
+        if (r.ok) {
+          const runId =
+            r.result?.run_id ??
+            r.result?.category?.run_id ??
+            (typeof r.result === 'object' && r.result ? String((r.result as { run_id?: string }).run_id ?? '—') : '—')
+          const extra = r.message ? `；${r.message}` : ''
+          setSubmitMsg(
+            t.dwdToDimCenterUi.subjectRecomputeSuccess.replace('{runId}', String(runId)).replace('{extra}', extra),
+          )
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        }
+      } else if (activeTask.taskCode === SUBJECT_DIM_TASK.rename) {
+        const start = await postSubjectLibraryRebuildRenameSignals()
+        if (!start.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(start.error?.message ?? 'unknown')))
+        } else if (start.async !== true) {
+          setSubmitMsg(
+            t.dwdToDimCenterUi.subjectRenameSuccess.replace(
+              '{extra}',
+              start.message ? `：${start.message}` : '',
+            ),
+          )
+        } else if (!start.run_id) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
+        } else {
+          const runId = start.run_id
+          const pollMs = 1500
+          const deadline = Date.now() + 2 * 60 * 60 * 1000
+          const endStates = new Set(['success', 'failed'])
+          let done = false
+          for (;;) {
+            if (Date.now() > deadline) {
+              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '等待重建结果超时'))
+              break
+            }
+            const st = await fetchSubjectLibraryRenameRebuildStatus(runId)
+            if (!st.ok) {
+              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(st.error?.message ?? 'unknown')))
+              break
+            }
+            if (endStates.has(String(st.status ?? ''))) {
+              if (st.status === 'success') {
+                setSubmitMsg(
+                  t.dwdToDimCenterUi.subjectRenameSuccess.replace(
+                    '{extra}',
+                    st.message ? `：${st.message}` : '',
+                  ),
+                )
+              } else {
+                const em =
+                  st.error && typeof st.error === 'object' && 'message' in st.error
+                    ? String((st.error as { message?: string }).message)
+                    : st.message
+                setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(em ?? 'failed')))
+              }
+              done = true
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, pollMs))
+          }
+          if (!done && Date.now() <= deadline) {
+            /* already set error */
+          }
+        }
+      } else if (activeTask.taskCode === 'enterprise_profile_agg') {
         const sourceScope = runMode === 'full' ? 'manual_full' : 'manual_incremental'
         const r = await postDimEnterpriseProfileBuild({ source_scope: sourceScope, subject_category_scope: effectiveScope })
         if (r.ok) {
@@ -364,6 +522,7 @@ export function DwdToDimCenterPage() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'network error'
       setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', msg))
+      setRunLogRefreshSeq((n) => n + 1)
     } finally {
       setSubmitBusy(false)
       setShowRunDialog(false)
@@ -618,6 +777,11 @@ export function DwdToDimCenterPage() {
                     ? t.dwdToDimCenterUi.logFailureTitle
                     : t.dwdToDimCenterUi.runLogTitle}
                 </div>
+                {isSubjectLibraryTask(activeTask.taskCode) ? (
+                  <p className="mb-2 text-il-meta leading-relaxed text-text-3">
+                    {t.dwdToDimCenterUi.subjectTaskRunLogHint}
+                  </p>
+                ) : null}
                 <div className="space-y-1 text-il-meta leading-relaxed text-text-2">
                   {failureFocus && failureFocus.taskCode === activeTask.taskCode ? (
                     <>
@@ -768,6 +932,38 @@ export function DwdToDimCenterPage() {
             <div className="mb-3 text-il-page-title font-semibold text-text">{t.dwdToDimCenterUi.runDialogTitle}</div>
             <div className="mb-3 text-il-page-desc leading-relaxed text-text-2">{t.dwdToDimCenterUi.runDialogBody}</div>
             <div className="space-y-3">
+              {activeTask && isSubjectLibraryTask(activeTask.taskCode) ? (
+                <>
+                  {(activeTask.taskCode === 'subject_master_ingest_from_dwd' ||
+                    activeTask.taskCode === 'subject_category_recompute') && (
+                    <label className="flex cursor-pointer items-start gap-2 text-il-page-desc text-text-2">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={overwriteManualRepairs}
+                        onChange={(e) => setOverwriteManualRepairs(e.target.checked)}
+                      />
+                      <span>
+                        <span className="font-medium text-text">{t.dwdToDimCenterUi.overwriteManualRepairsLabel}</span>
+                        <span className="mt-0.5 block text-il-meta text-text-3">
+                          {t.dwdToDimCenterUi.overwriteManualRepairsHint}
+                        </span>
+                      </span>
+                    </label>
+                  )}
+                  {activeTask.taskCode === 'subject_category_recompute' ? (
+                    <label className="flex cursor-pointer items-center gap-2 text-il-page-desc text-text-2">
+                      <input
+                        type="checkbox"
+                        checked={recomputeWithRelations}
+                        onChange={(e) => setRecomputeWithRelations(e.target.checked)}
+                      />
+                      {t.dwdToDimCenterUi.recomputeWithRelationsLabel}
+                    </label>
+                  ) : null}
+                </>
+              ) : (
+                <>
               <div>
                 <div className="mb-1 text-il-label font-medium text-text-2">{t.dwdToDimCenterUi.runModeLabel}</div>
                 <div className="flex gap-3 text-il-page-desc text-text-2">
@@ -802,6 +998,8 @@ export function DwdToDimCenterPage() {
                   </label>
                 </div>
               </div>
+                </>
+              )}
               <div className="rounded-[8px] border border-border-light bg-[#f8fafc] p-2 text-il-label text-text-2">
                 {t.dwdToDimCenterUi.runQueueNote}
               </div>

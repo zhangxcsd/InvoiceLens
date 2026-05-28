@@ -175,9 +175,6 @@ def _save_subject_category_rules(data: dict[str, Any]) -> Path:
                 "default_risk_focus": str(
                     _first_present(it, "default_risk_focus", "defaultRiskFocus") or ""
                 ).strip(),
-                "coverage_count": _normalize_non_negative_int(
-                    _first_present(it, "coverage_count", "coverageCount"), 0
-                ),
                 "enabled": bool(_first_present(it, "enabled") if "enabled" in it else True),
             }
         )
@@ -532,6 +529,27 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/subject-category/rules":
             try:
                 payload = _read_subject_category_rules()
+                categories = (
+                    payload.get("categories") if isinstance(payload.get("categories"), list) else []
+                )
+                try:
+                    from db.duckdb_conn import get_conn
+                    from db.schema_sqlfiles import init_all_tables
+                    from src.local_api.subject_library import (
+                        apply_subject_category_coverage_counts,
+                        query_subject_category_coverage_counts,
+                    )
+
+                    conn = get_conn()
+                    init_all_tables(conn)
+                    apply_subject_category_coverage_counts(
+                        categories,
+                        query_subject_category_coverage_counts(conn),
+                    )
+                except Exception:
+                    for it in categories:
+                        if isinstance(it, dict):
+                            it["coverage_count"] = 0
                 self._send(
                     200,
                     {
@@ -539,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                         "source": str(_subject_category_rules_path()),
                         "standard_version": str(payload.get("standard_version") or "GB32100-2015"),
                         "updated_at": str(payload.get("updated_at") or ""),
-                        "categories": payload.get("categories") if isinstance(payload.get("categories"), list) else [],
+                        "categories": categories,
                     },
                 )
             except Exception as exc:
@@ -709,6 +727,27 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/subject-library/org-category-options":
+            try:
+                from src.local_api.subject_library import api_subject_library_org_category_options
+
+                payload = api_subject_library_org_category_options()
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    200,
+                    {
+                        "ok": False,
+                        "categories": [],
+                        "error": {
+                            "message": f"读取主体类别选项失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         if path == "/api/subject-library/rows":
             qs = parse_qs(parsed.query or "")
             keyword = (qs.get("keyword", [""])[0] or "").strip()
@@ -716,11 +755,16 @@ class Handler(BaseHTTPRequestHandler):
             source_type = (qs.get("source_type", ["all"])[0] or "all").strip()
             subject_category = (qs.get("subject_category", ["all"])[0] or "all").strip()
             rename_signal = (qs.get("rename_signal", ["all"])[0] or "all").strip()
+            category_review = (qs.get("category_review", ["all"])[0] or "all").strip()
             batch_id = (qs.get("batch_id", [""])[0] or "").strip()
             try:
-                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+                limit = int((qs.get("limit", ["50"])[0] or "50").strip() or "50")
             except Exception:
-                limit = 500
+                limit = 50
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except Exception:
+                offset = 0
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
@@ -735,8 +779,10 @@ class Handler(BaseHTTPRequestHandler):
                     source_type=source_type,
                     subject_category=subject_category,
                     rename_signal=rename_signal,
+                    category_review=category_review,
                     batch_id=batch_id,
                     limit=limit,
+                    offset=offset,
                 )
                 self._send(200, payload)
             except Exception as exc:
@@ -794,6 +840,39 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 }
             self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/subject-library/invoice-headers":
+            qs = parse_qs(parsed.query or "")
+            subject_id = (qs.get("subject_id", [""])[0] or "").strip()
+            try:
+                limit = int((qs.get("limit", ["50"])[0] or "50").strip() or "50")
+            except Exception:
+                limit = 50
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except Exception:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.subject_library import api_subject_library_invoice_headers
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_subject_library_invoice_headers(
+                    conn, subject_id=subject_id, limit=limit, offset=offset
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"读取主体关联发票失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200, payload, cors=True)
             return
 
         if path == "/api/dim/task-runs":
@@ -1175,6 +1254,198 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if payload.get("ok") else 500, payload)
             return
 
+        if path == "/api/audited-enterprise/registry":
+            qs = parse_qs(parsed.query or "")
+            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip() or None
+            state_investor = (qs.get("state_investor", [""])[0] or "").strip()
+            enterprise = (qs.get("enterprise", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_registry_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_registry_list(
+                    conn,
+                    snapshot_year=snapshot_year,
+                    state_investor_kw=state_investor,
+                    enterprise_kw=enterprise,
+                )
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取管理与产权层级信息失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/audited-enterprise/contribution":
+            qs = parse_qs(parsed.query or "")
+            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_contribution_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_contribution_list(conn, snapshot_year=snapshot_year, keyword=keyword)
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取出资与股权比例信息失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/invoice-coverage/meta":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.invoice_coverage_api import api_invoice_coverage_meta
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_invoice_coverage_meta(conn)
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取发票报送覆盖元数据失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/invoice-coverage/soe-options":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.invoice_coverage_api import api_invoice_coverage_soe_options
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_invoice_coverage_soe_options(conn, stat_year=stat_year)
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取国家出资企业锚点失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/invoice-coverage/summary":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            soe_anchor_id = (qs.get("soe_anchor_id", [""])[0] or "").strip()
+            soe_anchor_kw = (qs.get("soe_anchor_kw", [""])[0] or "").strip()
+            level1_group_kw = (qs.get("level1_group_kw", [""])[0] or "").strip()
+            enterprise_kw = (qs.get("enterprise_kw", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.invoice_coverage_api import api_invoice_coverage_summary
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_invoice_coverage_summary(
+                    conn,
+                    stat_year=stat_year,
+                    soe_anchor_id=soe_anchor_id,
+                    soe_anchor_kw=soe_anchor_kw,
+                    level1_group_kw=level1_group_kw,
+                    enterprise_kw=enterprise_kw,
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"汇总发票报送覆盖失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/invoice-coverage/members":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            list_view = (qs.get("list_view", [""])[0] or "").strip() or "unreported"
+            soe_anchor_id = (qs.get("soe_anchor_id", [""])[0] or "").strip()
+            soe_anchor_kw = (qs.get("soe_anchor_kw", [""])[0] or "").strip()
+            level1_group_kw = (qs.get("level1_group_kw", [""])[0] or "").strip()
+            enterprise_kw = (qs.get("enterprise_kw", [""])[0] or "").strip()
+            lim_raw = (qs.get("limit", [""])[0] or "").strip()
+            try:
+                lim = int(lim_raw) if lim_raw.isdigit() else 2000
+            except Exception:
+                lim = 2000
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.invoice_coverage_api import api_invoice_coverage_members
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_invoice_coverage_members(
+                    conn,
+                    stat_year=stat_year,
+                    list_view=list_view,
+                    soe_anchor_id=soe_anchor_id,
+                    soe_anchor_kw=soe_anchor_kw,
+                    level1_group_kw=level1_group_kw,
+                    enterprise_kw=enterprise_kw,
+                    limit=lim,
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"查询发票报送覆盖成员失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -1310,15 +1581,24 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/subject-category/recompute":
+            import time
+
             body = self._read_json()
             with_relations = bool(body.get("with_relations", False))
             run_id = str(body.get("run_id") or "").strip() or None
             snapshot_id = str(body.get("snapshot_id") or "").strip() or None
+            overwrite_manual_repairs = bool(body.get("overwrite_manual_repairs", False))
+            started_ts = time.time()
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
                 from src.subject_category.recompute import recompute_org_subject_categories
                 from src.subject_category.recompute import recompute_org_subject_categories_and_relations
+                from src.local_api.subject_library_task_run import (
+                    TASK_CODE_SUBJECT_RECOMPUTE,
+                    TASK_NAME_SUBJECT_RECOMPUTE,
+                    record_subject_library_task_run,
+                )
 
                 conn = get_conn()
                 init_all_tables(conn)
@@ -1327,19 +1607,43 @@ class Handler(BaseHTTPRequestHandler):
                         conn,
                         run_id=run_id,
                         snapshot_id=snapshot_id,
+                        overwrite_manual_repairs=overwrite_manual_repairs,
                     )
                 else:
                     result = recompute_org_subject_categories(
                         conn,
                         run_id=run_id,
                         snapshot_id=snapshot_id,
+                        overwrite_manual_repairs=overwrite_manual_repairs,
                     )
+                cat_block = result.get("category") if isinstance(result.get("category"), dict) else result
+                ledger_run_id = str(
+                    (cat_block or {}).get("run_id") or result.get("run_id") or run_id or f"recompute_{int(started_ts)}"
+                )
+                record_subject_library_task_run(
+                    run_id=ledger_run_id,
+                    task_code=TASK_CODE_SUBJECT_RECOMPUTE,
+                    task_name=TASK_NAME_SUBJECT_RECOMPUTE,
+                    result=result,
+                    rows_affected=int((cat_block or {}).get("matched") or 0),
+                    params={
+                        "with_relations": with_relations,
+                        "overwrite_manual_repairs": overwrite_manual_repairs,
+                    },
+                    started_at_ts=started_ts,
+                )
+                skip_note = ""
+                cat = result.get("category") if isinstance(result.get("category"), dict) else result
+                skipped = int((cat or {}).get("manual_repair_skipped") or 0)
+                if skipped > 0 and not overwrite_manual_repairs:
+                    skip_note = f"；已跳过 {skipped} 条人工修正主体"
                 self._send(
                     200,
                     {
                         "ok": True,
-                        "message": "主体分类重算完成" + ("（含关联重建）" if with_relations else ""),
+                        "message": "主体分类重算完成" + ("（含关联重建）" if with_relations else "") + skip_note,
                         "with_relations": with_relations,
+                        "overwrite_manual_repairs": overwrite_manual_repairs,
                         "result": result,
                     },
                 )
@@ -1437,14 +1741,36 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/subject-library/ingest-from-dwd":
+            import time
+
+            body = self._read_json()
+            overwrite_manual_repairs = bool((body or {}).get("overwrite_manual_repairs", False))
+            started_ts = time.time()
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
                 from src.local_api.subject_library_dwd_ingest import ingest_dim_subject_master_from_dwd
+                from src.local_api.subject_library_task_run import (
+                    TASK_CODE_SUBJECT_INGEST,
+                    TASK_NAME_SUBJECT_INGEST,
+                    record_subject_library_task_run,
+                )
 
                 conn = get_conn()
                 init_all_tables(conn)
-                result = ingest_dim_subject_master_from_dwd(conn)
+                result = ingest_dim_subject_master_from_dwd(
+                    conn,
+                    overwrite_manual_repairs=overwrite_manual_repairs,
+                )
+                record_subject_library_task_run(
+                    run_id=str(result.get("run_id") or f"ingest_{int(started_ts)}"),
+                    task_code=TASK_CODE_SUBJECT_INGEST,
+                    task_name=TASK_NAME_SUBJECT_INGEST,
+                    result=result,
+                    rows_affected=int(result.get("subjects_upserted") or 0),
+                    params={"overwrite_manual_repairs": overwrite_manual_repairs},
+                    started_at_ts=started_ts,
+                )
                 if not result.get("ok"):
                     self._send(
                         400,
@@ -1457,11 +1783,23 @@ class Handler(BaseHTTPRequestHandler):
                         },
                     )
                     return
+                merged = int(result.get("subjects_merged_name_key_into_tax") or 0)
+                merge_note = f"；名称键并入税号键 {merged} 条" if merged > 0 else ""
+                preserved = int(result.get("manual_repair_preserved") or 0)
+                preserve_note = (
+                    f"；已保留 {preserved} 条人工修正主体的类别字段"
+                    if preserved > 0 and not overwrite_manual_repairs
+                    else ""
+                )
                 self._send(
                     200,
                     {
                         "ok": True,
-                        "message": f"已从 dwd_inv_header 归集 {result.get('subjects_upserted', 0)} 个主体（扫描 {result.get('header_rows_scanned', 0)} 条发票头）",
+                        "message": (
+                            f"已从 dwd_inv_header 归集 {result.get('subjects_upserted', 0)} 个主体"
+                            f"（扫描 {result.get('header_rows_scanned', 0)} 条发票头）{merge_note}{preserve_note}"
+                        ),
+                        "overwrite_manual_repairs": overwrite_manual_repairs,
                         "result": result,
                     },
                 )
@@ -1774,6 +2112,7 @@ class Handler(BaseHTTPRequestHandler):
                     stat_year=stat_year,
                     incremental=incremental,
                     import_session_ids=import_session_ids,
+                    rebuild_enterprise_year_rel=bool(body.get("rebuild_enterprise_year_rel")),
                 )
             except Exception as exc:
                 payload = {
@@ -1790,6 +2129,60 @@ class Handler(BaseHTTPRequestHandler):
                 err = (payload.get("error") or {}) if isinstance(payload.get("error"), dict) else {}
                 ec = str(err.get("code") or "")
                 code = 400 if ec in {"no_ods_batch", "stat_year_required", "invalid_stat_year"} else 500
+            self._send(code, payload, cors=True)
+            return
+        if path == "/api/dim/enterprise-year-rel/meta":
+            try:
+                from db.duckdb_conn import get_conn
+                from src.local_api.enterprise_year_rel_build import api_dim_enterprise_year_rel_meta
+
+                conn = get_conn()
+                payload = api_dim_enterprise_year_rel_meta(conn)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"读取企业-年度关系元数据失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+        if path == "/api/dim/enterprise-year-rel/rebuild":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from src.local_api.enterprise_year_rel_build import (
+                    parse_stat_years_request,
+                    rebuild_dim_enterprise_year_rel,
+                )
+
+                conn = get_conn()
+                raw_years = body.get("stat_years")
+                parsed = parse_stat_years_request(raw_years)
+                dry_run = bool(body.get("dry_run"))
+                run_id = str(body.get("run_id") or "").strip() or None
+                snap = str(body.get("relation_snapshot_id") or "").strip() or None
+                trig = str(body.get("trigger_source") or "").strip() or "manual_api"
+                payload = rebuild_dim_enterprise_year_rel(
+                    conn,
+                    stat_years=parsed,
+                    dry_run=dry_run,
+                    run_id=run_id,
+                    relation_snapshot_id=snap,
+                    trigger_source=trig,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"企业-年度关系重算失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            code = 200 if payload.get("ok") or payload.get("skipped") else 500
             self._send(code, payload, cors=True)
             return
         if path == "/api/dwd/force-rebuild":
@@ -2020,6 +2413,93 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             self._send(200 if payload.get("ok") else 500, payload, cors=True)
             return
+
+        if path == "/api/audited-enterprise/registry":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_registry_insert
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_registry_insert(conn, body)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"保存管理与产权层级信息失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/audited-enterprise/registry/bootstrap-demo":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_registry_bootstrap_demo
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_registry_bootstrap_demo(conn)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"加载演示数据失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+
+        if path == "/api/audited-enterprise/contribution":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_contribution_insert
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_contribution_insert(conn, body)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"保存出资与股权比例信息失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/audited-enterprise/contribution/bootstrap-demo":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_dims import api_contribution_bootstrap_demo
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_contribution_bootstrap_demo(conn)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"加载演示数据失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
 

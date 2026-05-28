@@ -24,6 +24,7 @@ import { ImportHistoryPage } from './import/ImportHistoryPage'
 import { DwdPreviewPage } from './dwd/DwdPreviewPage'
 import { OdsToDwdCenterPage } from './dwd/OdsToDwdCenterPage'
 import { DwdToDimCenterPage } from './dwd/DwdToDimCenterPage'
+import { navToDwdDimWithTask, SUBJECT_DIM_TASK } from './dwd/dwdDimNav'
 import { FieldMappingConfigPrototype } from './fieldMapping/FieldMappingConfigPrototype'
 import { MappingTemplatesPrototype } from './fieldMapping/MappingTemplatesPrototype'
 import { DataQualityOverviewPage } from './quality/DataQualityOverviewPage'
@@ -35,7 +36,6 @@ import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
 import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
 import { AuditedEnterpriseRelationViewPage } from './dim/AuditedEnterpriseRelationViewPage'
-import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
 import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
@@ -268,7 +268,6 @@ function Sidebar(props: {
     processing: false,
     org: false,
     audited: false,
-    ticket: false,
     tax: false,
     dict: false,
   })
@@ -286,8 +285,7 @@ function Sidebar(props: {
       props.nav !== 'dim_audited_registry' &&
       props.nav !== 'dim_org_manage' &&
       props.nav !== 'dim_org_equity' &&
-      props.nav !== 'dim_org_diff' &&
-      props.nav !== 'dim_audited_invoice_link'
+      props.nav !== 'dim_org_diff'
     )
       return
     setOpenParents((p) => ({ ...p, dim: true }))
@@ -299,9 +297,6 @@ function Sidebar(props: {
       props.nav === 'dim_org_diff'
     ) {
       setOpenChildren((c) => ({ ...c, audited: true }))
-    }
-    if (props.nav === 'dim_audit_related_library' || props.nav === 'dim_audited_invoice_link') {
-      setOpenChildren((c) => ({ ...c, ticket: true }))
     }
   }, [props.nav])
 
@@ -413,19 +408,23 @@ function Sidebar(props: {
       open?: boolean
       soon?: boolean
       onClick?: () => void
+      /** 叶子项选中态（与 navGrand 高亮一致；不与 openable 同用） */
+      active?: boolean
     },
   ) => {
     const openable = !!opts?.openable
     const open = !!opts?.open
     const soon = !!opts?.soon
     const onClick = opts?.onClick
+    const active = !!opts?.active && !openable && !soon
     return (
       <div
         className={[
-          'relative flex items-center gap-1.5 px-3 py-[6px] pl-8 text-il-sidebar-child font-medium text-text-2',
+          'relative flex items-center gap-1.5 px-3 py-[6px] pl-8 text-il-sidebar-child font-medium',
           'cursor-pointer overflow-hidden whitespace-nowrap',
-          'border-l-2 border-l-transparent transition-[background,color] duration-100',
-          'hover:bg-[#f5f7ff] hover:text-text',
+          'border-l-2 transition-[background,color,border-color] duration-100',
+          active ? 'border-l-accent bg-[#EBF4FF] text-accent' : 'border-l-transparent text-text-2',
+          active ? '' : 'hover:bg-[#f5f7ff] hover:text-text',
           soon ? 'opacity-45 cursor-default hover:bg-transparent hover:text-text-2' : '',
         ].join(' ')}
         onClick={() => {
@@ -436,8 +435,60 @@ function Sidebar(props: {
         title={collapsed ? label : undefined}
       >
         <span className="absolute left-5 top-1/2 h-px w-[7px] -translate-y-1/2 bg-border-light" />
-        <span className="h-[11px] w-[11px] flex-shrink-0 opacity-65">{icon}</span>
+        <span className={['h-[11px] w-[11px] flex-shrink-0', active ? 'opacity-100' : 'opacity-65'].join(' ')}>{icon}</span>
         <span className="flex-1 overflow-hidden text-ellipsis">{label}</span>
+        {openable ? (
+          <IconChevronRight className={['h-[10px] w-[10px] flex-shrink-0 opacity-40 transition-transform duration-200', open ? 'rotate-90' : ''].join(' ')} />
+        ) : null}
+        {soon ? (
+          <span className="ml-1 rounded border border-border-light px-1 text-il-soon text-text-3">
+            {t.common.soon}
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+
+  /** 三级可展开/叶子入口（企业组织维度下，与 navChild 同级逻辑、更深缩进） */
+  const navChildDeep = (
+    k: string,
+    label: string,
+    icon: React.ReactNode,
+    opts?: {
+      openable?: boolean
+      open?: boolean
+      soon?: boolean
+      onClick?: () => void
+      active?: boolean
+    },
+  ) => {
+    const openable = !!opts?.openable
+    const open = !!opts?.open
+    const soon = !!opts?.soon
+    const onClick = opts?.onClick
+    const active = !!opts?.active && !openable && !soon
+    return (
+      <div
+        className={[
+          'relative flex cursor-pointer items-center gap-1.5 px-3 py-[6px] pl-[52px] text-il-sidebar-child font-medium',
+          'overflow-hidden whitespace-nowrap border-l-2 transition-[background,color,border-color] duration-100',
+          active ? 'border-l-accent bg-[#EBF4FF] text-accent' : 'border-l-transparent text-text-2',
+          active ? '' : 'hover:bg-[#f5f7ff] hover:text-text',
+          soon ? 'cursor-default opacity-45 hover:bg-transparent hover:text-text-2' : '',
+        ].join(' ')}
+        onClick={() => {
+          if (soon) return
+          if (openable) toggleChild(k)
+          else onClick?.()
+        }}
+        title={collapsed ? label : undefined}
+      >
+        <span className="absolute bottom-0 left-[36px] top-0 w-px bg-border-light" />
+        <span className="absolute left-[36px] top-1/2 h-px w-[10px] -translate-y-1/2 bg-border-light" />
+        <span className={['absolute left-[46px] flex h-[11px] w-[11px] items-center justify-center', active ? 'opacity-100' : 'opacity-65'].join(' ')}>
+          {icon}
+        </span>
+        <span className="flex-1 overflow-hidden text-ellipsis pl-[14px]">{label}</span>
         {openable ? (
           <IconChevronRight className={['h-[10px] w-[10px] flex-shrink-0 opacity-40 transition-transform duration-200', open ? 'rotate-90' : ''].join(' ')} />
         ) : null}
@@ -458,15 +509,26 @@ function Sidebar(props: {
       soon?: boolean
       /** 开发迭代中：可进入页面，侧栏显示「开发中」徽标 */
       inProgress?: boolean
+      /** 可选：与同级「·」区分层级或能力类型 */
+      icon?: React.ReactNode
+      /** 四级叶子（如被审企业组织下）；默认与税收分类等三级子项一致 */
+      tier?: 'default' | 'great'
     },
   ) => {
     const active = !!opts?.active
     const soon = !!opts?.soon
     const inProgress = !!opts?.inProgress && !soon
+    const rowIcon = opts?.icon
+    const great = opts?.tier === 'great'
+    const padLeft = great ? 'pl-[72px]' : 'pl-[52px]'
+    const trunkLeft = great ? 'left-[52px]' : 'left-[36px]'
+    const iconLeft = great ? 'left-[62px]' : 'left-[46px]'
+    const dotLeft = great ? 'left-[64px]' : 'left-[48px]'
     return (
       <div
         className={[
-          'relative flex cursor-pointer items-center px-3 py-[5px] pl-[52px] text-il-sidebar-grand text-text-3',
+          'relative flex cursor-pointer items-center px-3 py-[5px] text-il-sidebar-grand text-text-3',
+          padLeft,
           'border-l-2 border-l-transparent transition-[background,color] duration-100 overflow-hidden whitespace-nowrap',
           active ? 'bg-[#EBF4FF] text-accent border-l-accent font-medium' : 'hover:bg-[#f5f7ff] hover:text-text-2',
           soon ? 'opacity-45 cursor-default hover:bg-transparent hover:text-text-3' : '',
@@ -476,10 +538,16 @@ function Sidebar(props: {
           props.onNav(key)
         }}
       >
-        <span className="absolute bottom-0 left-[36px] top-0 w-px bg-border-light" />
-        <span className="absolute left-[36px] top-1/2 h-px w-[10px] -translate-y-1/2 bg-border-light" />
-        <span className="absolute left-[48px] text-border">·</span>
-        <span className="flex-1 overflow-hidden text-ellipsis">{label}</span>
+        <span className={['absolute bottom-0 top-0 w-px bg-border-light', trunkLeft].join(' ')} />
+        <span className={['absolute top-1/2 h-px w-[10px] -translate-y-1/2 bg-border-light', trunkLeft].join(' ')} />
+        {rowIcon ? (
+          <span className={['absolute flex h-[11px] w-[11px] items-center justify-center', iconLeft, active ? 'opacity-100' : 'opacity-65'].join(' ')}>
+            {rowIcon}
+          </span>
+        ) : (
+          <span className={['absolute text-border', dotLeft].join(' ')}>·</span>
+        )}
+        <span className={['flex-1 overflow-hidden text-ellipsis', rowIcon ? 'pl-[14px]' : ''].join(' ')}>{label}</span>
         {soon ? (
           <span className="ml-1 rounded border border-border-light px-1 text-il-soon text-text-3">
             {t.common.soon}
@@ -607,39 +675,46 @@ function Sidebar(props: {
         <div className={openParents.dim && !collapsed ? 'block' : 'hidden'}>
           {navChild('org', t.sidebar.dimOrg, <IconMiniMap className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.org })}
           <div className={openChildren.org ? 'block' : 'hidden'}>
-            {navChild('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
+            {navChildDeep('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
               openable: true,
               open: !!openChildren.audited,
             })}
             <div className={openChildren.audited ? 'block' : 'hidden'}>
               {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
                 active: props.nav === 'dim_audited_registry',
+                tier: 'great',
               })}
               {navGrand('dim_org_manage', t.sidebar.dimOrgTree, {
                 active: props.nav === 'dim_org_manage',
+                tier: 'great',
               })}
               {navGrand('dim_org_equity', t.sidebar.dimEquityTree, {
                 active: props.nav === 'dim_org_equity',
+                tier: 'great',
               })}
               {navGrand('dim_org_diff', t.sidebar.dimOrgDiff, {
                 active: props.nav === 'dim_org_diff',
+                tier: 'great',
               })}
             </div>
-            {navChild('ticket', t.sidebar.dimTicketViews, <IconMiniMap className="h-[11px] w-[11px]" />, {
-              openable: true,
-              open: !!openChildren.ticket,
-            })}
-            <div className={openChildren.ticket ? 'block' : 'hidden'}>
-              {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
-                active: props.nav === 'dim_audited_invoice_link',
-              })}
-              {navGrand('dim_audit_related_library', t.sidebar.dimAuditRelatedLibrary, {
+            {navChildDeep(
+              'audit_related_coverage',
+              t.sidebar.dimAuditRelatedLibrary,
+              <IconCompare className="h-[11px] w-[11px]" />,
+              {
+                onClick: () => props.onNav('dim_audit_related_library'),
                 active: props.nav === 'dim_audit_related_library',
-              })}
-            </div>
-            {navGrand('dim_enterprise_library', t.sidebar.dimEnterpriseLibrary, {
-              active: props.nav === 'dim_enterprise_library',
-            })}
+              },
+            )}
+            {navChildDeep(
+              'enterprise_library',
+              t.sidebar.dimEnterpriseLibrary,
+              <IconUser className="h-[11px] w-[11px]" />,
+              {
+                onClick: () => props.onNav('dim_enterprise_library'),
+                active: props.nav === 'dim_enterprise_library',
+              },
+            )}
           </div>
           {navChild('tax', t.sidebar.dimTaxCode, <IconPlusSquare className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.tax })}
           <div className={openChildren.tax ? 'block' : 'hidden'}>
@@ -2540,90 +2615,83 @@ function AppShell(props: {
     if (props.nav === 'dim_enterprise_library')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimEnterpriseLibrary} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimEnterpriseLibrary}</b>
         </>
       )
     if (props.nav === 'dim_audit_related_library')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTicketViews} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimAuditRelatedLibrary}</b>
         </>
       )
     if (props.nav === 'dim_audited_registry')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimAuditedLedger} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimAuditedLedger}</b>
         </>
       )
     if (props.nav === 'dim_org_manage')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimOrgTree} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimOrgTree}</b>
         </>
       )
     if (props.nav === 'dim_org_equity')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimEquityTree} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimEquityTree}</b>
         </>
       )
     if (props.nav === 'dim_org_diff')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimOrgDiff} /{' '}
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimOrgDiff}</b>
-        </>
-      )
-    if (props.nav === 'dim_audited_invoice_link')
-      return (
-        <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTicketViews} /{' '}
-          <b className="text-text font-medium">{t.breadcrumb.dimInvoiceLink}</b>
         </>
       )
     if (props.nav === 'dim_tax_lib')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          {t.sidebar.dimMgmt} / {t.breadcrumb.dimTaxCodeSection} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimTaxLib}</b>
         </>
       )
     if (props.nav === 'dim_tax_risk_define')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          {t.sidebar.dimMgmt} / {t.breadcrumb.dimTaxCodeSection} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimTaxRiskDefine}</b>
         </>
       )
     if (props.nav === 'dim_tax_result')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          {t.sidebar.dimMgmt} / {t.breadcrumb.dimTaxCodeSection} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimTaxResult}</b>
         </>
       )
     if (props.nav === 'dim_tax_quality')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.dimTaxCodeSection} /{' '}
+          {t.sidebar.dimMgmt} / {t.breadcrumb.dimTaxCodeSection} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dimTaxQuality}</b>
         </>
       )
     if (props.nav === 'dim_version')
       return (
         <>
-          {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.dimVersion}</b>
+          {t.sidebar.dimMgmt} / <b className="text-text font-medium">{t.breadcrumb.dimVersion}</b>
         </>
       )
     if (props.nav === 'dim_subject_category')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.sidebar.dimDict} / <b className="text-text font-medium">{t.breadcrumb.dimSubjectCategory}</b>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimDict} / <b className="text-text font-medium">{t.breadcrumb.dimSubjectCategory}</b>
         </>
       )
     if (props.nav === 'tax_enterprise_structure')
@@ -2650,7 +2718,9 @@ function AppShell(props: {
               ? 'flex min-h-0 flex-1 flex-col overflow-y-auto'
               : props.nav === 'import_wizard_upload' || props.nav === 'import_wizard_preview'
                 ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
-                : 'flex-1 overflow-y-auto'
+                : props.nav === 'dim_enterprise_library'
+                  ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
+                  : 'flex-1 overflow-y-auto'
           }
         >
           {props.nav === 'import_wizard_format_check' ? (
@@ -2686,7 +2756,7 @@ function AppShell(props: {
           ) : props.nav === 'health_score' ? (
             <HealthScorePage />
           ) : props.nav === 'dim_enterprise_library' ? (
-            <EnterpriseLibraryPage />
+            <EnterpriseLibraryPage onNav={props.onNav} />
           ) : props.nav === 'dim_audit_related_library' ? (
             <AuditRelatedEnterprisePage />
           ) : props.nav === 'dim_audited_registry' ? (
@@ -2697,8 +2767,6 @@ function AppShell(props: {
             <AuditedEnterpriseTreePage mode="equity" />
           ) : props.nav === 'dim_org_diff' ? (
             <AuditedEnterpriseRelationViewPage />
-          ) : props.nav === 'dim_audited_invoice_link' ? (
-            <AuditedEnterpriseInvoiceLinkPage />
           ) : props.nav === 'dim_tax_lib' ? (
             <TaxCodeLibraryPage mode="manage" onOpenResult={() => props.onNav('dim_tax_result')} />
           ) : props.nav === 'dim_tax_risk_define' ? (
@@ -2710,7 +2778,9 @@ function AppShell(props: {
           ) : props.nav === 'dim_version' ? (
             <DimVersionPage />
           ) : props.nav === 'dim_subject_category' ? (
-            <SubjectCategoryPage onNavigateToRebuild={() => props.onNav('dwd_to_dim_center')} />
+            <SubjectCategoryPage
+              onNavigateToRebuild={() => navToDwdDimWithTask(props.onNav, SUBJECT_DIM_TASK.recompute)}
+            />
           ) : props.nav === 'tax_enterprise_structure' ? (
             <TaxCodeEnterpriseAnalysisPage />
           ) : (

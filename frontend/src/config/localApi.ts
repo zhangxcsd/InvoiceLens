@@ -18,6 +18,15 @@ function apiUrl(path: string): string {
   return LOCAL_API_BASE ? `${LOCAL_API_BASE}${p}` : p
 }
 
+/** React 依赖重跑 / 卸载时 AbortController 取消 fetch，不应当作业务错误展示 */
+function isFetchAbortError(e: unknown): boolean {
+  if (typeof DOMException !== 'undefined' && e instanceof DOMException && e.name === 'AbortError') {
+    return true
+  }
+  if (e instanceof Error && e.name === 'AbortError') return true
+  return false
+}
+
 function subjectCategoryApiCandidates(): string[] {
   const primary = apiUrl('/api/subject-category/rules')
   // 开发态优先走 Vite 同源代理；若代理链路异常则回退直连本地 API。
@@ -165,6 +174,36 @@ export async function fetchFieldMapping(
   }
 }
 
+/** 任务码 dim.enterprise_year_rel.rebuild：按集团台账成员 × DWD 按年重算 dim_enterprise_year_rel */
+export type EnterpriseYearRelMetaResult = {
+  ok: boolean
+  automation_task_code?: string
+  dwd_stat_years?: string[]
+  group_stat_years?: string[]
+  rel_rebuild_union_stat_years?: string[]
+  dim_enterprise_year_rel_row_counts_by_year?: Record<string, number>
+  error?: { message?: string; exception_type?: string; detail?: string }
+}
+
+export type EnterpriseYearRelRebuildResult = {
+  ok: boolean
+  skipped?: boolean
+  dry_run?: boolean
+  automation_task_code?: string
+  stat_years?: number[]
+  relation_build_run_id?: string
+  relation_snapshot_id?: string
+  rows_before_delete?: number
+  rows_after_insert?: number
+  aggregated_subject_year_rows?: number
+  rows_that_would_insert?: number
+  message?: string
+  error?: { message?: string; exception_type?: string; detail?: string }
+}
+
+/** 与 `enterprise_year_rel_build.AUTOMATION_TASK_CODE` 一致；用于加工中心运行记录筛选 */
+export const DIM_ENTERPRISE_YEAR_REL_TASK_CODE = 'dim.enterprise_year_rel.rebuild' as const
+
 /** POST /api/dwd/build：ODS→DWD 落盘（run_cleaner） */
 export type DwdBuildStep = { id: string; label: string; status: string; detail?: string }
 
@@ -185,6 +224,8 @@ export type DwdBuildResult =
       cleaner_by_year?: Array<Record<string, unknown>>
       steps: DwdBuildStep[]
       dwd_row_estimate: number
+      /** 请求体 rebuild_enterprise_year_rel 为 true 且构建成功时，附带年度关系重算结果 */
+      enterprise_year_rel_rebuild?: EnterpriseYearRelRebuildResult
     }
   | {
       ok: false
@@ -217,6 +258,8 @@ export async function postDwdBuild(
      * 不传则该批次下全部待处理会话。
      */
     import_session_ids?: string[]
+    /** 为 true 时：DWD 构建成功后按本次 stat_years_built 重算 dim_enterprise_year_rel */
+    rebuild_enterprise_year_rel?: boolean
   },
   signal?: AbortSignal,
 ): Promise<DwdBuildResult & { httpStatus: number }> {
@@ -231,6 +274,7 @@ export async function postDwdBuild(
       ...(params.import_session_ids != null && params.import_session_ids.length > 0
         ? { import_session_ids: params.import_session_ids }
         : {}),
+      ...(params.rebuild_enterprise_year_rel === true ? { rebuild_enterprise_year_rel: true } : {}),
     }),
     signal,
   })
@@ -363,6 +407,44 @@ export async function postDimEnterpriseMappingBuild(
     signal,
   })
   const json = (await res.json().catch(() => ({}))) as DimTaskBuildResult
+  return { ...json, httpStatus: res.status }
+}
+
+/** GET /api/dim/enterprise-year-rel/meta */
+export async function fetchDimEnterpriseYearRelMeta(
+  signal?: AbortSignal,
+): Promise<EnterpriseYearRelMetaResult & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/enterprise-year-rel/meta'), { signal })
+  const json = (await res.json().catch(() => ({}))) as EnterpriseYearRelMetaResult
+  return { ...json, httpStatus: res.status }
+}
+
+/** POST /api/dim/enterprise-year-rel/rebuild：显式按年重算（可与导入编排串联） */
+export async function postDimEnterpriseYearRelRebuild(
+  params: {
+    /** 省略或 null：按 dwd_inv_header 全部 stat_year；可传数字数组或逗号分隔字符串 */
+    stat_years?: number[] | string | null
+    dry_run?: boolean
+    run_id?: string
+    relation_snapshot_id?: string
+    /** 写入运行台账 ads_etl_task_run_log.trigger_source */
+    trigger_source?: string
+  },
+  signal?: AbortSignal,
+): Promise<EnterpriseYearRelRebuildResult & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/enterprise-year-rel/rebuild'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(params.stat_years !== undefined ? { stat_years: params.stat_years } : {}),
+      ...(params.dry_run ? { dry_run: true } : {}),
+      ...(params.run_id ? { run_id: params.run_id } : {}),
+      ...(params.relation_snapshot_id ? { relation_snapshot_id: params.relation_snapshot_id } : {}),
+      ...(params.trigger_source ? { trigger_source: params.trigger_source } : {}),
+    }),
+    signal,
+  })
+  const json = (await res.json().catch(() => ({}))) as EnterpriseYearRelRebuildResult
   return { ...json, httpStatus: res.status }
 }
 
@@ -1841,17 +1923,30 @@ export async function fetchSubjectCategoryRecomputeLatest(signal?: AbortSignal):
   }
 }
 
-export async function postSubjectLibraryIngestFromDwd(signal?: AbortSignal): Promise<{
+export async function postSubjectLibraryIngestFromDwd(
+  payload?: { overwrite_manual_repairs?: boolean },
+  signal?: AbortSignal,
+): Promise<{
   ok: boolean
   message?: string
-  result?: { run_id?: string; header_rows_scanned?: number; subjects_upserted?: number; source_rows_upserted?: number }
+  result?: {
+    run_id?: string
+    header_rows_scanned?: number
+    subjects_upserted?: number
+    subjects_merged_name_key_into_tax?: number
+    source_rows_upserted?: number
+    manual_repair_preserved?: number
+    overwrite_manual_repairs?: boolean
+  }
   error?: { message?: string }
 }> {
   try {
     const res = await fetch(apiUrl('/api/subject-library/ingest-from-dwd'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: '{}',
+      body: JSON.stringify({
+        overwrite_manual_repairs: Boolean(payload?.overwrite_manual_repairs),
+      }),
       signal,
     })
     const json = (await res.json().catch(() => ({}))) as any
@@ -1969,7 +2064,12 @@ export async function postSubjectLibraryRepair(
 }
 
 export async function postSubjectCategoryRecompute(
-  payload?: { with_relations?: boolean; run_id?: string; snapshot_id?: string },
+  payload?: {
+    with_relations?: boolean
+    run_id?: string
+    snapshot_id?: string
+    overwrite_manual_repairs?: boolean
+  },
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; message?: string; with_relations?: boolean; result?: any; error?: { message?: string } }> {
   try {
@@ -1978,6 +2078,7 @@ export async function postSubjectCategoryRecompute(
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         with_relations: Boolean(payload?.with_relations),
+        overwrite_manual_repairs: Boolean(payload?.overwrite_manual_repairs),
         ...(payload?.run_id ? { run_id: payload.run_id } : {}),
         ...(payload?.snapshot_id ? { snapshot_id: payload.snapshot_id } : {}),
       }),
@@ -2030,6 +2131,46 @@ export type SubjectLibrarySummaryDto = {
   rename_signal_subject_count: number
 }
 
+/** 与 config/subject_category*.yaml 同步的机构类别（org_category）筛选项 */
+export type SubjectLibraryOrgCategoryOptionDto = {
+  category_code: string
+  category_name: string
+}
+
+export async function fetchSubjectLibraryOrgCategoryOptions(signal?: AbortSignal): Promise<{
+  ok: boolean
+  categories: SubjectLibraryOrgCategoryOptionDto[]
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/subject-library/org-category-options'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!json?.ok) {
+      return {
+        ok: false,
+        categories: [],
+        error: json?.error ?? { message: res.ok ? '读取失败' : `HTTP ${res.status}` },
+      }
+    }
+    const raw = json.categories
+    const categories = Array.isArray(raw)
+      ? (raw as any[])
+          .map((x) => ({
+            category_code: String(x?.category_code ?? '').trim(),
+            category_name: String(x?.category_name ?? x?.category_code ?? '').trim(),
+          }))
+          .filter((x) => x.category_code.length > 0)
+          .map((x) => ({
+            ...x,
+            category_name: x.category_name || x.category_code,
+          }))
+      : []
+    return { ok: true, categories }
+  } catch (e) {
+    return { ok: false, categories: [], error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
 export async function fetchSubjectLibrarySummary(params: {
   subjectType?: 'all' | 'enterprise' | 'person'
   sourceType?: 'all' | 'platform' | 'external'
@@ -2061,8 +2202,13 @@ export async function fetchSubjectLibraryRows(params: {
   sourceType?: 'all' | 'platform' | 'external'
   subjectCategory?: string
   renameSignal?: 'all' | 'yes' | 'no'
+  /** all：不过滤；yes：仅主体信息需复核（category_status_note=needs_review）；no：排除需复核 */
+  categoryReview?: 'all' | 'yes' | 'no'
   batchId?: string
+  /** 每页条数，服务端上限 200 */
   limit?: number
+  /** 跳过条数（分页） */
+  offset?: number
   signal?: AbortSignal
 }): Promise<{ ok: boolean; rows: SubjectLibraryRowDto[]; total: number; error?: { message?: string } }> {
   try {
@@ -2073,8 +2219,11 @@ export async function fetchSubjectLibraryRows(params: {
     if (params.sourceType) sp.set('source_type', params.sourceType)
     if (params.subjectCategory) sp.set('subject_category', params.subjectCategory)
     if (params.renameSignal && params.renameSignal !== 'all') sp.set('rename_signal', params.renameSignal)
+    if (params.categoryReview && params.categoryReview !== 'all') sp.set('category_review', params.categoryReview)
     if (params.batchId) sp.set('batch_id', params.batchId)
-    sp.set('limit', String(Math.max(1, Math.min(2000, Math.floor(params.limit ?? 500)))))
+    sp.set('limit', String(Math.max(1, Math.min(200, Math.floor(params.limit ?? 50)))))
+    const off = params.offset != null ? Math.max(0, Math.floor(params.offset)) : 0
+    sp.set('offset', String(off))
     const res = await fetch(apiUrl(`/api/subject-library/rows?${sp.toString()}`), { signal: params.signal })
     const json = (await res.json().catch(() => ({}))) as any
     if (!res.ok || !json?.ok) return { ok: false, rows: [], total: 0, error: json?.error ?? { message: `HTTP ${res.status}` } }
@@ -2179,6 +2328,75 @@ export type SubjectLibraryRenameEventDto = {
   evidence_invoice_count: number
 }
 
+/** 主体库弹窗：dwd_inv_header 溯源行（与后端 api_subject_library_invoice_headers 一致） */
+export type SubjectLibraryInvoiceHeaderDto = {
+  header_uuid: string
+  fpdm: string
+  fphm: string
+  sdfphm: string
+  xfmc: string
+  gfmc: string
+  kprq: string
+  stat_year: number | null
+  jshj: number | null
+}
+
+export async function fetchSubjectLibraryInvoiceHeaders(params: {
+  subjectId: string
+  limit?: number
+  offset?: number
+  signal?: AbortSignal
+}): Promise<{
+  ok: boolean
+  subject_name?: string
+  subject_no?: string
+  rows: SubjectLibraryInvoiceHeaderDto[]
+  total: number
+  warning?: string
+  error?: { message?: string }
+}> {
+  try {
+    const sp = new URLSearchParams()
+    sp.set('subject_id', params.subjectId.trim())
+    sp.set('limit', String(Math.max(1, Math.min(200, Math.floor(params.limit ?? 50)))))
+    sp.set('offset', String(params.offset != null ? Math.max(0, Math.floor(params.offset)) : 0))
+    const res = await fetch(apiUrl(`/api/subject-library/invoice-headers?${sp.toString()}`), {
+      signal: params.signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        rows: [],
+        total: 0,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    const rawRows = Array.isArray(json.rows) ? json.rows : []
+    const rows: SubjectLibraryInvoiceHeaderDto[] = rawRows.map((x: any) => ({
+      header_uuid: String(x?.header_uuid ?? ''),
+      fpdm: String(x?.fpdm ?? ''),
+      fphm: String(x?.fphm ?? ''),
+      sdfphm: String(x?.sdfphm ?? ''),
+      xfmc: String(x?.xfmc ?? ''),
+      gfmc: String(x?.gfmc ?? ''),
+      kprq: String(x?.kprq ?? ''),
+      stat_year: x?.stat_year != null && x.stat_year !== '' ? Number(x.stat_year) : null,
+      jshj: x?.jshj != null && x.jshj !== '' ? Number(x.jshj) : null,
+    }))
+    return {
+      ok: true,
+      subject_name: json.subject_name != null ? String(json.subject_name) : undefined,
+      subject_no: json.subject_no != null ? String(json.subject_no) : undefined,
+      rows,
+      total: Number(json.total ?? 0),
+      warning: json.warning != null ? String(json.warning) : undefined,
+    }
+  } catch (e) {
+    return { ok: false, rows: [], total: 0, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
 export async function fetchSubjectLibraryRenameTimeline(
   subjectId: string,
   signal?: AbortSignal,
@@ -2202,6 +2420,406 @@ export async function fetchSubjectLibraryRenameTimeline(
       timeline_lines: Array.isArray(json.timeline_lines) ? json.timeline_lines : [],
     }
   } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+/** 管理与产权层级信息（dim_audited_enterprise_registry） */
+export type AuditedEnterpriseRegistryRow = {
+  rowId: string
+  snapshotYear: string
+  code: string
+  name: string
+  domesticOverseas: string
+  detailAddress: string
+  currency: string
+  registeredCapital: string
+  registrationDate: string
+  nationalEconomyIndustryMajor: string
+  enterpriseCategory: string
+  sasacAuthority: string
+  sasacRelation: string
+  consolidatedReporting: string
+  listedCompany: string
+  mainBusiness: string
+  stateInvestor: string
+  mgmtLevel: number
+  mgmtParent: string
+  equityLevel: number
+  shareholders: string
+}
+
+export async function fetchAuditedEnterpriseRegistry(
+  params: {
+    snapshotYear: string
+    stateInvestor?: string
+    enterprise?: string
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  snapshot_years?: string[]
+  selected_year?: string
+  rows?: AuditedEnterpriseRegistryRow[]
+  error?: { message?: string; detail?: string; exception_type?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('snapshot_year', params.snapshotYear.trim())
+  if (params.stateInvestor?.trim()) sp.set('state_investor', params.stateInvestor.trim())
+  if (params.enterprise?.trim()) sp.set('enterprise', params.enterprise.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/audited-enterprise/registry?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const rows = Array.isArray(json.rows) ? (json.rows as AuditedEnterpriseRegistryRow[]) : []
+    const snapshot_years = Array.isArray(json.snapshot_years)
+      ? json.snapshot_years.map((x: unknown) => String(x))
+      : []
+    return {
+      ok: true,
+      snapshot_years,
+      selected_year: json.selected_year != null ? String(json.selected_year) : params.snapshotYear,
+      rows,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postAuditedEnterpriseRegistryRow(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; row_id?: string; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/audited-enterprise/registry'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return { ok: true, row_id: json.row_id != null ? String(json.row_id) : undefined }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postAuditedEnterpriseRegistryBootstrapDemo(signal?: AbortSignal): Promise<{
+  ok: boolean
+  inserted?: number
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/audited-enterprise/registry/bootstrap-demo'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return { ok: true, inserted: Number(json.inserted) }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+/** 出资与股权比例信息（dim_audited_enterprise_contribution） */
+export type AuditedEnterpriseContributionRow = {
+  rowId: string
+  snapshotYear: string
+  unifiedCreditCode: string
+  investeeName: string
+  stateInvestorEnterprise: string
+  stateInvestorUnifiedCreditCode: string
+  contributorName: string
+  contributorOrgCode: string
+  contributorCategory: string
+  contributionInfo: string
+  relationToTarget: string
+  currency: string
+  subscribedAmountWan: number
+  shareRatio: number
+}
+
+export async function fetchAuditedEnterpriseContribution(
+  params: { snapshotYear: string; keyword?: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  snapshot_years?: string[]
+  selected_year?: string
+  rows?: AuditedEnterpriseContributionRow[]
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('snapshot_year', params.snapshotYear.trim())
+  if (params.keyword?.trim()) sp.set('keyword', params.keyword.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/audited-enterprise/contribution?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const rows = Array.isArray(json.rows) ? (json.rows as AuditedEnterpriseContributionRow[]) : []
+    const snapshot_years = Array.isArray(json.snapshot_years)
+      ? json.snapshot_years.map((x: unknown) => String(x))
+      : []
+    return {
+      ok: true,
+      snapshot_years,
+      selected_year: json.selected_year != null ? String(json.selected_year) : params.snapshotYear,
+      rows,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postAuditedEnterpriseContributionRow(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; row_id?: string; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/audited-enterprise/contribution'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return { ok: true, row_id: json.row_id != null ? String(json.row_id) : undefined }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postAuditedEnterpriseContributionBootstrapDemo(signal?: AbortSignal): Promise<{
+  ok: boolean
+  inserted?: number
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/audited-enterprise/contribution/bootstrap-demo'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return { ok: true, inserted: Number(json.inserted) }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+/** 发票报送覆盖分析（DuckDB vw_audit_invoice_coverage_*） */
+export type InvoiceCoverageSoeOption = {
+  soe_anchor_enterprise_id: string
+  soe_anchor_enterprise_name: string
+}
+
+export type InvoiceCoverageMemberRow = {
+  enterprise_id: string
+  enterprise_name: string
+  norm_enterprise_id: string
+  level1_group_id: string
+  level1_group_name: string
+  soe_anchor_enterprise_id: string
+  soe_anchor_enterprise_name: string
+  soe_anchor_source: string
+  subject_id: string | null
+  is_reported_both: boolean
+  in_coverage_denominator: boolean
+  has_seller_role: boolean
+  has_buyer_role: boolean
+  role_tag: string
+  mgmt_level: number | null
+  mgmt_parent_enterprise_name: string
+  equity_level: number | null
+  equity_parent_enterprise_name: string
+  year_last_seen_batch_id: string
+}
+
+export async function fetchInvoiceCoverageMeta(signal?: AbortSignal): Promise<{
+  ok: boolean
+  aborted?: boolean
+  views_ready?: boolean
+  stat_years?: string[]
+  default_stat_year?: string | null
+  hint?: string
+  error?: { message?: string; exception_type?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/invoice-coverage/meta'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      views_ready: Boolean(json.views_ready),
+      stat_years: Array.isArray(json.stat_years) ? json.stat_years.map((x: unknown) => String(x)) : [],
+      default_stat_year: json.default_stat_year != null ? String(json.default_stat_year) : null,
+      hint: json.hint != null ? String(json.hint) : undefined,
+    }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchInvoiceCoverageSoeOptions(
+  statYear: string,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; aborted?: boolean; options?: InvoiceCoverageSoeOption[]; error?: { message?: string } }> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', statYear.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/invoice-coverage/soe-options?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const raw = Array.isArray(json.options) ? json.options : []
+    const options: InvoiceCoverageSoeOption[] = raw.map((x: any) => ({
+      soe_anchor_enterprise_id: String(x?.soe_anchor_enterprise_id ?? ''),
+      soe_anchor_enterprise_name: String(x?.soe_anchor_enterprise_name ?? ''),
+    }))
+    return { ok: true, options }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchInvoiceCoverageSummary(
+  params: {
+    statYear: string
+    soeAnchorId?: string
+    soeAnchorKw?: string
+    level1GroupKw?: string
+    enterpriseKw?: string
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  aborted?: boolean
+  views_ready?: boolean
+  stat_year?: string
+  member_row_count?: number
+  denominator_mapped_members?: number
+  reported_both_members?: number
+  unmapped_member_rows?: number
+  coverage_ratio?: number | null
+  error?: { message?: string; exception_type?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  if (params.soeAnchorId?.trim()) sp.set('soe_anchor_id', params.soeAnchorId.trim())
+  if (params.soeAnchorKw?.trim()) sp.set('soe_anchor_kw', params.soeAnchorKw.trim())
+  if (params.level1GroupKw?.trim()) sp.set('level1_group_kw', params.level1GroupKw.trim())
+  if (params.enterpriseKw?.trim()) sp.set('enterprise_kw', params.enterpriseKw.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/invoice-coverage/summary?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      views_ready: Boolean(json.views_ready),
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      member_row_count: Number(json.member_row_count ?? 0),
+      denominator_mapped_members: Number(json.denominator_mapped_members ?? 0),
+      reported_both_members: Number(json.reported_both_members ?? 0),
+      unmapped_member_rows: Number(json.unmapped_member_rows ?? 0),
+      coverage_ratio: json.coverage_ratio === null || json.coverage_ratio === undefined ? null : Number(json.coverage_ratio),
+    }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchInvoiceCoverageMembers(
+  params: {
+    statYear: string
+    listView: 'unreported' | 'reported' | 'all'
+    soeAnchorId?: string
+    soeAnchorKw?: string
+    level1GroupKw?: string
+    enterpriseKw?: string
+    limit?: number
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  aborted?: boolean
+  views_ready?: boolean
+  rows?: InvoiceCoverageMemberRow[]
+  total?: number
+  limit?: number
+  error?: { message?: string; exception_type?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  sp.set('list_view', params.listView)
+  if (params.soeAnchorId?.trim()) sp.set('soe_anchor_id', params.soeAnchorId.trim())
+  if (params.soeAnchorKw?.trim()) sp.set('soe_anchor_kw', params.soeAnchorKw.trim())
+  if (params.level1GroupKw?.trim()) sp.set('level1_group_kw', params.level1GroupKw.trim())
+  if (params.enterpriseKw?.trim()) sp.set('enterprise_kw', params.enterpriseKw.trim())
+  if (params.limit != null && Number.isFinite(params.limit)) sp.set('limit', String(Math.floor(params.limit)))
+  try {
+    const res = await fetch(apiUrl(`/api/invoice-coverage/members?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const raw = Array.isArray(json.rows) ? json.rows : []
+    const rows: InvoiceCoverageMemberRow[] = raw.map((x: any) => ({
+      enterprise_id: String(x?.enterprise_id ?? ''),
+      enterprise_name: String(x?.enterprise_name ?? ''),
+      norm_enterprise_id: String(x?.norm_enterprise_id ?? ''),
+      level1_group_id: String(x?.level1_group_id ?? ''),
+      level1_group_name: String(x?.level1_group_name ?? ''),
+      soe_anchor_enterprise_id: String(x?.soe_anchor_enterprise_id ?? ''),
+      soe_anchor_enterprise_name: String(x?.soe_anchor_enterprise_name ?? ''),
+      soe_anchor_source: String(x?.soe_anchor_source ?? ''),
+      subject_id: x?.subject_id != null && x.subject_id !== '' ? String(x.subject_id) : null,
+      is_reported_both: Boolean(x?.is_reported_both),
+      in_coverage_denominator: Boolean(x?.in_coverage_denominator),
+      has_seller_role: Boolean(x?.has_seller_role),
+      has_buyer_role: Boolean(x?.has_buyer_role),
+      role_tag: String(x?.role_tag ?? 'unknown'),
+      mgmt_level: x?.mgmt_level != null && x.mgmt_level !== '' ? Number(x.mgmt_level) : null,
+      mgmt_parent_enterprise_name: String(x?.mgmt_parent_enterprise_name ?? ''),
+      equity_level: x?.equity_level != null && x.equity_level !== '' ? Number(x.equity_level) : null,
+      equity_parent_enterprise_name: String(x?.equity_parent_enterprise_name ?? ''),
+      year_last_seen_batch_id: String(x?.year_last_seen_batch_id ?? ''),
+    }))
+    return {
+      ok: true,
+      views_ready: Boolean(json.views_ready),
+      rows,
+      total: Number(json.total ?? 0),
+      limit: Number(json.limit ?? 0),
+    }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
     return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
   }
 }
