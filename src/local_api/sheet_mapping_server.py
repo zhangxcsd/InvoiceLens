@@ -1314,6 +1314,32 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/audited-enterprise/invoice-link":
+            qs = parse_qs(parsed.query or "")
+            snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_invoice_link import api_audited_enterprise_invoice_link
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_audited_enterprise_invoice_link(conn, snapshot_year=snapshot_year)
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取企业→票映射失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         if path == "/api/invoice-coverage/meta":
             try:
                 from db.duckdb_conn import get_conn

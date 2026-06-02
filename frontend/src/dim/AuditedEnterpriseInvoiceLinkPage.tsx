@@ -1,60 +1,50 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { fetchAuditedEnterpriseInvoiceLink, type AuditedEnterpriseInvoiceLinkRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-
-type StateCapitalStatus = '国资' | '非国资' | '未维护'
-
-const rows = [
-  {
-    name: '山东XX能源集团有限公司',
-    code: '91370000123456789A',
-    matchKey: '统一社会信用代码',
-    linkedTaxpayerId: '91370000123456789A',
-    matchStatus: '已匹配',
-    stateCapitalStatus: '国资' as StateCapitalStatus,
-  },
-  {
-    name: '青岛XX工程建设有限公司',
-    code: '91370200111222333B',
-    matchKey: '统一社会信用代码',
-    linkedTaxpayerId: '91370200111222333B',
-    matchStatus: '已匹配',
-    stateCapitalStatus: '国资' as StateCapitalStatus,
-  },
-  {
-    name: '济南XX贸易有限公司',
-    code: '91370100999888777C',
-    matchKey: '企业名称兜底',
-    linkedTaxpayerId: '91370100999888777X',
-    matchStatus: '名称兜底匹配',
-    pendingReason: '税号疑似变更',
-    stateCapitalStatus: '非国资' as StateCapitalStatus,
-  },
-  {
-    name: '烟台XX物流有限公司',
-    code: '91370600101010101D',
-    matchKey: '未命中',
-    linkedTaxpayerId: '-',
-    matchStatus: '待匹配',
-    pendingReason: '企业名称不一致',
-    stateCapitalStatus: '未维护' as StateCapitalStatus,
-  },
-  {
-    name: '潍坊XX设备制造有限公司',
-    code: '91370700777766666E',
-    matchKey: '未命中',
-    linkedTaxpayerId: '-',
-    matchStatus: '待匹配',
-    pendingReason: '缺少统一社会信用代码',
-    stateCapitalStatus: '未维护' as StateCapitalStatus,
-  },
-]
 
 export function AuditedEnterpriseInvoiceLinkPage() {
   const ui = t.auditedEnterpriseInvoiceLinkUi
+  const [snapshotYear, setSnapshotYear] = useState('2026')
+  const [snapshotYears, setSnapshotYears] = useState<string[]>(['2026'])
+  const [rows, setRows] = useState<AuditedEnterpriseInvoiceLinkRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [reasonFilter, setReasonFilter] = useState('全部')
   const [statusFilter, setStatusFilter] = useState('全部')
   const [capitalFilter, setCapitalFilter] = useState('全部')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
+    const res = await fetchAuditedEnterpriseInvoiceLink({ snapshotYear })
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? '加载失败')
+      setRows([])
+      setLoading(false)
+      return
+    }
+    const years = res.snapshot_years?.length ? res.snapshot_years : ['2026']
+    setSnapshotYears(years)
+    if (!years.includes(snapshotYear)) {
+      setSnapshotYear(res.selected_year ?? years[0])
+    }
+    setRows(res.rows ?? [])
+    setLoading(false)
+  }, [snapshotYear])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const reasonOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of rows) {
+      const reason = row.pendingReason?.trim()
+      if (reason) set.add(reason)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  }, [rows])
 
   const filteredRows = useMemo(
     () =>
@@ -64,7 +54,7 @@ export function AuditedEnterpriseInvoiceLinkPage() {
         if (reasonFilter !== '全部' && row.pendingReason !== reasonFilter) return false
         return true
       }),
-    [reasonFilter, statusFilter, capitalFilter],
+    [capitalFilter, reasonFilter, rows, statusFilter],
   )
 
   const getStatusClass = (status: string) => {
@@ -72,7 +62,9 @@ export function AuditedEnterpriseInvoiceLinkPage() {
     if (status === '名称兜底匹配') return 'border-[#c8dff7] bg-[#f0f7ff] text-accent'
     return 'border-[#ffe0b2] bg-[#fff8ef] text-[#a16207]'
   }
+
   const hasBaseData = rows.length > 0
+  const emptyMessage = loading ? '…' : loadError || (hasBaseData ? ui.emptyByFilter : ui.emptyByData)
 
   return (
     <div className="w-full px-5 py-6">
@@ -83,6 +75,7 @@ export function AuditedEnterpriseInvoiceLinkPage() {
         </div>
         <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
         <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
+        {loadError ? <p className="mt-2 text-il-meta text-red-600">{loadError}</p> : null}
       </div>
 
       <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-4">
@@ -100,7 +93,21 @@ export function AuditedEnterpriseInvoiceLinkPage() {
       </div>
 
       <Card title={ui.tableTitle}>
-        <div className="mb-3 grid gap-3 md:grid-cols-4">
+        <div className="mb-3 grid gap-3 md:grid-cols-5">
+          <label className="text-il-label text-text-2">
+            快照年度
+            <select
+              className="mt-1 w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={snapshotYear}
+              onChange={(e) => setSnapshotYear(e.target.value)}
+            >
+              {snapshotYears.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-il-label text-text-2">
             {ui.statusFilterLabel}
             <select
@@ -122,9 +129,11 @@ export function AuditedEnterpriseInvoiceLinkPage() {
               onChange={(e) => setReasonFilter(e.target.value)}
             >
               <option value="全部">全部</option>
-              <option value="税号疑似变更">税号疑似变更</option>
-              <option value="企业名称不一致">企业名称不一致</option>
-              <option value="缺少统一社会信用代码">缺少统一社会信用代码</option>
+              {reasonOptions.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason}
+                </option>
+              ))}
             </select>
           </label>
           <label className="text-il-label text-text-2">
@@ -160,11 +169,11 @@ export function AuditedEnterpriseInvoiceLinkPage() {
                 filteredRows.map((row) => (
                   <tr key={`${row.name}_${row.code}`} className="border-b border-border-light last:border-b-0">
                     <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
+                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code || '—'}</td>
                     <td className="px-3 py-2.5">{row.stateCapitalStatus}</td>
                     <td className="px-3 py-2.5">{row.matchKey}</td>
                     <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.linkedTaxpayerId}</td>
-                    <td className="px-3 py-2.5">{row.pendingReason ?? '-'}</td>
+                    <td className="px-3 py-2.5">{row.pendingReason?.trim() ? row.pendingReason : '—'}</td>
                     <td className="px-3 py-2.5">
                       <span className={['inline-flex rounded-full border px-2 py-0.5 text-il-meta font-medium', getStatusClass(row.matchStatus)].join(' ')}>
                         {row.matchStatus}
@@ -175,7 +184,7 @@ export function AuditedEnterpriseInvoiceLinkPage() {
               ) : (
                 <tr>
                   <td className="px-3 py-6 text-center text-text-3" colSpan={7}>
-                    {hasBaseData ? ui.emptyByFilter : ui.emptyByData}
+                    {emptyMessage}
                   </td>
                 </tr>
               )}
@@ -186,4 +195,3 @@ export function AuditedEnterpriseInvoiceLinkPage() {
     </div>
   )
 }
-

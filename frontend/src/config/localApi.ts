@@ -2626,6 +2626,50 @@ export async function postAuditedEnterpriseContributionBootstrapDemo(signal?: Ab
   }
 }
 
+/** 被审企业 → 发票主体映射（台账 × 主体库 × dwd_inv_header） */
+export type AuditedEnterpriseInvoiceLinkRow = {
+  name: string
+  code: string
+  stateCapitalStatus: string
+  matchKey: string
+  linkedTaxpayerId: string
+  matchStatus: string
+  pendingReason?: string
+}
+
+export async function fetchAuditedEnterpriseInvoiceLink(
+  params: { snapshotYear: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  snapshot_years?: string[]
+  selected_year?: string
+  rows?: AuditedEnterpriseInvoiceLinkRow[]
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('snapshot_year', params.snapshotYear.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/audited-enterprise/invoice-link?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const rows = Array.isArray(json.rows) ? (json.rows as AuditedEnterpriseInvoiceLinkRow[]) : []
+    const snapshot_years = Array.isArray(json.snapshot_years)
+      ? json.snapshot_years.map((x: unknown) => String(x))
+      : []
+    return {
+      ok: true,
+      snapshot_years,
+      selected_year: json.selected_year != null ? String(json.selected_year) : params.snapshotYear,
+      rows,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
 /** 发票报送覆盖分析（DuckDB vw_audit_invoice_coverage_*） */
 export type InvoiceCoverageSoeOption = {
   soe_anchor_enterprise_id: string
