@@ -4,32 +4,14 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import { useAuditedEnterpriseFilters } from '../hooks/useAuditedEnterpriseFilters'
+import { useAuditedEnterpriseRegistryRows } from '../hooks/useAuditedEnterpriseRegistryRows'
+import {
+  registryRowToEquityNode,
+  registryRowToManageNode,
+  type AuditedEnterpriseTreeNode,
+} from './auditedEnterpriseRegistryHelpers'
 
 type TreeMode = 'management' | 'equity'
-
-type TreeNode = {
-  id: string
-  name: string
-  level: number
-  parentName: string
-  snapshotYear: string
-  stateInvestorEnterprise: string
-  note: string
-}
-
-const manageNodes: TreeNode[] = [
-  { id: 'm1', name: '山东XX能源集团有限公司', level: 1, parentName: '省属企业', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '管理总部节点' },
-  { id: 'm2', name: '青岛XX工程建设有限公司', level: 2, parentName: '山东XX能源集团有限公司', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '工程建设条线' },
-  { id: 'm3', name: '济南XX贸易有限公司', level: 3, parentName: '青岛XX工程建设有限公司', snapshotYear: '2025', stateInvestorEnterprise: '山东省国资委', note: '贸易执行主体' },
-  { id: 'm4', name: '烟台XX物流有限公司', level: 2, parentName: '山东XX能源集团有限公司', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '物流供应链主体' },
-]
-
-const equityNodes: TreeNode[] = [
-  { id: 'e1', name: '山东省国资委', level: 1, parentName: '-', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '最终国资出资方' },
-  { id: 'e2', name: '山东XX能源集团有限公司(100%)', level: 2, parentName: '山东省国资委', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '一级国家出资企业' },
-  { id: 'e3', name: '山东XX建设投资控股有限公司(60%)', level: 3, parentName: '山东XX能源集团有限公司', snapshotYear: '2025', stateInvestorEnterprise: '山东省国资委', note: '多股东场景（控股）' },
-  { id: 'e4', name: '烟台XX物流有限公司(70%)', level: 3, parentName: '山东XX能源集团有限公司', snapshotYear: '2026', stateInvestorEnterprise: '山东省国资委', note: '多股东场景（参股）' },
-]
 
 function exportStamp() {
   const d = new Date()
@@ -40,8 +22,14 @@ function exportStamp() {
 export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
   const isManage = props.mode === 'management'
   const ui = isManage ? t.auditedEnterpriseManageTreeUi : t.auditedEnterpriseEquityTreeUi
-  const nodes = isManage ? manageNodes : equityNodes
-  const [activeNodeId, setActiveNodeId] = useState(nodes[0]?.id ?? '')
+  const { rows: registryRows, loading, loadError } = useAuditedEnterpriseRegistryRows(ui.loadFailed)
+
+  const nodes = useMemo<AuditedEnterpriseTreeNode[]>(() => {
+    const mapFn = isManage ? registryRowToManageNode : registryRowToEquityNode
+    return registryRows.map(mapFn)
+  }, [isManage, registryRows])
+
+  const [activeNodeId, setActiveNodeId] = useState('')
   const [exportError, setExportError] = useState('')
   const [exported, setExported] = useState(false)
   const {
@@ -91,6 +79,8 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
     }
   }, [filteredNodes, ui])
 
+  const emptyMessage = loading ? '…' : loadError || (nodes.length === 0 ? ui.loadEmptyHint : ui.filterEmpty)
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
@@ -122,6 +112,8 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
         }
       />
 
+      {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
+
       <Card title={ui.treeCardTitle}>
         <AuditedEnterpriseFilters
           yearLabel={ui.filterYearLabel}
@@ -151,7 +143,7 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
           <div className="rounded-sm border border-border-light bg-white px-3 py-3">
             {filteredNodes.length === 0 ? (
               <div className="rounded-sm border border-dashed border-border-light bg-[#fafbfd] px-3 py-4 text-center text-il-page-desc text-text-3">
-                {ui.filterEmpty}
+                {emptyMessage}
               </div>
             ) : (
               filteredNodes.map((node) => (
@@ -205,4 +197,3 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
     </div>
   )
 }
-

@@ -35,6 +35,7 @@ import { HealthScorePage } from './quality/HealthScorePage'
 import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
 import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
 import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
+import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
 import { AuditedEnterpriseRelationViewPage } from './dim/AuditedEnterpriseRelationViewPage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
@@ -290,6 +291,7 @@ function Sidebar(props: {
       props.nav !== 'dim_enterprise_library' &&
       props.nav !== 'dim_audit_related_library' &&
       props.nav !== 'dim_audited_registry' &&
+      props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_org_manage' &&
       props.nav !== 'dim_org_equity' &&
       props.nav !== 'dim_org_diff'
@@ -299,6 +301,7 @@ function Sidebar(props: {
     setOpenChildren((c) => ({ ...c, org: true }))
     if (
       props.nav === 'dim_audited_registry' ||
+      props.nav === 'dim_audited_contribution' ||
       props.nav === 'dim_org_manage' ||
       props.nav === 'dim_org_equity' ||
       props.nav === 'dim_org_diff'
@@ -692,6 +695,10 @@ function Sidebar(props: {
             <div className={openChildren.audited ? 'block' : 'hidden'}>
               {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
                 active: props.nav === 'dim_audited_registry',
+                tier: 'great',
+              })}
+              {navGrand('dim_audited_contribution', t.sidebar.dimAuditedContribution, {
+                active: props.nav === 'dim_audited_contribution',
                 tier: 'great',
               })}
               {navGrand('dim_org_manage', t.sidebar.dimOrgTree, {
@@ -2650,6 +2657,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dimAuditedLedger}</b>
         </>
       )
+    if (props.nav === 'dim_audited_contribution')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimAuditedContribution}</b>
+        </>
+      )
     if (props.nav === 'dim_org_manage')
       return (
         <>
@@ -2780,6 +2794,8 @@ function AppShell(props: {
             <AuditRelatedEnterprisePage />
           ) : props.nav === 'dim_audited_registry' ? (
             <AuditedEnterpriseLedgerPage />
+          ) : props.nav === 'dim_audited_contribution' ? (
+            <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_org_manage' ? (
             <AuditedEnterpriseTreePage mode="management" />
           ) : props.nav === 'dim_org_equity' ? (

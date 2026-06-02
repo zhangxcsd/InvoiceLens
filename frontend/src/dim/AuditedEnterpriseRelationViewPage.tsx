@@ -4,6 +4,8 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import { useAuditedEnterpriseFilters } from '../hooks/useAuditedEnterpriseFilters'
+import { useAuditedEnterpriseRegistryRows } from '../hooks/useAuditedEnterpriseRegistryRows'
+import { registryRowsToRelationRows, type AuditedEnterpriseRelationRow } from './auditedEnterpriseRegistryHelpers'
 
 function relationTypeClass(value: string) {
   if (value === '一致') return 'rounded-sm border border-[#c8e6d0] bg-[#f4fbf6] px-2 py-0.5 text-il-meta font-medium text-[#1b6b3a]'
@@ -11,41 +13,6 @@ function relationTypeClass(value: string) {
   return 'text-text-2'
 }
 
-type RelationRow = {
-  name: string
-  snapshotYear: string
-  stateInvestorEnterprise: string
-  mgmtPath: string
-  equityPath: string
-  relationType: string
-}
-
-const rows: RelationRow[] = [
-  {
-    name: '山东XX能源集团有限公司',
-    snapshotYear: '2026',
-    stateInvestorEnterprise: '山东省国资委',
-    mgmtPath: '省属企业 → 山东XX能源集团有限公司',
-    equityPath: '山东省国资委 → 山东XX能源集团有限公司',
-    relationType: '一致',
-  },
-  {
-    name: '青岛XX工程建设有限公司',
-    snapshotYear: '2026',
-    stateInvestorEnterprise: '山东省国资委',
-    mgmtPath: '山东XX能源集团有限公司 → 青岛XX工程建设有限公司',
-    equityPath: '山东XX建设投资控股有限公司 → 青岛XX工程建设有限公司',
-    relationType: '不一致',
-  },
-  {
-    name: '济南XX贸易有限公司',
-    snapshotYear: '2025',
-    stateInvestorEnterprise: '山东省国资委',
-    mgmtPath: '青岛XX工程建设有限公司 → 济南XX贸易有限公司',
-    equityPath: '社会资本A/B → 济南XX贸易有限公司',
-    relationType: '不一致',
-  },
-]
 type SortKey = 'name' | 'snapshotYear' | 'mgmtPath' | 'equityPath' | 'relationType'
 
 function relationTypeRank(value: string) {
@@ -54,7 +21,7 @@ function relationTypeRank(value: string) {
   return 2
 }
 
-function compareRows(a: RelationRow, b: RelationRow, key: SortKey, dir: 'asc' | 'desc'): number {
+function compareRows(a: AuditedEnterpriseRelationRow, b: AuditedEnterpriseRelationRow, key: SortKey, dir: 'asc' | 'desc'): number {
   const inv = dir === 'desc' ? -1 : 1
   let c = 0
   switch (key) {
@@ -95,6 +62,10 @@ const tdStickyLeft = 'sticky left-0 z-10 border-b border-border-light border-r b
 
 export function AuditedEnterpriseRelationViewPage() {
   const ui = t.auditedEnterpriseRelationUi
+  const { rows: registryRows, loading, loadError } = useAuditedEnterpriseRegistryRows(ui.loadFailed)
+
+  const relationRows = useMemo(() => registryRowsToRelationRows(registryRows), [registryRows])
+
   const {
     selectedYear,
     setSelectedYear,
@@ -107,7 +78,7 @@ export function AuditedEnterpriseRelationViewPage() {
     filteredRows,
     canReset,
     resetFilters,
-  } = useAuditedEnterpriseFilters(rows, {
+  } = useAuditedEnterpriseFilters(relationRows, {
     yearAll: ui.filterYearAll,
     stateInvestorAll: ui.filterStateInvestorAll,
   })
@@ -138,13 +109,7 @@ export function AuditedEnterpriseRelationViewPage() {
     try {
       setExportError('')
       const XLSX = await import('xlsx')
-      const header = [
-        ui.colName,
-        ui.colSnapshotYear,
-        ui.colMgmtPath,
-        ui.colEquityPath,
-        ui.colRelationType,
-      ]
+      const header = [ui.colName, ui.colSnapshotYear, ui.colMgmtPath, ui.colEquityPath, ui.colRelationType]
       const body = displayRows.map((r) => [r.name, r.snapshotYear, r.mgmtPath, r.equityPath, r.relationType])
       const ws = XLSX.utils.aoa_to_sheet([header, ...body])
       const wb = XLSX.utils.book_new()
@@ -157,6 +122,8 @@ export function AuditedEnterpriseRelationViewPage() {
       setExportError(ui.exportFailed)
     }
   }, [displayRows, ui])
+
+  const emptyMessage = loading ? '…' : loadError || (relationRows.length === 0 ? ui.loadEmptyHint : ui.filterEmpty)
 
   return (
     <div className="w-full px-5 py-6">
@@ -188,6 +155,8 @@ export function AuditedEnterpriseRelationViewPage() {
           </div>
         }
       />
+
+      {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
 
       <Card title={ui.tableTitle}>
         <AuditedEnterpriseFilters
@@ -300,7 +269,7 @@ export function AuditedEnterpriseRelationViewPage() {
               {filteredRows.length === 0 ? (
                 <tr>
                   <td className="border-b border-border-light px-3 py-6 text-center text-text-3" colSpan={5}>
-                    {ui.filterEmpty}
+                    {emptyMessage}
                   </td>
                 </tr>
               ) : null}
