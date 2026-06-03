@@ -284,7 +284,12 @@ export async function postDwdBuild(
 
 /** POST /api/dwd/force-rebuild：运维强制重洗（删 DWD 行 + 重置水位 + 重跑） */
 export async function postDwdForceRebuild(
-  params: { import_batch_id: string; import_session_id: string; stat_year?: number },
+  params: {
+    import_batch_id: string
+    import_session_id: string
+    stat_year?: number
+    rebuild_enterprise_year_rel?: boolean
+  },
   signal?: AbortSignal,
 ): Promise<DwdBuildResult & { httpStatus: number; force_rebuild?: boolean; import_session_id?: string }> {
   const res = await fetch(apiUrl('/api/dwd/force-rebuild'), {
@@ -294,6 +299,7 @@ export async function postDwdForceRebuild(
       import_batch_id: params.import_batch_id,
       import_session_id: params.import_session_id,
       ...(params.stat_year != null ? { stat_year: params.stat_year } : {}),
+      ...(params.rebuild_enterprise_year_rel === true ? { rebuild_enterprise_year_rel: true } : {}),
     }),
     signal,
   })
@@ -306,6 +312,8 @@ export async function postDwdForceRebuild(
 
 export type DimEnterpriseProfileBuildResult = {
   ok: boolean
+  async?: boolean
+  message?: string
   stage?: string
   run_id?: string
   calc_batch_id?: string
@@ -320,11 +328,83 @@ export type DimEnterpriseProfileBuildResult = {
 
 export type DimTaskBuildResult = {
   ok: boolean
+  async?: boolean
+  message?: string
+  task_code?: string
   stage?: string
   run_id?: string
   import_batch_id?: string | null
   rows_affected?: number
   error?: { message?: string; detail?: string; exception_type?: string }
+}
+
+export type DimUnifiedTaskRow = {
+  task_code: string
+  task_name: string
+  domain: string
+  subject_category: string
+  output_table: string
+  trigger_modes: string[]
+  depends_on: string[]
+  owner: string
+  status: string
+  queue_depth: number
+  last_started_at: string
+  last_finished_at: string
+  last_duration_ms: number
+  last_run_status: string
+  last_error_message: string
+  running_run_id: string
+  progress_step: string
+  progress_message: string
+  elapsed_ms: number
+}
+
+export type DimActiveRunRow = {
+  run_id: string
+  task_code: string
+  task_name: string
+  status: string
+  started_at: string
+  progress_step: string
+  progress_message: string
+  elapsed_ms: number
+}
+
+export type DimTasksResponse = {
+  ok: boolean
+  tasks: DimUnifiedTaskRow[]
+  active_runs: DimActiveRunRow[]
+  failed_recent: Array<{
+    task_code: string
+    task_name: string
+    error_message: string
+    last_fail_at: string
+    run_id: string
+  }>
+  stats: {
+    running_count?: number
+    queued_count?: number
+    queue_depth_total?: number
+  }
+  error?: { message?: string }
+}
+
+export type DimTaskRunStatusResponse = {
+  ok: boolean
+  run_id?: string
+  task_code?: string
+  task_name?: string
+  status?: string
+  rows_affected?: number
+  error_message?: string
+  started_at?: string
+  finished_at?: string
+  duration_ms?: number
+  progress_step?: string
+  progress_message?: string
+  elapsed_ms?: number
+  error?: { message?: string }
 }
 
 export type DimTaskRunLogRow = {
@@ -359,6 +439,7 @@ export async function postDimEnterpriseProfileBuild(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      async: true,
       ...(params.stat_month ? { stat_month: params.stat_month } : {}),
       ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
       ...(params.calc_batch_id ? { calc_batch_id: params.calc_batch_id } : {}),
@@ -381,6 +462,7 @@ export async function postDimEnterpriseMasterBuild(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      async: true,
       ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
       ...(params.subject_category_scope ? { subject_category_scope: params.subject_category_scope } : {}),
       ...(params.run_id ? { run_id: params.run_id } : {}),
@@ -400,6 +482,7 @@ export async function postDimEnterpriseMappingBuild(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      async: true,
       ...(params.import_batch_id ? { import_batch_id: params.import_batch_id } : {}),
       ...(params.subject_category_scope ? { subject_category_scope: params.subject_category_scope } : {}),
       ...(params.run_id ? { run_id: params.run_id } : {}),
@@ -464,6 +547,73 @@ export async function fetchDimTaskRuns(
   return { ok: true, runs: Array.isArray(json.runs) ? (json.runs as DimTaskRunLogRow[]) : [] }
 }
 
+/** GET /api/dim/tasks：统一任务清单 + 活动运行 + 失败摘要 */
+export async function fetchDimTasks(signal?: AbortSignal): Promise<DimTasksResponse & { httpStatus: number }> {
+  const res = await fetch(apiUrl('/api/dim/tasks'), { signal })
+  const json = (await res.json().catch(() => ({}))) as DimTasksResponse
+  return { ...json, httpStatus: res.status }
+}
+
+/** GET /api/dim/task-run-status?run_id= */
+export async function fetchDimTaskRunStatus(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<DimTaskRunStatusResponse & { httpStatus: number }> {
+  const qs = new URLSearchParams({ run_id: runId })
+  const res = await fetch(apiUrl(`/api/dim/task-run-status?${qs.toString()}`), { signal })
+  const json = (await res.json().catch(() => ({}))) as DimTaskRunStatusResponse
+  return { ...json, httpStatus: res.status }
+}
+
+/** POST /api/subject-library/pipeline：主体库一键全流程（后台） */
+export async function postSubjectLibraryPipeline(
+  params: { overwrite_manual_repairs?: boolean; with_relations?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; async?: boolean; run_id?: string; message?: string; error?: { message?: string } }> {
+  const res = await fetch(apiUrl('/api/subject-library/pipeline'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      overwrite_manual_repairs: params.overwrite_manual_repairs === true,
+      with_relations: params.with_relations !== false,
+    }),
+    signal,
+  })
+  return (await res.json().catch(() => ({}))) as {
+    ok: boolean
+    async?: boolean
+    run_id?: string
+    message?: string
+    error?: { message?: string }
+  }
+}
+
+/** GET /api/subject-library/pipeline-status?run_id= */
+export async function fetchSubjectLibraryPipelineStatus(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  run_id?: string
+  status?: string
+  step?: string
+  message?: string
+  result?: Record<string, unknown>
+  error?: { message?: string }
+}> {
+  const qs = new URLSearchParams({ run_id: runId })
+  const res = await fetch(apiUrl(`/api/subject-library/pipeline-status?${qs.toString()}`), { signal })
+  return (await res.json().catch(() => ({}))) as {
+    ok: boolean
+    run_id?: string
+    status?: string
+    step?: string
+    message?: string
+    result?: Record<string, unknown>
+    error?: { message?: string }
+  }
+}
+
 export async function saveFieldMapping(
   cfg: FieldMappingConfig,
   signal?: AbortSignal,
@@ -522,11 +672,28 @@ export async function createImportSessionUpload(params: {
   /** 用户设置的「单文件上限」MB，服务端会再与 INVOICELENS_MAX_UPLOAD_MB 取较小值 */
   maxUploadMb: number
   files: { file: File; pathLabel?: string }[]
+  /** ODS 落盘成功后自动对该会话做增量 DWD（事件流 post_dwd_*） */
+  autoDwdAfterImport?: boolean
+  /** 需与 autoDwdAfterImport 同时为 true 才生效 */
+  rebuildEnterpriseYearRelAfterDwd?: boolean
   signal?: AbortSignal
   /** 每成功上传一个文件后回调（done 从 1 递增；亦可用于 UI 显示 0/total 由调用方在调用前自行展示） */
   onUploadProgress?: (done: number, total: number) => void
 }): Promise<string> {
-  const { batchDate, failPolicy, forceReimport, targetSheetKeys, maxUploadMb, files, signal, onUploadProgress } = params
+  const {
+    batchDate,
+    failPolicy,
+    forceReimport,
+    targetSheetKeys,
+    maxUploadMb,
+    files,
+    signal,
+    onUploadProgress,
+    autoDwdAfterImport,
+    rebuildEnterpriseYearRelAfterDwd,
+  } = params
+  const autoDwd = autoDwdAfterImport === true
+  const rebuildRel = rebuildEnterpriseYearRelAfterDwd === true && autoDwd
   if (files.length === 0) throw new Error('no files')
 
   let importSessionId = ''
@@ -543,6 +710,8 @@ export async function createImportSessionUpload(params: {
     fd.append('target_sheet_keys', tsk)
     fd.append('path_label', row.pathLabel ?? '')
     fd.append('client_max_upload_mb', clientCap)
+    fd.append('auto_dwd_after_import', autoDwd ? '1' : '0')
+    fd.append('rebuild_enterprise_year_rel', rebuildRel ? '1' : '0')
     if (importSessionId) fd.append('import_session_id', importSessionId)
     fd.append('files', row.file, row.file.name)
 
@@ -565,7 +734,10 @@ export async function createImportSessionUpload(params: {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({
+        auto_dwd_after_import: autoDwd,
+        rebuild_enterprise_year_rel: rebuildRel,
+      }),
       signal,
     },
   )
@@ -2069,14 +2241,24 @@ export async function postSubjectCategoryRecompute(
     run_id?: string
     snapshot_id?: string
     overwrite_manual_repairs?: boolean
+    async?: boolean
   },
   signal?: AbortSignal,
-): Promise<{ ok: boolean; message?: string; with_relations?: boolean; result?: any; error?: { message?: string } }> {
+): Promise<{
+  ok: boolean
+  async?: boolean
+  run_id?: string
+  message?: string
+  with_relations?: boolean
+  result?: any
+  error?: { message?: string }
+}> {
   try {
     const res = await fetch(apiUrl('/api/subject-category/recompute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
+        async: payload?.async !== false,
         with_relations: Boolean(payload?.with_relations),
         overwrite_manual_repairs: Boolean(payload?.overwrite_manual_repairs),
         ...(payload?.run_id ? { run_id: payload.run_id } : {}),
@@ -2090,9 +2272,50 @@ export async function postSubjectCategoryRecompute(
     }
     return {
       ok: true,
+      async: Boolean(json.async),
+      run_id: json.run_id != null ? String(json.run_id) : undefined,
       message: json.message != null ? String(json.message) : undefined,
       with_relations: Boolean(json.with_relations),
       result: json.result,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postGroupEnterpriseYearRebuild(
+  payload?: { stat_years?: number[]; replace_years?: boolean; async?: boolean; run_id?: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  async?: boolean
+  run_id?: string
+  message?: string
+  total_written?: number
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/group-enterprise-year/rebuild'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        async: payload?.async !== false,
+        replace_years: payload?.replace_years !== false,
+        ...(payload?.stat_years?.length ? { stat_years: payload.stat_years } : {}),
+        ...(payload?.run_id ? { run_id: payload.run_id } : {}),
+      }),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      async: Boolean(json.async),
+      run_id: json.run_id != null ? String(json.run_id) : undefined,
+      message: json.message != null ? String(json.message) : undefined,
+      total_written: json.total_written != null ? Number(json.total_written) : undefined,
     }
   } catch (e) {
     return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
@@ -2418,6 +2641,332 @@ export async function fetchSubjectLibraryRenameTimeline(
       ok: true,
       events: Array.isArray(json.events) ? json.events : [],
       timeline_lines: Array.isArray(json.timeline_lines) ? json.timeline_lines : [],
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+/** 年度一级企业名单 dim_level1_enterprise_year */
+export type Level1EnterpriseYearRow = {
+  stat_year: string
+  level1_enterprise_id: string
+  level1_enterprise_name: string
+  display_order: number
+  is_active: boolean
+  remark?: string
+  data_source?: string
+  updated_at?: string
+  /** dim_group_enterprise_year 中 level1_group_id 匹配的成员总数 */
+  group_member_count?: number
+  /** 有效成员数（is_member=true） */
+  group_active_member_count?: number
+  /** 被审企业台账 dim_audited_enterprise_registry.state_investor */
+  state_investor?: string
+  /** 集团成员表推导的国家出资企业锚点（产权根>管理根>一级集团） */
+  soe_anchor_name?: string
+}
+
+export type Level1EnterpriseYearPreviewRow = {
+  level1_enterprise_id: string
+  level1_enterprise_name: string
+  display_order: number
+  is_active: boolean
+  remark?: string
+  derive_hint?: string
+  already_in_target?: boolean
+  from_group_extra?: boolean
+}
+
+export type Level1EnterpriseYearMemberRow = {
+  enterprise_id: string
+  enterprise_name: string
+  is_member: boolean
+  mgmt_level?: number | null
+  mgmt_parent_enterprise_name?: string
+  equity_level?: number | null
+  equity_parent_enterprise_name?: string
+  state_investor?: string
+  soe_anchor_name?: string
+}
+
+export async function fetchLevel1EnterpriseYearMembers(
+  params: { statYear: string; level1EnterpriseId: string; keyword?: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_year?: string
+  level1_enterprise_id?: string
+  level1_enterprise_name?: string
+  in_level1_list?: boolean
+  members?: Level1EnterpriseYearMemberRow[]
+  total?: number
+  active_member_count?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  sp.set('level1_enterprise_id', params.level1EnterpriseId.trim())
+  if (params.keyword?.trim()) sp.set('keyword', params.keyword.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/dim/level1-enterprise-year/members?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      level1_enterprise_id: json.level1_enterprise_id != null ? String(json.level1_enterprise_id) : params.level1EnterpriseId,
+      level1_enterprise_name: json.level1_enterprise_name != null ? String(json.level1_enterprise_name) : undefined,
+      in_level1_list: Boolean(json.in_level1_list),
+      members: Array.isArray(json.members) ? (json.members as Level1EnterpriseYearMemberRow[]) : [],
+      total: Number(json.total ?? 0),
+      active_member_count: Number(json.active_member_count ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+function level1ApiFriendlyError(msg: string | undefined, status?: number): string | undefined {
+  if (msg === 'Not Found' || status === 404) {
+    return '本地 API 未识别「年度一级企业名单」接口（Not Found）。请重启本地 API（dev.bat api 或 dev.bat all）后再打开本页；与是否已导入数据无关。'
+  }
+  return msg
+}
+
+export async function fetchLevel1EnterpriseYearMeta(signal?: AbortSignal): Promise<{
+  ok: boolean
+  stat_years?: string[]
+  row_counts_by_year?: Record<string, number>
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/meta'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      const raw = json?.error?.message != null ? String(json.error.message) : `HTTP ${res.status}`
+      return { ok: false, error: { message: level1ApiFriendlyError(raw, res.status) ?? raw } }
+    }
+    return {
+      ok: true,
+      stat_years: Array.isArray(json.stat_years) ? json.stat_years.map(String) : [],
+      row_counts_by_year: json.row_counts_by_year ?? {},
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchLevel1EnterpriseYearList(
+  params: { statYear: string; keyword?: string; activeOnly?: boolean },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_years?: string[]
+  selected_stat_year?: string
+  rows?: Level1EnterpriseYearRow[]
+  total?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  if (params.keyword?.trim()) sp.set('keyword', params.keyword.trim())
+  if (params.activeOnly) sp.set('active_only', '1')
+  try {
+    const res = await fetch(apiUrl(`/api/dim/level1-enterprise-year/list?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      const raw = json?.error?.message != null ? String(json.error.message) : `HTTP ${res.status}`
+      return { ok: false, error: { message: level1ApiFriendlyError(raw, res.status) ?? raw } }
+    }
+    return {
+      ok: true,
+      stat_years: Array.isArray(json.stat_years) ? json.stat_years.map(String) : [],
+      selected_stat_year: json.selected_stat_year != null ? String(json.selected_stat_year) : params.statYear,
+      rows: Array.isArray(json.rows) ? (json.rows as Level1EnterpriseYearRow[]) : [],
+      total: Number(json.total ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchLevel1EnterpriseYearCandidates(
+  params: { statYear: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  candidates?: { level1_enterprise_id: string; level1_enterprise_name: string }[]
+  total?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/dim/level1-enterprise-year/candidates?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      candidates: Array.isArray(json.candidates) ? json.candidates : [],
+      total: Number(json.total ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postLevel1EnterpriseYearUpsert(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/upsert'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postLevel1EnterpriseYearDelete(
+  body: { stat_year: string; level1_enterprise_id: string },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/delete'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postLevel1EnterpriseYearImportBatch(
+  body: {
+    stat_year: string
+    rows: { level1_enterprise_id: string; level1_enterprise_name: string; display_order?: number; remark?: string; is_active?: boolean }[]
+    replace_year?: boolean
+    data_source?: string
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  inserted?: number
+  updated?: number
+  rejected_count?: number
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/import-batch'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      inserted: Number(json.inserted ?? 0),
+      updated: Number(json.updated ?? 0),
+      rejected_count: Number(json.rejected_count ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postLevel1EnterpriseYearPreviewFromPrevious(
+  body: {
+    target_stat_year: string
+    source_stat_year?: string
+    mode: 'copy' | 'derive'
+    only_active?: boolean
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  target_stat_year?: string
+  source_stat_year?: string
+  mode?: string
+  rows?: Level1EnterpriseYearPreviewRow[]
+  empty_source?: boolean
+  preview_row_count?: number
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/preview-from-previous'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      target_stat_year: json.target_stat_year != null ? String(json.target_stat_year) : body.target_stat_year,
+      source_stat_year: json.source_stat_year != null ? String(json.source_stat_year) : undefined,
+      mode: json.mode != null ? String(json.mode) : body.mode,
+      rows: Array.isArray(json.rows) ? (json.rows as Level1EnterpriseYearPreviewRow[]) : [],
+      empty_source: Boolean(json.empty_source),
+      preview_row_count: Number(json.preview_row_count ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postLevel1EnterpriseYearCopyFromPrevious(
+  body: {
+    target_stat_year: string
+    source_stat_year?: string
+    replace_year?: boolean
+    only_active?: boolean
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  skipped?: boolean
+  message?: string
+  inserted?: number
+  updated?: number
+  source_stat_year?: string
+  target_stat_year?: string
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/level1-enterprise-year/copy-from-previous'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || (!json?.ok && !json?.skipped)) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    return {
+      ok: true,
+      skipped: Boolean(json.skipped),
+      message: json.message != null ? String(json.message) : undefined,
+      inserted: Number(json.inserted ?? 0),
+      updated: Number(json.updated ?? 0),
+      source_stat_year: json.source_stat_year != null ? String(json.source_stat_year) : undefined,
+      target_stat_year: json.target_stat_year != null ? String(json.target_stat_year) : body.target_stat_year,
     }
   } catch (e) {
     return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }

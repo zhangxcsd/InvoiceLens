@@ -26,6 +26,24 @@ logger = logging.getLogger(__name__)
 _rename_jobs_lock = threading.Lock()
 _rename_jobs: dict[str, dict[str, Any]] = {}
 
+
+def snapshot_active_rename_jobs() -> list[dict[str, Any]]:
+    with _rename_jobs_lock:
+        return [
+            {
+                "task_code": "subject_rename_signal",
+                "task_name": "主体库 · 重建更名信号",
+                "run_id": str(j.get("run_id") or ""),
+                "status": str(j.get("status") or ""),
+                "message": str(j.get("message") or ""),
+                "step": str(j.get("status") or ""),
+                "started_at_ms": j.get("started_at_ms"),
+            }
+            for j in _rename_jobs.values()
+            if str(j.get("status") or "") in ("queued", "running")
+        ]
+
+
 def _sql_rename_name_norm(trimmed_expr_sql: str) -> str:
     """
     展示名 → 比对用 name_norm（与 dim_subject_rename_signal 聚合键一致）。

@@ -1,0 +1,28 @@
+---
+description: 防止已废止的侧栏菜单名（如「票企关联视图」）回退到前端导航
+globs:
+  - frontend/src/App.tsx
+  - frontend/src/copy/zh-CN.ts
+  - frontend/src/types.ts
+alwaysApply: false
+---
+
+# 企业组织维度导航（禁止回退）
+
+## 已废止（不得重新加入侧栏/面包屑）
+
+- 父菜单 **`票企关联视图`**（`dimTicketViews` / `openChildren.ticket` 包裹层）
+- 子菜单 **`企业→票（主体映射）`**（`dim_audited_invoice_link` 路由，若已从 `NavKey` 删除则不得恢复）
+
+## 当前正确结构
+
+- **发票报送覆盖分析**：`NavKey` = `dim_audit_related_library`；侧栏在「维度管理 → 企业组织维度」下与「被审企业组织」**同级**，使用 `navGrand` + `IconCompare`，**不要**再套一层 `navChild('ticket', …)`。
+- 面包屑：`维度管理 / 企业组织维度 / 发票报送覆盖分析`（中间不得插入 `票企关联视图`）。
+
+## 修改前自检
+
+在 `frontend/` 下检索以下字符串，命中则视为回退，需改回现行命名：
+
+- `票企关联视图`
+- `dimTicketViews`
+- `票→企业（报送覆盖）`（侧栏名应使用「发票报送覆盖分析」）

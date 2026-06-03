@@ -324,6 +324,6 @@ WHERE stat_year = 2026;
 | `GET /api/dim/enterprise-year-rel/meta` | 只读：DWD 中出现的 `stat_year` 列表、`dim_enterprise_year_rel` 按年行数 |
 | `POST /api/dim/enterprise-year-rel/rebuild` | JSON：`stat_years` 可选（数组或 `"2024,2025"`；省略则对 DWD 全部年度）、`dry_run`（布尔）、`run_id` / `relation_snapshot_id` 可选 |
 | `POST /api/dwd/build` | JSON 增加 `rebuild_enterprise_year_rel: true`：在 **本次 DWD 构建成功** 后，按返回的 `stat_years_built` 自动重算；结果在 `enterprise_year_rel_rebuild` |
-| `python scripts/rebuild_enterprise_year_rel.py --years 2024,2025` | 直连 DuckDB 文件重算（`--db`、`--dry-run`、`--all` 见脚本 `--help`） |
+| `python scripts/rebuild_enterprise_year_rel.py --years 2024,2025` | 直连 DuckDB 重算（`--all` = DWD∪台账年度；`--dry-run`、`--db` 见 `--help`） |
 
 前端封装：`frontend/src/config/localApi.ts` 中 `postDimEnterpriseYearRelRebuild`、`fetchDimEnterpriseYearRelMeta`、`postDwdBuild({ ..., rebuild_enterprise_year_rel: true })`。

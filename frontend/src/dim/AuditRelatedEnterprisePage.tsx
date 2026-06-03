@@ -312,8 +312,8 @@ export function AuditRelatedEnterprisePage() {
             ))}
           </div>
           {summary && summary.unmapped_member_rows > 0 ? (
-            <div className="mt-2 text-il-meta text-text-3">
-              未映射到主体库 org 的成员行：{summary.unmapped_member_rows}（不参与覆盖率分母）
+            <div className="mt-2 text-il-meta text-amber-900">
+              {ui.unmappedMembersHint.replace('{count}', String(summary.unmapped_member_rows))}
             </div>
           ) : null}
         </div>

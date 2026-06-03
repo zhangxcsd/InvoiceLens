@@ -438,6 +438,7 @@ export function OdsToDwdCenterPage() {
       const r = await postDwdForceRebuild({
         import_batch_id: bid,
         import_session_id: sid,
+        ...(rebuildEnterpriseYearRelAfterDwd ? { rebuild_enterprise_year_rel: true } : {}),
       })
       applyDwdResult(bid, r, t0)
     } catch (e) {

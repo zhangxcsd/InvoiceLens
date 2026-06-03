@@ -83,6 +83,25 @@ export type ImportEvent =
         skipped_files: number
       }
     })
+  | (ImportEventBase & {
+      type: 'post_dwd_begin'
+      payload: {
+        import_batch_id: string
+        import_session_id: string
+        rebuild_enterprise_year_rel?: boolean
+      }
+    })
+  | (ImportEventBase & {
+      type: 'post_dwd_end'
+      payload: {
+        ok: boolean
+        import_batch_id: string
+        import_session_id: string
+        stat_years_built?: number[]
+        enterprise_year_rel_rebuild?: Record<string, unknown>
+        error?: { message?: string }
+      }
+    })
 
 export type ImportFailureRecord = {
   file_key: string

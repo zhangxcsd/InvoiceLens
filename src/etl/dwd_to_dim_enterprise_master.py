@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 
 def _make_run_id(prefix: str) -> str:
@@ -14,9 +14,12 @@ def build_enterprise_master(
     import_batch_id: str | None = None,
     subject_category_scope: str | None = None,
     run_id: str | None = None,
+    on_progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """从 dwd_inv_header 归集 dim_enterprise（税号主体口径）。"""
     run_id = run_id or _make_run_id("enterprise_master")
+    if on_progress:
+        on_progress("scan", "正在扫描 dwd_inv_header 归集企业主体…")
     where_sql = "1=1"
     params: list[Any] = []
     if import_batch_id:
@@ -137,6 +140,8 @@ def build_enterprise_master(
         [*params, *scope_params[:3], *params, *scope_params[3:]],
     )
 
+    if on_progress:
+        on_progress("count", "正在统计 dim_enterprise 写入结果…")
     rows = conn.execute(
         "SELECT COUNT(*)::BIGINT FROM dim_enterprise WHERE last_seen_batch_id = ?",
         [import_batch_id or run_id],
@@ -157,9 +162,12 @@ def build_enterprise_mapping_status(
     import_batch_id: str | None = None,
     subject_category_scope: str | None = None,
     run_id: str | None = None,
+    on_progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """构建企业↔票主体映射状态表（票面主体是否已映射到 dim_enterprise）。"""
     run_id = run_id or _make_run_id("enterprise_mapping")
+    if on_progress:
+        on_progress("prepare", "正在准备映射检查表…")
     where_sql = "1=1"
     params: list[Any] = []
     if import_batch_id:
@@ -222,6 +230,8 @@ def build_enterprise_mapping_status(
         )
         scope_params = [scope, scope, scope, scope, scope, scope]
 
+    if on_progress:
+        on_progress("match", "正在匹配票面主体与 dim_enterprise…")
     conn.execute(
         f"""
         WITH src AS (

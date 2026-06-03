@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -49,6 +49,7 @@ def build_enterprise_invoice_profile(
     source_scope: str | None = None,
     subject_category_scope: str | None = None,
     run_id: str | None = None,
+    on_progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """从 dwd_inv_header 构建 dws_enterprise_invoice_profile（月粒度企业画像）。"""
     own_conn = False
@@ -56,6 +57,8 @@ def build_enterprise_invoice_profile(
         conn = get_conn()
         own_conn = True
     init_all_tables(conn)
+    if on_progress:
+        on_progress("validate", "正在校验 dwd_inv_header…")
     try:
         conn.execute("SELECT 1 FROM dwd_inv_header LIMIT 1")
     except Exception:
@@ -105,6 +108,8 @@ def build_enterprise_invoice_profile(
         scope_params = [scope, scope, scope, scope, scope, scope]
 
     r = _load_rules()
+    if on_progress:
+        on_progress("aggregate", "正在聚合企业月度画像与风险评分…")
     red = r["red_invoice_ratio"]
     amt = r["amount_mom_change_abs"]
     cnt = r["count_mom_change_abs"]
@@ -292,6 +297,8 @@ def build_enterprise_invoice_profile(
     """
 
     conn.execute(sql, [*params, *scope_params[:3], *scope_params[3:], calc_batch_id, run_id, source_scope])
+    if on_progress:
+        on_progress("count", "正在统计画像写入行数…")
     written = conn.execute(
         "SELECT COUNT(*)::BIGINT FROM dws_enterprise_invoice_profile WHERE calc_run_id = ?",
         [run_id],

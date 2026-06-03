@@ -132,6 +132,30 @@ CREATE INDEX IF NOT EXISTS idx_group_year_mgmt_parent ON dim_group_enterprise_ye
 CREATE INDEX IF NOT EXISTS idx_group_year_eq_parent   ON dim_group_enterprise_year (stat_year, equity_parent_enterprise_id);
 CREATE INDEX IF NOT EXISTS idx_group_year_status      ON dim_group_enterprise_year (stat_year, mgmt_status, equity_status);
 
+-- -----------------------------------------------------------------------------
+-- dim_level1_enterprise_year：年度一级企业名单（聚合维度权威清单）
+-- 用途：
+-- 1) 按 stat_year 维护当年度参与分析/报送上卷的一级企业集团清单（每 year 一份）；
+-- 2) level1_enterprise_id 与 dim_group_enterprise_year.level1_group_id 同口径（税号/统一社会信用代码）；
+-- 3) 供发票报送覆盖、集团成员核对及后续按一级企业聚合的报表/看板引用（与成员明细表解耦）。
+-- 粒度：一行 = 某统计年度下的一个一级企业。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dim_level1_enterprise_year (
+    stat_year                 SMALLINT NOT NULL,
+    level1_enterprise_id      VARCHAR  NOT NULL,
+    level1_enterprise_name    VARCHAR  NOT NULL,
+    display_order             INTEGER  DEFAULT 0,
+    is_active                 BOOLEAN  DEFAULT TRUE,
+    remark                    VARCHAR,
+    data_source               VARCHAR,
+    source_record_id          VARCHAR,
+    updated_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (stat_year, level1_enterprise_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_l1_ent_year_active ON dim_level1_enterprise_year (stat_year, is_active);
+CREATE INDEX IF NOT EXISTS idx_l1_ent_year_order  ON dim_level1_enterprise_year (stat_year, display_order);
+
 CREATE SEQUENCE IF NOT EXISTS seq_hier_log_id START 1;
 CREATE TABLE IF NOT EXISTS dim_org_hier_log (
     log_id           BIGINT NOT NULL DEFAULT nextval('seq_hier_log_id') PRIMARY KEY,

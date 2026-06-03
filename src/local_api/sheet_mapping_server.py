@@ -902,6 +902,51 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/dim/task-status":
+            qs = parse_qs(parsed.query or "")
+            codes_raw = (qs.get("task_codes", [""])[0] or "").strip()
+            task_codes = [c.strip() for c in codes_raw.split(",") if c.strip()] if codes_raw else None
+            try:
+                from src.local_api.dwd_to_dim_build import summarize_dim_task_status
+
+                self._send(200, summarize_dim_task_status(task_codes=task_codes), cors=True)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc)}}, cors=True)
+            return
+
+        if path == "/api/dim/tasks":
+            try:
+                from src.local_api.dwd_to_dim_build import list_unified_dim_tasks
+
+                self._send(200, list_unified_dim_tasks(), cors=True)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc)}}, cors=True)
+            return
+
+        if path == "/api/dim/task-run-status":
+            qs = parse_qs(parsed.query or "")
+            run_id = (qs.get("run_id", [""])[0] or "").strip()
+            try:
+                from src.local_api.dwd_to_dim_build import get_dim_task_run_status
+
+                payload = get_dim_task_run_status(run_id)
+                self._send(200 if payload.get("ok") else 404, payload, cors=True)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc)}}, cors=True)
+            return
+
+        if path == "/api/subject-library/pipeline-status":
+            qs = parse_qs(parsed.query or "")
+            run_id = (qs.get("run_id", [""])[0] or "").strip()
+            try:
+                from src.local_api.subject_library_pipeline import get_subject_library_pipeline_status
+
+                payload = get_subject_library_pipeline_status(run_id)
+                self._send(200 if payload.get("ok") else 404, payload, cors=True)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc)}}, cors=True)
+            return
+
         if path.startswith("/api/import-sessions/") and path.endswith("/events"):
             session_id = path.split("/")[3] if len(path.split("/")) >= 4 else ""
             qs = parse_qs(parsed.query or "")
@@ -1340,6 +1385,119 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/dim/level1-enterprise-year/meta":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_meta
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_meta(conn)
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取年度一级企业元数据失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/dim/level1-enterprise-year/list":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
+            active_only = (qs.get("active_only", ["0"])[0] or "").strip().lower() in ("1", "true", "yes")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_list(
+                    conn, stat_year=stat_year, keyword=keyword, active_only=active_only
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取年度一级企业名单失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/dim/level1-enterprise-year/candidates":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_candidates
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_candidates(conn, stat_year=stat_year)
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取一级企业候选失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
+        if path == "/api/dim/level1-enterprise-year/members":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            level1_enterprise_id = (qs.get("level1_enterprise_id", [""])[0] or "").strip()
+            keyword = (qs.get("keyword", [""])[0] or "").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_members
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_members(
+                    conn,
+                    stat_year=stat_year,
+                    level1_enterprise_id=level1_enterprise_id,
+                    keyword=keyword,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取一级企业下属成员失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         if path == "/api/invoice-coverage/meta":
             try:
                 from db.duckdb_conn import get_conn
@@ -1616,6 +1774,17 @@ class Handler(BaseHTTPRequestHandler):
             overwrite_manual_repairs = bool(body.get("overwrite_manual_repairs", False))
             started_ts = time.time()
             try:
+                from src.local_api.dim_async_tasks import start_async_subject_category_recompute, want_async_mode
+
+                if want_async_mode(body, default=True):
+                    payload = start_async_subject_category_recompute(
+                        with_relations=with_relations,
+                        overwrite_manual_repairs=overwrite_manual_repairs,
+                        run_id=run_id,
+                    )
+                    self._send(200 if payload.get("ok") else 500, payload, cors=True)
+                    return
+
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
                 from src.subject_category.recompute import recompute_org_subject_categories
@@ -1843,6 +2012,25 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/subject-library/pipeline":
+            body = self._read_json()
+            overwrite_manual_repairs = bool((body or {}).get("overwrite_manual_repairs", False))
+            with_relations = bool((body or {}).get("with_relations", True))
+            try:
+                from src.local_api.subject_library_pipeline import start_subject_library_pipeline
+
+                payload = start_subject_library_pipeline(
+                    overwrite_manual_repairs=overwrite_manual_repairs,
+                    with_relations=with_relations,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {"message": f"启动主体库全流程失败：{type(exc).__name__}: {exc}"},
+                }
+            self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+
         if path == "/api/subject-library/rebuild-rename-signals":
             body = self._read_json()
 
@@ -2010,7 +2198,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/import-sessions/") and path.endswith("/start-import"):
             segs = [p for p in path.split("/") if p]
             sid = segs[2] if len(segs) >= 4 and segs[1] == "import-sessions" else ""
-            payload = _sessions.start_import_after_uploads(sid)
+            body = self._read_json()
+            payload = _sessions.start_import_after_uploads(sid, post_import_opts=body if isinstance(body, dict) else None)
             self._send(200 if payload.get("ok") else 400, payload)
             return
         if path == "/api/header-coverage":
@@ -2229,6 +2418,7 @@ class Handler(BaseHTTPRequestHandler):
                     import_batch_id=bid,
                     import_session_id=sid,
                     stat_year=stat_year,
+                    rebuild_enterprise_year_rel=bool(body.get("rebuild_enterprise_year_rel")),
                 )
             except Exception as exc:
                 payload = {
@@ -2255,39 +2445,31 @@ class Handler(BaseHTTPRequestHandler):
             source_scope = str(body.get("source_scope") or "").strip() or None
             subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
             run_id = str(body.get("run_id") or "").strip() or None
-            t0 = time.time()
             try:
-                from src.local_api.dwd_to_dim_build import build_dim_enterprise_profile, record_dim_task_run
+                from src.local_api.dim_async_tasks import (
+                    run_enterprise_profile_sync,
+                    start_async_enterprise_profile_build,
+                    want_async_mode,
+                )
 
-                payload = build_dim_enterprise_profile(
-                    stat_month=stat_month,
-                    import_batch_id=import_batch_id,
-                    calc_batch_id=calc_batch_id,
-                    source_scope=source_scope,
-                    subject_category_scope=subject_category_scope,
-                    run_id=run_id,
-                )
-                rid = str(payload.get("run_id") or run_id or f"enterprise_profile_{int(t0)}")
-                rows = int(payload.get("profile_rows_written") or 0)
-                record_dim_task_run(
-                    run_id=rid,
-                    task_code="enterprise_profile_agg",
-                    task_name="企业发票画像聚合",
-                    status="success" if payload.get("ok") else "failed",
-                    run_mode="incremental",
-                    params={
-                        "stat_month": stat_month,
-                        "import_batch_id": import_batch_id,
-                        "calc_batch_id": calc_batch_id,
-                        "source_scope": source_scope,
-                    },
-                    result=payload,
-                    rows_affected=rows,
-                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
-                    calc_batch_id=str(payload.get("calc_batch_id") or calc_batch_id or ""),
-                    import_batch_id=import_batch_id,
-                    started_at_ts=t0,
-                )
+                if want_async_mode(body):
+                    payload = start_async_enterprise_profile_build(
+                        stat_month=stat_month,
+                        import_batch_id=import_batch_id,
+                        calc_batch_id=calc_batch_id,
+                        source_scope=source_scope,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
+                else:
+                    payload = run_enterprise_profile_sync(
+                        stat_month=stat_month,
+                        import_batch_id=import_batch_id,
+                        calc_batch_id=calc_batch_id,
+                        source_scope=source_scope,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
             except Exception as exc:
                 payload = {
                     "ok": False,
@@ -2297,30 +2479,6 @@ class Handler(BaseHTTPRequestHandler):
                         "detail": str(exc),
                     },
                 }
-                try:
-                    from src.local_api.dwd_to_dim_build import record_dim_task_run
-
-                    record_dim_task_run(
-                        run_id=run_id or f"enterprise_profile_{int(t0)}",
-                        task_code="enterprise_profile_agg",
-                        task_name="企业发票画像聚合",
-                        status="failed",
-                        run_mode="incremental",
-                        params={
-                            "stat_month": stat_month,
-                            "import_batch_id": import_batch_id,
-                            "calc_batch_id": calc_batch_id,
-                            "source_scope": source_scope,
-                        },
-                        result=payload,
-                        rows_affected=0,
-                        error_message=str(exc),
-                        calc_batch_id=calc_batch_id,
-                        import_batch_id=import_batch_id,
-                        started_at_ts=t0,
-                    )
-                except Exception:
-                    pass
             self._send(200 if payload.get("ok") else 500, payload, cors=True)
             return
         if path == "/api/dim/build-enterprise-master":
@@ -2328,30 +2486,25 @@ class Handler(BaseHTTPRequestHandler):
             import_batch_id = str(body.get("import_batch_id") or body.get("batch_id") or "").strip() or None
             subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
             run_id = str(body.get("run_id") or "").strip() or None
-            t0 = time.time()
             try:
-                from src.local_api.dwd_to_dim_build import build_dim_enterprise_master_task, record_dim_task_run
+                from src.local_api.dim_async_tasks import (
+                    run_enterprise_master_sync,
+                    start_async_enterprise_master_build,
+                    want_async_mode,
+                )
 
-                payload = build_dim_enterprise_master_task(
-                    import_batch_id=import_batch_id,
-                    subject_category_scope=subject_category_scope,
-                    run_id=run_id,
-                )
-                rid = str(payload.get("run_id") or run_id or f"enterprise_master_{int(t0)}")
-                rows = int(payload.get("rows_affected") or 0)
-                record_dim_task_run(
-                    run_id=rid,
-                    task_code="enterprise_master_build",
-                    task_name="全量企业主数据构建",
-                    status="success" if payload.get("ok") else "failed",
-                    run_mode="incremental",
-                    params={"import_batch_id": import_batch_id},
-                    result=payload,
-                    rows_affected=rows,
-                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
-                    import_batch_id=import_batch_id,
-                    started_at_ts=t0,
-                )
+                if want_async_mode(body):
+                    payload = start_async_enterprise_master_build(
+                        import_batch_id=import_batch_id,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
+                else:
+                    payload = run_enterprise_master_sync(
+                        import_batch_id=import_batch_id,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
             except Exception as exc:
                 payload = {
                     "ok": False,
@@ -2361,24 +2514,6 @@ class Handler(BaseHTTPRequestHandler):
                         "detail": str(exc),
                     },
                 }
-                try:
-                    from src.local_api.dwd_to_dim_build import record_dim_task_run
-
-                    record_dim_task_run(
-                        run_id=run_id or f"enterprise_master_{int(t0)}",
-                        task_code="enterprise_master_build",
-                        task_name="全量企业主数据构建",
-                        status="failed",
-                        run_mode="incremental",
-                        params={"import_batch_id": import_batch_id},
-                        result=payload,
-                        rows_affected=0,
-                        error_message=str(exc),
-                        import_batch_id=import_batch_id,
-                        started_at_ts=t0,
-                    )
-                except Exception:
-                    pass
             self._send(200 if payload.get("ok") else 500, payload, cors=True)
             return
         if path == "/api/dim/build-enterprise-mapping":
@@ -2386,30 +2521,25 @@ class Handler(BaseHTTPRequestHandler):
             import_batch_id = str(body.get("import_batch_id") or body.get("batch_id") or "").strip() or None
             subject_category_scope = str(body.get("subject_category_scope") or "").strip() or None
             run_id = str(body.get("run_id") or "").strip() or None
-            t0 = time.time()
             try:
-                from src.local_api.dwd_to_dim_build import build_dim_enterprise_mapping_task, record_dim_task_run
+                from src.local_api.dim_async_tasks import (
+                    run_enterprise_mapping_sync,
+                    start_async_enterprise_mapping_build,
+                    want_async_mode,
+                )
 
-                payload = build_dim_enterprise_mapping_task(
-                    import_batch_id=import_batch_id,
-                    subject_category_scope=subject_category_scope,
-                    run_id=run_id,
-                )
-                rid = str(payload.get("run_id") or run_id or f"enterprise_mapping_{int(t0)}")
-                rows = int(payload.get("rows_affected") or 0)
-                record_dim_task_run(
-                    run_id=rid,
-                    task_code="enterprise_mapping_check",
-                    task_name="企业↔票主体映射检查",
-                    status="success" if payload.get("ok") else "failed",
-                    run_mode="incremental",
-                    params={"import_batch_id": import_batch_id},
-                    result=payload,
-                    rows_affected=rows,
-                    error_message=None if payload.get("ok") else str((payload.get("error") or {}).get("message") or ""),
-                    import_batch_id=import_batch_id,
-                    started_at_ts=t0,
-                )
+                if want_async_mode(body):
+                    payload = start_async_enterprise_mapping_build(
+                        import_batch_id=import_batch_id,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
+                else:
+                    payload = run_enterprise_mapping_sync(
+                        import_batch_id=import_batch_id,
+                        subject_category_scope=subject_category_scope,
+                        run_id=run_id,
+                    )
             except Exception as exc:
                 payload = {
                     "ok": False,
@@ -2419,25 +2549,174 @@ class Handler(BaseHTTPRequestHandler):
                         "detail": str(exc),
                     },
                 }
-                try:
-                    from src.local_api.dwd_to_dim_build import record_dim_task_run
-
-                    record_dim_task_run(
-                        run_id=run_id or f"enterprise_mapping_{int(t0)}",
-                        task_code="enterprise_mapping_check",
-                        task_name="企业↔票主体映射检查",
-                        status="failed",
-                        run_mode="incremental",
-                        params={"import_batch_id": import_batch_id},
-                        result=payload,
-                        rows_affected=0,
-                        error_message=str(exc),
-                        import_batch_id=import_batch_id,
-                        started_at_ts=t0,
-                    )
-                except Exception:
-                    pass
             self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            return
+
+        if path == "/api/dim/level1-enterprise-year/upsert":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_upsert
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_upsert(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"保存年度一级企业失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/level1-enterprise-year/delete":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_delete
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_delete(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"删除年度一级企业失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/level1-enterprise-year/import-batch":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_import_batch
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_import_batch(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"批量导入年度一级企业失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/level1-enterprise-year/preview-from-previous":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_preview_from_previous
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_preview_from_previous(
+                    conn, body if isinstance(body, dict) else {}
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"预览年度一级企业复制/推导失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/level1-enterprise-year/copy-from-previous":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.level1_enterprise_year_api import api_level1_enterprise_year_copy_from_previous
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_level1_enterprise_year_copy_from_previous(
+                    conn, body if isinstance(body, dict) else {}
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"从上一年度复制一级企业失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            code = 200 if payload.get("ok") or payload.get("skipped") else 400
+            self._send(code, payload, cors=True)
+            return
+
+        if path == "/api/dim/group-enterprise-year/rebuild":
+            body = self._read_json()
+            try:
+                from src.local_api.dim_async_tasks import start_async_group_enterprise_year_build, want_async_mode
+
+                stat_years_raw = body.get("stat_years") if isinstance(body, dict) else None
+                stat_years: list[int] | None = None
+                if isinstance(stat_years_raw, list) and stat_years_raw:
+                    stat_years = []
+                    for y in stat_years_raw:
+                        try:
+                            yi = int(y)
+                            if 1990 <= yi <= 2100:
+                                stat_years.append(yi)
+                        except (TypeError, ValueError):
+                            continue
+                    if not stat_years:
+                        stat_years = None
+                replace_years = bool(body.get("replace_years", body.get("replaceYears", True)))
+                run_id = str(body.get("run_id") or "").strip() or None
+
+                if want_async_mode(body if isinstance(body, dict) else {}, default=True):
+                    payload = start_async_group_enterprise_year_build(
+                        stat_years=stat_years,
+                        replace_years=replace_years,
+                        run_id=run_id,
+                    )
+                else:
+                    from db.duckdb_conn import get_conn
+                    from db.schema_sqlfiles import init_all_tables
+                    from src.local_api.group_enterprise_year_build import rebuild_group_enterprise_year_from_registry
+
+                    conn = get_conn()
+                    init_all_tables(conn)
+                    payload = rebuild_group_enterprise_year_from_registry(
+                        conn,
+                        stat_years=stat_years,
+                        replace_years=replace_years,
+                        run_id=run_id,
+                    )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"集团成员表计算失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
             return
 
         if path == "/api/audited-enterprise/registry":
@@ -2527,6 +2806,26 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
+
+
+def _parse_truthy_flag(raw: Any, *, default: bool = False) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    if s in ("", "0", "false", "no", "off"):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    return default
+
+
+def _env_truthy_flag(name: str, *, default: bool = False) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    if not v:
+        return default
+    return v in ("1", "true", "yes", "on")
 
 
 class _SessionStore:
@@ -2774,6 +3073,16 @@ class _SessionStore:
                     return {"ok": False, "error": {"message": "target_sheet_keys 与首次上传不一致"}}
                 if bool(pend.get("force_reimport")) != bool(force_reimport):
                     return {"ok": False, "error": {"message": "force_reimport 与首次上传不一致"}}
+                raw_ad = _multipart_first_field(fs, "auto_dwd_after_import")
+                if raw_ad not in (None, ""):
+                    ad = _parse_truthy_flag(raw_ad, default=bool(pend.get("auto_dwd_after_import")))
+                    if ad != bool(pend.get("auto_dwd_after_import")):
+                        return {"ok": False, "error": {"message": "auto_dwd_after_import 与首次上传不一致"}}
+                raw_rel = _multipart_first_field(fs, "rebuild_enterprise_year_rel")
+                if raw_rel not in (None, ""):
+                    rel = _parse_truthy_flag(raw_rel, default=bool(pend.get("rebuild_enterprise_year_rel")))
+                    if rel != bool(pend.get("rebuild_enterprise_year_rel")):
+                        return {"ok": False, "error": {"message": "rebuild_enterprise_year_rel 与首次上传不一致"}}
                 session_id = sid_in
                 upload_root = pend["upload_root"]
                 excel_paths = pend["excel_paths"]
@@ -2801,6 +3110,16 @@ class _SessionStore:
                     }
                 excel_paths = []
                 path_labels_mut = []
+                auto_dwd = _parse_truthy_flag(
+                    _multipart_first_field(fs, "auto_dwd_after_import"),
+                    default=_env_truthy_flag("INVOICELENS_AUTO_DWD_AFTER_IMPORT", default=False),
+                )
+                rebuild_rel = _parse_truthy_flag(
+                    _multipart_first_field(fs, "rebuild_enterprise_year_rel"),
+                    default=_env_truthy_flag("INVOICELENS_REBUILD_ENTERPRISE_YEAR_REL_AFTER_DWD", default=False),
+                )
+                if rebuild_rel and not auto_dwd:
+                    rebuild_rel = False
                 self._pending_uploads[session_id] = {
                     "batch_id": batch_id,
                     "ods_dir": ods_dir,
@@ -2808,6 +3127,8 @@ class _SessionStore:
                     "target_tuple": t_tuple,
                     "fail_policy": fail_policy,
                     "force_reimport": force_reimport,
+                    "auto_dwd_after_import": auto_dwd,
+                    "rebuild_enterprise_year_rel": rebuild_rel,
                     "excel_paths": excel_paths,
                     "path_labels": path_labels_mut,
                     "upload_root": upload_root,
@@ -2861,7 +3182,9 @@ class _SessionStore:
             "uploaded_count": len(excel_paths),
         }
 
-    def start_import_after_uploads(self, session_id: str) -> dict:
+    def start_import_after_uploads(
+        self, session_id: str, post_import_opts: dict[str, Any] | None = None
+    ) -> dict:
         session_id = (session_id or "").strip()
         if not session_id:
             return {"ok": False, "error": {"message": "缺少 import_session_id"}}
@@ -2878,6 +3201,21 @@ class _SessionStore:
             target_sheet_keys = pend["target_sheet_keys"]
             fail_policy = pend["fail_policy"]
             force_reimport = bool(pend.get("force_reimport"))
+            auto_dwd_after_import = bool(pend.get("auto_dwd_after_import"))
+            rebuild_enterprise_year_rel = bool(pend.get("rebuild_enterprise_year_rel"))
+            if isinstance(post_import_opts, dict):
+                if "auto_dwd_after_import" in post_import_opts:
+                    auto_dwd_after_import = _parse_truthy_flag(
+                        post_import_opts.get("auto_dwd_after_import"),
+                        default=auto_dwd_after_import,
+                    )
+                if "rebuild_enterprise_year_rel" in post_import_opts:
+                    rebuild_enterprise_year_rel = _parse_truthy_flag(
+                        post_import_opts.get("rebuild_enterprise_year_rel"),
+                        default=rebuild_enterprise_year_rel,
+                    )
+            if rebuild_enterprise_year_rel and not auto_dwd_after_import:
+                rebuild_enterprise_year_rel = False
             path_labels_list: list[str] = list(pend["path_labels"])
             self._pending_uploads.pop(session_id, None)
 
@@ -2894,11 +3232,19 @@ class _SessionStore:
                 fail_policy,
                 path_labels,
                 force_reimport,
+                auto_dwd_after_import,
+                rebuild_enterprise_year_rel,
             ),
             daemon=True,
         )
         t.start()
-        return {"ok": True, "import_session_id": session_id, "saved_paths": excel_paths}
+        return {
+            "ok": True,
+            "import_session_id": session_id,
+            "saved_paths": excel_paths,
+            "auto_dwd_after_import": auto_dwd_after_import,
+            "rebuild_enterprise_year_rel": rebuild_enterprise_year_rel,
+        }
 
     def _register_session(self, session_id: str) -> None:
         with self._lock:
@@ -2953,6 +3299,8 @@ class _SessionStore:
         fail_policy: str,
         path_labels: list[str] | None = None,
         force_reimport: bool = False,
+        auto_dwd_after_import: bool = False,
+        rebuild_enterprise_year_rel: bool = False,
     ) -> None:
         ok_files = 0
         fail_files = 0
@@ -3095,6 +3443,53 @@ class _SessionStore:
                 "ods_dir": ods_dir,
             },
         )
+
+        if auto_dwd_after_import and ok_files > 0:
+            self._emit(
+                session_id,
+                "post_dwd_begin",
+                {
+                    "import_batch_id": batch_id,
+                    "import_session_id": session_id,
+                    "rebuild_enterprise_year_rel": rebuild_enterprise_year_rel,
+                },
+            )
+            dwd_out: dict[str, Any]
+            try:
+                from src.local_api.dwd_build import build_dwd_for_batch
+
+                if conn is None:
+                    from db.duckdb_conn import get_conn
+                    from db.schema_sqlfiles import init_all_tables
+
+                    conn = get_conn()
+                    init_all_tables(conn)
+                dwd_out = build_dwd_for_batch(
+                    import_batch_id=batch_id,
+                    import_session_ids=[session_id],
+                    incremental=True,
+                    rebuild_enterprise_year_rel=rebuild_enterprise_year_rel,
+                )
+            except Exception as exc:  # noqa: BLE001
+                dwd_out = {
+                    "ok": False,
+                    "error": {
+                        "message": f"导入后 DWD 构建异常：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                    },
+                }
+            end_payload: dict[str, Any] = {
+                "ok": bool(dwd_out.get("ok")),
+                "import_batch_id": batch_id,
+                "import_session_id": session_id,
+                "stat_years_built": dwd_out.get("stat_years_built") or [],
+            }
+            if dwd_out.get("enterprise_year_rel_rebuild") is not None:
+                end_payload["enterprise_year_rel_rebuild"] = dwd_out.get("enterprise_year_rel_rebuild")
+            if not dwd_out.get("ok"):
+                end_payload["error"] = dwd_out.get("error")
+            self._emit(session_id, "post_dwd_end", end_payload)
+
         self._finish(session_id)
 
 

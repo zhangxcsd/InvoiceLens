@@ -1,16 +1,24 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
 import { clearDwdDimFocusTask, readDwdDimFocusTask, SUBJECT_DIM_TASK } from './dwdDimNav'
+import { liveElapsedMs, useLiveElapsedTick } from './useLiveElapsed'
 import {
+  fetchDimTaskRunStatus,
   fetchDimTaskRuns,
+  fetchDimTasks,
+  fetchSubjectLibraryPipelineStatus,
   fetchSubjectLibraryRenameRebuildStatus,
   postDimEnterpriseMappingBuild,
   postDimEnterpriseMasterBuild,
   postDimEnterpriseProfileBuild,
+  postGroupEnterpriseYearRebuild,
   postSubjectCategoryRecompute,
   postSubjectLibraryIngestFromDwd,
+  postSubjectLibraryPipeline,
   postSubjectLibraryRebuildRenameSignals,
+  type DimActiveRunRow,
+  type DimUnifiedTaskRow,
 } from '../config/localApi'
 
 type TaskStatus = 'idle' | 'queued' | 'running' | 'failed'
@@ -29,6 +37,9 @@ type DimTask = {
   lastRunAt: string
   lastDuration: string
   owner: string
+  progressMessage: string
+  elapsedMs: number
+  runningRunId: string
 }
 
 type FailedRun = {
@@ -37,6 +48,7 @@ type FailedRun = {
   errorType: string
   lastFailAt: string
   action: 'retry' | 'inspect'
+  runId: string
 }
 
 const SUBJECT_TASK_CODES = new Set<string>(Object.values(SUBJECT_DIM_TASK))
@@ -45,126 +57,56 @@ function isSubjectLibraryTask(taskCode: string): boolean {
   return SUBJECT_TASK_CODES.has(taskCode)
 }
 
-const TASKS: DimTask[] = [
-  {
-    taskCode: 'subject_master_ingest_from_dwd',
-    taskName: '主体库 · 从 DWD 归集',
-    domain: '主体库',
-    subjectCategory: 'SC-ENT',
-    outputTable: 'dim_subject_master',
-    triggerMode: ['manual', 'chained'],
-    dependsOn: ['dwd_inv_header'],
-    queueDepth: 0,
-    status: 'idle',
-    lastRunAt: '—',
-    lastDuration: '—',
-    owner: '维度组',
-  },
-  {
-    taskCode: 'subject_category_recompute',
-    taskName: '主体库 · 重算（分类+关联）',
-    domain: '主体库',
-    subjectCategory: 'SC-ENT',
-    outputTable: 'dim_subject_master / dim_subject_category_snapshot',
-    triggerMode: ['manual', 'chained'],
-    dependsOn: ['subject_master_ingest_from_dwd'],
-    queueDepth: 0,
-    status: 'idle',
-    lastRunAt: '—',
-    lastDuration: '—',
-    owner: '维度组',
-  },
-  {
-    taskCode: SUBJECT_DIM_TASK.rename,
-    taskName: '主体库 · 重建更名信号',
-    domain: '主体库',
-    subjectCategory: 'SC-ENT',
-    outputTable: 'dim_subject_rename_signal',
-    triggerMode: ['manual'],
-    dependsOn: ['dim_subject_master'],
-    queueDepth: 0,
-    status: 'idle',
-    lastRunAt: '—',
-    lastDuration: '—',
-    owner: '维度组',
-  },
-  {
-    taskCode: SUBJECT_DIM_TASK.pipeline,
-    taskName: '主体库 · 一键全流程（归集→重算→更名）',
-    domain: '主体库',
-    subjectCategory: 'SC-ENT',
-    outputTable: 'dim_subject_master / dim_subject_rename_signal',
-    triggerMode: ['manual', 'chained'],
-    dependsOn: ['dwd_inv_header'],
-    queueDepth: 0,
-    status: 'idle',
-    lastRunAt: '—',
-    lastDuration: '—',
-    owner: '维度组',
-  },
-  {
-    taskCode: 'enterprise_master_build',
-    taskName: '全量企业主数据构建',
-    domain: '企业组织维度',
-    subjectCategory: 'SC-ENT',
-    outputTable: 'dim_enterprise_master',
-    triggerMode: ['manual', 'chained', 'scheduled'],
-    dependsOn: ['dwd_inv_header'],
-    queueDepth: 2,
-    status: 'queued',
-    lastRunAt: '2026-04-26 12:18',
-    lastDuration: '4m 11s',
-    owner: '维度组',
-  },
-  {
-    taskCode: 'enterprise_mapping_check',
-    taskName: '企业↔票主体映射检查',
-    domain: '企业组织维度',
-    subjectCategory: 'SC-BRANCH',
-    outputTable: 'dwd_enterprise_mapping_status',
-    triggerMode: ['manual', 'chained'],
-    dependsOn: ['enterprise_master_build'],
-    queueDepth: 0,
-    status: 'idle',
-    lastRunAt: '2026-04-26 11:42',
-    lastDuration: '2m 08s',
-    owner: '风控组',
-  },
-  {
-    taskCode: 'enterprise_profile_agg',
-    taskName: '企业发票画像聚合',
-    domain: '企业组织维度',
-    subjectCategory: 'SC-TEMP',
-    outputTable: 'dws_enterprise_invoice_profile',
-    triggerMode: ['manual', 'scheduled'],
-    dependsOn: ['enterprise_master_build'],
-    queueDepth: 1,
-    status: 'running',
-    lastRunAt: '2026-04-26 13:02',
-    lastDuration: '进行中',
-    owner: '数据平台组',
-  },
-]
+function formatDurationMs(ms: number): string {
+  if (ms <= 0) return '—'
+  const sec = Math.floor(ms / 1000)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  return `${min}m ${rem}s`
+}
 
-const FAILED_RUNS: FailedRun[] = [
-  {
-    taskCode: 'enterprise_mapping_check',
-    taskName: '企业↔票主体映射检查',
-    errorType: '依赖未就绪',
-    lastFailAt: '2026-04-26 12:07',
-    action: 'retry',
-  },
-  {
-    taskCode: 'enterprise_master_build',
-    taskName: '全量企业主数据构建',
-    errorType: '主键冲突策略告警',
-    lastFailAt: '2026-04-26 10:33',
-    action: 'inspect',
-  },
-]
+function normalizeTaskStatus(raw: string): TaskStatus {
+  if (raw === 'running' || raw === 'queued' || raw === 'failed') return raw
+  return 'idle'
+}
 
-/** 运行记录弹窗：task_code → 中文名（与 TASKS 注册表一致） */
-const TASK_CODE_TO_NAME: Record<string, string> = Object.fromEntries(TASKS.map((x) => [x.taskCode, x.taskName]))
+function mapApiTask(raw: DimUnifiedTaskRow): DimTask {
+  const status = normalizeTaskStatus(String(raw.status ?? ''))
+  const lastStarted = String(raw.last_started_at ?? '').trim()
+  const durationMs = Number(raw.last_duration_ms ?? 0)
+  const progressMessage = String(raw.progress_message ?? '').trim()
+  return {
+    taskCode: String(raw.task_code ?? ''),
+    taskName: String(raw.task_name ?? ''),
+    domain: String(raw.domain ?? ''),
+    subjectCategory: (raw.subject_category as DimTask['subjectCategory']) || 'SC-ENT',
+    outputTable: String(raw.output_table ?? ''),
+    triggerMode: (Array.isArray(raw.trigger_modes) ? raw.trigger_modes : []) as TriggerMode[],
+    dependsOn: Array.isArray(raw.depends_on) ? raw.depends_on.map(String) : [],
+    queueDepth: Number(raw.queue_depth ?? 0),
+    status,
+    lastRunAt: lastStarted || '—',
+    lastDuration:
+      status === 'running'
+        ? progressMessage || t.dwdToDimCenterUi.statusRunning
+        : formatDurationMs(durationMs),
+    owner: String(raw.owner ?? ''),
+    progressMessage,
+    elapsedMs: Number(raw.elapsed_ms ?? 0),
+    runningRunId: String(raw.running_run_id ?? ''),
+  }
+}
+
+function buildDagRows(tasks: DimTask[]): Array<{ from: string; to: string }> {
+  const rows: Array<{ from: string; to: string }> = []
+  for (const task of tasks) {
+    for (const dep of task.dependsOn) {
+      rows.push({ from: dep, to: task.taskCode })
+    }
+  }
+  return rows
+}
 
 function statusTag(status: TaskStatus) {
   if (status === 'running') return 'border-[#c8dff7] bg-[#f0f7ff] text-accent-mid'
@@ -201,13 +143,27 @@ function runStatusClass(status: string) {
 }
 
 export function DwdToDimCenterPage() {
-  const [activeTaskCode, setActiveTaskCode] = useState(TASKS[0]?.taskCode ?? '')
+  const [tasks, setTasks] = useState<DimTask[]>([])
+  const [activeRuns, setActiveRuns] = useState<DimActiveRunRow[]>([])
+  const [failedRuns, setFailedRuns] = useState<FailedRun[]>([])
+  const [taskStats, setTaskStats] = useState({ running_count: 0, queued_count: 0, queue_depth_total: 0 })
+  const [tasksLoading, setTasksLoading] = useState(true)
+  const [tasksFetchedAtMs, setTasksFetchedAtMs] = useState(0)
+  const [statusRefreshSeq, setStatusRefreshSeq] = useState(0)
+  const [activeTaskCode, setActiveTaskCode] = useState('')
   const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<'all' | 'SC-ENT' | 'SC-BRANCH' | 'SC-TEMP'>('all')
   const [failureFocus, setFailureFocus] = useState<FailedRun | null>(null)
   const [showRunDialog, setShowRunDialog] = useState(false)
   const [runMode, setRunMode] = useState<'incremental' | 'full'>('incremental')
   const [selectedDepend, setSelectedDepend] = useState<'auto' | 'ignore'>('auto')
   const [submitBusy, setSubmitBusy] = useState(false)
+  const [runLive, setRunLive] = useState<{
+    runId: string
+    message: string
+    step: string
+    status: string
+    startedAtMs: number
+  } | null>(null)
   const [submitMsg, setSubmitMsg] = useState<string | null>(null)
   const [runLogsBusy, setRunLogsBusy] = useState(false)
   const [runLogs, setRunLogs] = useState<
@@ -240,39 +196,88 @@ export function DwdToDimCenterPage() {
   const taskDetailCardRef = useRef<HTMLDivElement>(null)
   const runLogSectionRef = useRef<HTMLDivElement>(null)
 
+  const taskCodeToName = useMemo(() => Object.fromEntries(tasks.map((x) => [x.taskCode, x.taskName])), [tasks])
+  const liveTick = useLiveElapsedTick(
+    activeRuns.length > 0 || tasks.some((x) => x.status === 'running') || submitBusy,
+  )
+  const runLiveElapsed = useMemo(() => {
+    if (!runLive) return 0
+    return Math.max(0, Date.now() - runLive.startedAtMs)
+  }, [runLive, liveTick])
+
+  const loadTasks = useCallback(async (signal?: AbortSignal) => {
+    setTasksLoading(true)
+    try {
+      const r = await fetchDimTasks(signal)
+      if (!r.ok) {
+        setTasks([])
+        setActiveRuns([])
+        setFailedRuns([])
+        return
+      }
+      const mapped = (r.tasks ?? []).map(mapApiTask)
+      setTasks(mapped)
+      setActiveRuns(Array.isArray(r.active_runs) ? r.active_runs : [])
+      setFailedRuns(
+        (r.failed_recent ?? []).map((row) => ({
+          taskCode: String(row.task_code ?? ''),
+          taskName: String(row.task_name ?? ''),
+          errorType: String(row.error_message ?? '任务失败'),
+          lastFailAt: String(row.last_fail_at ?? ''),
+          action: 'inspect' as const,
+          runId: String(row.run_id ?? ''),
+        })),
+      )
+      setTaskStats({
+        running_count: Number(r.stats?.running_count ?? 0),
+        queued_count: Number(r.stats?.queued_count ?? 0),
+        queue_depth_total: Number(r.stats?.queue_depth_total ?? 0),
+      })
+      setTasksFetchedAtMs(Date.now())
+      setActiveTaskCode((prev) => {
+        if (prev && mapped.some((x) => x.taskCode === prev)) return prev
+        return mapped[0]?.taskCode ?? ''
+      })
+    } finally {
+      setTasksLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void loadTasks(ac.signal)
+    return () => ac.abort()
+  }, [loadTasks, statusRefreshSeq])
+
+  useEffect(() => {
+    const hasLive =
+      activeRuns.length > 0 || tasks.some((x) => x.status === 'running' || x.status === 'queued')
+    if (!hasLive) return undefined
+    const timer = window.setInterval(() => setStatusRefreshSeq((n) => n + 1), 1500)
+    return () => window.clearInterval(timer)
+  }, [activeRuns.length, tasks])
+
   const [overwriteManualRepairs, setOverwriteManualRepairs] = useState(false)
   const [recomputeWithRelations, setRecomputeWithRelations] = useState(true)
   const activeTask = useMemo(
-    () => TASKS.find((x) => x.taskCode === activeTaskCode) ?? TASKS[0] ?? null,
-    [activeTaskCode],
+    () => tasks.find((x) => x.taskCode === activeTaskCode) ?? tasks[0] ?? null,
+    [activeTaskCode, tasks],
   )
   const visibleTasks = useMemo(
     () =>
-      TASKS.filter((x) => {
+      tasks.filter((x) => {
         if (x.domain === t.dwdToDimCenterUi.subjectTaskDomain) {
           return subjectCategoryFilter === 'all'
         }
         return subjectCategoryFilter === 'all' ? true : x.subjectCategory === subjectCategoryFilter
       }),
-    [subjectCategoryFilter],
+    [subjectCategoryFilter, tasks],
   )
-  const queueTotal = TASKS.reduce((n, x) => n + x.queueDepth, 0)
-  const runningCount = TASKS.filter((x) => x.status === 'running').length
-  const queuedCount = TASKS.filter((x) => x.status === 'queued').length
-  const queueWaiting = TASKS.filter((x) => x.status === 'queued').map((x) => x.taskCode)
-  const slots = [
-    { id: 'slot-a', status: 'busy' as const, taskCode: 'enterprise_profile_agg', priority: 'P1' },
-    { id: 'slot-b', status: 'idle' as const, taskCode: '', priority: 'P2' },
-  ]
-  const dagRows = [
-    { from: 'dwd_inv_header', to: 'subject_master_ingest_from_dwd' },
-    { from: 'subject_master_ingest_from_dwd', to: 'subject_category_recompute' },
-    { from: 'subject_category_recompute', to: SUBJECT_DIM_TASK.rename },
-    { from: 'dwd_inv_header', to: SUBJECT_DIM_TASK.pipeline },
-    { from: 'dwd_inv_header', to: 'enterprise_master_build' },
-    { from: 'enterprise_master_build', to: 'enterprise_mapping_check' },
-    { from: 'enterprise_master_build', to: 'enterprise_profile_agg' },
-  ]
+  const queueTotal = taskStats.queue_depth_total
+  const runningCount = taskStats.running_count
+  const queuedCount = taskStats.queued_count
+  const queueWaiting = tasks.filter((x) => x.status === 'queued').map((x) => x.taskCode)
+  const dagRows = useMemo(() => buildDagRows(tasks), [tasks])
 
   useEffect(() => {
     const focus = readDwdDimFocusTask()
@@ -312,7 +317,7 @@ export function DwdToDimCenterPage() {
 
   const edgeHighlighted = (from: string, to: string) => from === activeTaskCode || to === activeTaskCode
 
-  const taskCodes = useMemo(() => new Set(TASKS.map((x) => x.taskCode)), [])
+  const taskCodes = useMemo(() => new Set(tasks.map((x) => x.taskCode)), [tasks])
 
   const selectDownstreamFromEdge = (to: string) => {
     if (taskCodes.has(to)) {
@@ -404,6 +409,86 @@ export function DwdToDimCenterPage() {
     [allRunsFiltered, allRunsPageSafe],
   )
 
+  const pollDimTaskRun = async (
+    runId: string,
+    startedAtMs: number,
+  ): Promise<{ ok: true; message?: string; rows?: number } | { ok: false; message: string }> => {
+    const pollMs = 1500
+    const deadline = Date.now() + 2 * 60 * 60 * 1000
+    const endStates = new Set(['success', 'failed'])
+    for (;;) {
+      if (Date.now() > deadline) {
+        return { ok: false, message: '等待任务结果超时' }
+      }
+      const st = await fetchDimTaskRunStatus(runId)
+      if (!st.ok) {
+        return { ok: false, message: String(st.error?.message ?? 'unknown') }
+      }
+      setRunLive({
+        runId,
+        message: String(st.progress_message ?? st.error_message ?? '执行中…'),
+        step: String(st.progress_step ?? st.status ?? 'running'),
+        status: String(st.status ?? 'running'),
+        startedAtMs,
+      })
+      setStatusRefreshSeq((n) => n + 1)
+      if (endStates.has(String(st.status ?? ''))) {
+        if (st.status === 'success') {
+          return {
+            ok: true,
+            message: st.progress_message ? String(st.progress_message) : undefined,
+            rows: Number(st.rows_affected ?? 0),
+          }
+        }
+        return { ok: false, message: String(st.error_message ?? st.progress_message ?? 'failed') }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+  }
+
+  const pollPipeline = async (
+    runId: string,
+    startedAtMs: number,
+  ): Promise<{ ok: true; message?: string } | { ok: false; message: string }> => {
+    const pollMs = 1500
+    const deadline = Date.now() + 2 * 60 * 60 * 1000
+    const endStates = new Set(['success', 'failed'])
+    for (;;) {
+      if (Date.now() > deadline) {
+        return { ok: false, message: '等待全流程结果超时' }
+      }
+      const st = await fetchDimTaskRunStatus(runId)
+      if (st.ok) {
+        setRunLive({
+          runId,
+          message: String(st.progress_message ?? '执行中…'),
+          step: String(st.progress_step ?? st.status ?? 'running'),
+          status: String(st.status ?? 'running'),
+          startedAtMs,
+        })
+        setStatusRefreshSeq((n) => n + 1)
+        if (endStates.has(String(st.status ?? ''))) {
+          if (st.status === 'success') {
+            return { ok: true, message: st.progress_message ? String(st.progress_message) : undefined }
+          }
+          return { ok: false, message: String(st.error_message ?? st.progress_message ?? 'failed') }
+        }
+      } else {
+        const legacy = await fetchSubjectLibraryPipelineStatus(runId)
+        if (!legacy.ok) {
+          return { ok: false, message: String(legacy.error?.message ?? st.error?.message ?? 'unknown') }
+        }
+        if (endStates.has(String(legacy.status ?? ''))) {
+          if (legacy.status === 'success') {
+            return { ok: true, message: legacy.message ? String(legacy.message) : undefined }
+          }
+          return { ok: false, message: String(legacy.message ?? 'failed') }
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs))
+    }
+  }
+
   const pollRenameRebuild = async (runId: string): Promise<{ ok: true; message?: string } | { ok: false; message: string }> => {
     const pollMs = 1500
     const deadline = Date.now() + 2 * 60 * 60 * 1000
@@ -434,65 +519,42 @@ export function DwdToDimCenterPage() {
     if (!activeTask) return
     const effectiveScope = subjectCategoryFilter === 'all' ? activeTask.subjectCategory : subjectCategoryFilter
     const scopeSuffix = t.dwdToDimCenterUi.runSubmitScopeSuffix.replace('{scope}', effectiveScope)
+    const startedAtMs = Date.now()
     setSubmitMsg(null)
+    setRunLive(null)
     setSubmitBusy(true)
     try {
       if (activeTask.taskCode === SUBJECT_DIM_TASK.pipeline) {
-        setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepIngest)
-        const ingest = await postSubjectLibraryIngestFromDwd({ overwrite_manual_repairs: overwriteManualRepairs })
-        if (!ingest.ok) {
-          setSubmitMsg(
-            t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(ingest.error?.message ?? 'unknown')),
-          )
+        const start = await postSubjectLibraryPipeline({
+          overwrite_manual_repairs: overwriteManualRepairs,
+          with_relations: recomputeWithRelations,
+        })
+        if (!start.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(start.error?.message ?? 'unknown')))
+        } else if (!start.run_id) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
         } else {
-          const ingestCount = ingest.result?.subjects_upserted ?? 0
-          setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepRecompute)
-          const recompute = await postSubjectCategoryRecompute({
-            with_relations: recomputeWithRelations,
-            overwrite_manual_repairs: overwriteManualRepairs,
+          setRunLive({
+            runId: start.run_id,
+            message: start.message ?? t.dwdToDimCenterUi.subjectPipelineStarted.replace('{runId}', start.run_id),
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
           })
-          if (!recompute.ok) {
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollPipeline(start.run_id, startedAtMs)
+          if (polled.ok) {
             setSubmitMsg(
-              t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(recompute.error?.message ?? 'unknown')),
+              t.dwdToDimCenterUi.subjectPipelineFinished.replace(
+                '{extra}',
+                polled.message ? `：${polled.message}` : '',
+              ),
             )
           } else {
-            const recomputeRunId =
-              recompute.result?.run_id ??
-              recompute.result?.category?.run_id ??
-              (typeof recompute.result === 'object' && recompute.result
-                ? String((recompute.result as { run_id?: string }).run_id ?? '—')
-                : '—')
-            setSubmitMsg(t.dwdToDimCenterUi.subjectPipelineStepRename)
-            const start = await postSubjectLibraryRebuildRenameSignals()
-            if (!start.ok) {
-              setSubmitMsg(
-                t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(start.error?.message ?? 'unknown')),
-              )
-            } else if (start.async !== true) {
-              const renameExtra = start.message ? `：${start.message}` : ''
-              setSubmitMsg(
-                t.dwdToDimCenterUi.subjectPipelineSuccess
-                  .replace('{ingestCount}', String(ingestCount))
-                  .replace('{recomputeRunId}', String(recomputeRunId))
-                  .replace('{renameExtra}', renameExtra),
-              )
-            } else if (!start.run_id) {
-              setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
-            } else {
-              const polled = await pollRenameRebuild(start.run_id)
-              if (polled.ok) {
-                const renameExtra = polled.message ? `：${polled.message}` : ''
-                setSubmitMsg(
-                  t.dwdToDimCenterUi.subjectPipelineSuccess
-                    .replace('{ingestCount}', String(ingestCount))
-                    .replace('{recomputeRunId}', String(recomputeRunId))
-                    .replace('{renameExtra}', renameExtra),
-                )
-              } else {
-                setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
-              }
-            }
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
           }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
         }
       } else if (activeTask.taskCode === 'subject_master_ingest_from_dwd') {
         const r = await postSubjectLibraryIngestFromDwd({ overwrite_manual_repairs: overwriteManualRepairs })
@@ -513,18 +575,62 @@ export function DwdToDimCenterPage() {
         const r = await postSubjectCategoryRecompute({
           with_relations: recomputeWithRelations,
           overwrite_manual_repairs: overwriteManualRepairs,
+          async: true,
         })
-        if (r.ok) {
-          const runId =
-            r.result?.run_id ??
-            r.result?.category?.run_id ??
-            (typeof r.result === 'object' && r.result ? String((r.result as { run_id?: string }).run_id ?? '—') : '—')
-          const extra = r.message ? `；${r.message}` : ''
-          setSubmitMsg(
-            t.dwdToDimCenterUi.subjectRecomputeSuccess.replace('{runId}', String(runId)).replace('{extra}', extra),
-          )
-        } else {
+        if (!r.ok) {
           setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (!r.run_id) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
+        } else {
+          setRunLive({
+            runId: r.run_id,
+            message: r.message ?? '已启动主体分类重算…',
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
+          })
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollDimTaskRun(r.run_id, startedAtMs)
+          if (polled.ok) {
+            const extra = polled.message ? `；${polled.message}` : ''
+            setSubmitMsg(
+              t.dwdToDimCenterUi.subjectRecomputeSuccess.replace('{runId}', r.run_id).replace('{extra}', extra),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+          }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'group_enterprise_year_build') {
+        const r = await postGroupEnterpriseYearRebuild({ async: true })
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (!r.run_id) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', '未返回 run_id'))
+        } else {
+          setRunLive({
+            runId: r.run_id,
+            message: r.message ?? '已从管理与产权台账启动集团成员表计算…',
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
+          })
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollDimTaskRun(r.run_id, startedAtMs)
+          if (polled.ok) {
+            const extra = polled.message ? `；${polled.message}` : ''
+            setSubmitMsg(
+              t.dwdToDimCenterUi.groupEnterpriseRebuildSuccess
+                .replace('{runId}', r.run_id)
+                .replace('{rows}', String(polled.rows ?? 0))
+                .replace('{extra}', extra),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+          }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
         }
       } else if (activeTask.taskCode === SUBJECT_DIM_TASK.rename) {
         const start = await postSubjectLibraryRebuildRenameSignals()
@@ -555,37 +661,101 @@ export function DwdToDimCenterPage() {
       } else if (activeTask.taskCode === 'enterprise_profile_agg') {
         const sourceScope = runMode === 'full' ? 'manual_full' : 'manual_incremental'
         const r = await postDimEnterpriseProfileBuild({ source_scope: sourceScope, subject_category_scope: effectiveScope })
-        if (r.ok) {
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (r.async === true && r.run_id) {
+          setRunLive({
+            runId: r.run_id,
+            message: t.dwdToDimCenterUi.runSubmitAsyncStarted.replace('{runId}', String(r.run_id)),
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
+          })
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollDimTaskRun(r.run_id, startedAtMs)
+          if (polled.ok) {
+            setSubmitMsg(
+              `${t.dwdToDimCenterUi.runSubmitSuccess
+                .replace('{runId}', String(r.run_id))
+                .replace('{rows}', String(polled.rows ?? 0))
+                .replace('{ents}', '—')} ${scopeSuffix}`.trim(),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+          }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
+        } else {
           setSubmitMsg(
             `${t.dwdToDimCenterUi.runSubmitSuccess
               .replace('{runId}', String(r.run_id ?? 'N/A'))
               .replace('{rows}', String(r.profile_rows_written ?? 0))
               .replace('{ents}', String(r.enterprise_upserted ?? 0))} ${scopeSuffix}`.trim(),
           )
-        } else {
-          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
         }
       } else if (activeTask.taskCode === 'enterprise_master_build') {
         const r = await postDimEnterpriseMasterBuild({ subject_category_scope: effectiveScope })
-        if (r.ok) {
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (r.async === true && r.run_id) {
+          setRunLive({
+            runId: r.run_id,
+            message: t.dwdToDimCenterUi.runSubmitAsyncStarted.replace('{runId}', String(r.run_id)),
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
+          })
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollDimTaskRun(r.run_id, startedAtMs)
+          if (polled.ok) {
+            setSubmitMsg(
+              `${t.dwdToDimCenterUi.runSubmitSuccessRows
+                .replace('{runId}', String(r.run_id))
+                .replace('{rows}', String(polled.rows ?? 0))} ${scopeSuffix}`.trim(),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+          }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
+        } else {
           setSubmitMsg(
             `${t.dwdToDimCenterUi.runSubmitSuccessRows
               .replace('{runId}', String(r.run_id ?? 'N/A'))
               .replace('{rows}', String(r.rows_affected ?? 0))} ${scopeSuffix}`.trim(),
           )
-        } else {
-          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
         }
       } else if (activeTask.taskCode === 'enterprise_mapping_check') {
         const r = await postDimEnterpriseMappingBuild({ subject_category_scope: effectiveScope })
-        if (r.ok) {
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (r.async === true && r.run_id) {
+          setRunLive({
+            runId: r.run_id,
+            message: t.dwdToDimCenterUi.runSubmitAsyncStarted.replace('{runId}', String(r.run_id)),
+            step: 'queued',
+            status: 'running',
+            startedAtMs,
+          })
+          setStatusRefreshSeq((n) => n + 1)
+          const polled = await pollDimTaskRun(r.run_id, startedAtMs)
+          if (polled.ok) {
+            setSubmitMsg(
+              `${t.dwdToDimCenterUi.runSubmitSuccessRows
+                .replace('{runId}', String(r.run_id))
+                .replace('{rows}', String(polled.rows ?? 0))} ${scopeSuffix}`.trim(),
+            )
+          } else {
+            setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', polled.message))
+          }
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
+        } else {
           setSubmitMsg(
             `${t.dwdToDimCenterUi.runSubmitSuccessRows
               .replace('{runId}', String(r.run_id ?? 'N/A'))
               .replace('{rows}', String(r.rows_affected ?? 0))} ${scopeSuffix}`.trim(),
           )
-        } else {
-          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
         }
       } else {
         setSubmitMsg(t.dwdToDimCenterUi.runNotImplementedHint)
@@ -596,7 +766,10 @@ export function DwdToDimCenterPage() {
       setRunLogRefreshSeq((n) => n + 1)
     } finally {
       setSubmitBusy(false)
+      setRunLive(null)
       setShowRunDialog(false)
+      setStatusRefreshSeq((n) => n + 1)
+      setRunLogRefreshSeq((n) => n + 1)
     }
   }
 
@@ -611,13 +784,17 @@ export function DwdToDimCenterPage() {
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h1 className="text-il-page-title font-semibold text-text">{t.dwdToDimCenterUi.pageTitle}</h1>
-            <span className="rounded-full border border-accent/25 bg-[#f0f7ff] px-2 py-[1px] text-il-pill font-semibold text-accent-mid">
-              {t.dwdToDimCenterUi.prototypeBadge}
-            </span>
+            {tasksLoading ? (
+              <span className="rounded-full border border-border-light bg-[#f8fafc] px-2 py-[1px] text-il-pill font-semibold text-text-3">
+                {t.dwdToDimCenterUi.tasksLoading}
+              </span>
+            ) : null}
           </div>
           <button
             type="button"
             className="rounded-[7px] border border-border-light bg-white px-3 py-1.5 text-il-btn font-medium text-text hover:bg-[#f8fafc]"
+            onClick={() => setStatusRefreshSeq((n) => n + 1)}
+            disabled={tasksLoading}
           >
             {t.dwdToDimCenterUi.refresh}
           </button>
@@ -628,7 +805,7 @@ export function DwdToDimCenterPage() {
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-4">
         <Card compact>
           <div className="text-il-label text-text-3">{t.dwdToDimCenterUi.kpiTaskCount}</div>
-          <div className="mt-1 text-2xl font-semibold text-text">{TASKS.length}</div>
+          <div className="mt-1 text-2xl font-semibold text-text">{tasks.length}</div>
         </Card>
         <Card compact>
           <div className="text-il-label text-text-3">{t.dwdToDimCenterUi.kpiRunningCount}</div>
@@ -729,35 +906,39 @@ export function DwdToDimCenterPage() {
           </div>
         </Card>
 
-        <Card title={t.dwdToDimCenterUi.queueSlotsTitle}>
-          <div className="mb-2 text-il-label text-text-3">{t.dwdToDimCenterUi.queueSlotsHint}</div>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            {slots.map((slot) => (
-              <button
-                key={slot.id}
-                type="button"
-                disabled={!slot.taskCode}
-                onClick={() => {
-                  if (slot.taskCode) selectTaskFromDag(slot.taskCode)
-                }}
-                className={[
-                  'w-full rounded-[8px] border border-border-light bg-[#f8fafc] p-3 text-left',
-                  slot.taskCode ? 'cursor-pointer hover:border-accent/30 hover:bg-[#fafcff]' : 'cursor-default opacity-90',
-                ].join(' ')}
-              >
-                <div className="mb-1 flex items-center justify-between text-il-label text-text-3">
-                  <span>{slot.id}</span>
-                  <span className={slot.status === 'busy' ? 'text-accent-mid' : 'text-text-3'}>
-                    {slot.status === 'busy' ? t.dwdToDimCenterUi.queueSlotBusy : t.dwdToDimCenterUi.queueSlotIdle}
-                  </span>
-                </div>
-                <div className="font-mono text-il-meta text-text">{slot.taskCode || '—'}</div>
-                <div className="mt-1 text-il-label text-text-3">
-                  {t.dwdToDimCenterUi.queuePriorityLabel}: {slot.priority}
-                </div>
-              </button>
-            ))}
-          </div>
+        <Card title={t.dwdToDimCenterUi.activeRunsTitle}>
+          <div className="mb-2 text-il-label text-text-3">{t.dwdToDimCenterUi.activeRunsHint}</div>
+          {activeRuns.length === 0 ? (
+            <div className="rounded-[8px] border border-border-light bg-[#f8fafc] p-3 text-il-label text-text-2">
+              {t.dwdToDimCenterUi.activeRunsEmpty}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {activeRuns.map((run) => {
+                const elapsed = liveElapsedMs(run, tasksFetchedAtMs, liveTick)
+                return (
+                  <button
+                    key={run.run_id}
+                    type="button"
+                    onClick={() => selectTaskFromDag(String(run.task_code ?? ''))}
+                    className="w-full rounded-[8px] border border-border-light bg-[#f8fafc] p-3 text-left hover:border-accent/30 hover:bg-[#fafcff]"
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <div className="font-medium text-text">{run.task_name || run.task_code}</div>
+                      <span className="text-il-label text-accent-mid">{statusText('running')}</span>
+                    </div>
+                    <div className="font-mono text-il-meta text-text-3">{run.run_id}</div>
+                    <div className="mt-1 text-il-label text-text-2">
+                      {run.progress_message || t.dwdToDimCenterUi.statusRunning}
+                    </div>
+                    <div className="mt-1 text-il-meta text-text-3">
+                      {t.dwdToDimCenterUi.detailDuration}：{formatDurationMs(elapsed)}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
           <div className="mt-3 rounded-[8px] border border-border-light bg-white p-3 text-il-label text-text-2">
             {t.dwdToDimCenterUi.queueWaitingLabel}：{queueWaiting.length > 0 ? queueWaiting.join(' , ') : '—'}
           </div>
@@ -800,6 +981,9 @@ export function DwdToDimCenterPage() {
                       <span className={['inline-flex rounded-full border px-2 py-[1px] text-il-pill font-semibold', statusTag(row.status)].join(' ')}>
                         {statusText(row.status)}
                       </span>
+                      {row.status === 'running' && row.progressMessage ? (
+                        <div className="mt-1 max-w-[220px] text-il-meta text-text-3">{row.progressMessage}</div>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -832,7 +1016,23 @@ export function DwdToDimCenterPage() {
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailLastRun}</div>
                 <div className="text-text">{activeTask.lastRunAt}</div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailDuration}</div>
-                <div className="text-text">{activeTask.lastDuration}</div>
+                <div className="text-text">
+                  {activeTask.status === 'running'
+                    ? `${formatDurationMs(
+                        liveElapsedMs(
+                          { started_at: activeTask.lastRunAt !== '—' ? activeTask.lastRunAt : '', elapsed_ms: activeTask.elapsedMs },
+                          tasksFetchedAtMs,
+                          liveTick,
+                        ),
+                      )}${activeTask.progressMessage ? ` · ${activeTask.progressMessage}` : ''}`
+                    : activeTask.lastDuration}
+                </div>
+                {activeTask.status === 'running' && activeTask.progressMessage ? (
+                  <>
+                    <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailProgress}</div>
+                    <div className="text-text">{activeTask.progressMessage}</div>
+                  </>
+                ) : null}
               </div>
               <div
                 ref={runLogSectionRef}
@@ -953,7 +1153,14 @@ export function DwdToDimCenterPage() {
               </tr>
             </thead>
             <tbody>
-              {FAILED_RUNS.map((row) => (
+              {failedRuns.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-4 text-center text-text-3">
+                    {t.dwdToDimCenterUi.failurePanelEmpty}
+                  </td>
+                </tr>
+              ) : (
+              failedRuns.map((row) => (
                 <tr
                   key={`${row.taskCode}-${row.lastFailAt}`}
                   role="button"
@@ -991,7 +1198,8 @@ export function DwdToDimCenterPage() {
                     </button>
                   </td>
                 </tr>
-              ))}
+              ))
+              )}
             </tbody>
           </table>
         </div>
@@ -1076,12 +1284,37 @@ export function DwdToDimCenterPage() {
               <div className="rounded-[8px] border border-border-light bg-[#f8fafc] p-2 text-il-label text-text-2">
                 {t.dwdToDimCenterUi.runQueueNote}
               </div>
+              {activeTask?.taskCode === 'group_enterprise_year_build' ? (
+                <div className="rounded-[8px] border border-[#c8dff7] bg-[#f0f7ff] p-2 text-il-label text-accent-mid">
+                  {t.dwdToDimCenterUi.groupEnterpriseTaskHint}
+                </div>
+              ) : null}
+              {submitBusy && runLive ? (
+                <div className="rounded-[8px] border border-[#c8dff7] bg-[#f0f7ff] p-3 text-il-page-desc text-text">
+                  <div className="font-semibold text-accent-mid">{t.dwdToDimCenterUi.runDialogProgressTitle}</div>
+                  <div className="mt-2 font-mono text-il-meta text-text-3">
+                    {t.dwdToDimCenterUi.runDialogProgressRunId.replace('{runId}', runLive.runId)}
+                  </div>
+                  <div className="mt-1 text-text">
+                    {t.dwdToDimCenterUi.runDialogProgressStep.replace('{step}', runLive.step || '—')}
+                  </div>
+                  <div className="mt-1 font-medium text-text">{runLive.message || '—'}</div>
+                  <div className="mt-1 text-il-meta text-text-3">
+                    {t.dwdToDimCenterUi.runDialogProgressElapsed.replace('{elapsed}', formatDurationMs(runLiveElapsed))}
+                  </div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#dbeafe]">
+                    <div className="h-full w-2/5 animate-pulse rounded-full bg-accent" />
+                  </div>
+                  <p className="mt-2 text-il-meta text-text-3">{t.dwdToDimCenterUi.runDialogProgressHint}</p>
+                </div>
+              ) : null}
             </div>
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
                 type="button"
                 className="rounded-[7px] border border-border-light bg-white px-3 py-1.5 text-il-btn font-medium text-text hover:bg-[#f8fafc]"
                 onClick={() => setShowRunDialog(false)}
+                disabled={submitBusy}
               >
                 {t.dwdToDimCenterUi.cancel}
               </button>
@@ -1093,7 +1326,11 @@ export function DwdToDimCenterPage() {
                   void handleConfirmRun()
                 }}
               >
-                {submitBusy ? t.dwdToDimCenterUi.runSubmitBusy : t.dwdToDimCenterUi.confirmRun}
+                {submitBusy
+                  ? runLive
+                    ? t.dwdToDimCenterUi.runSubmitRunning
+                    : t.dwdToDimCenterUi.runSubmitBusy
+                  : t.dwdToDimCenterUi.confirmRun}
               </button>
             </div>
           </div>
@@ -1125,7 +1362,7 @@ export function DwdToDimCenterPage() {
                   }}
                 >
                   <option value="all">{t.dwdToDimCenterUi.runLogFilterTaskAll}</option>
-                  {TASKS.map((tk) => (
+                  {tasks.map((tk) => (
                     <option key={tk.taskCode} value={tk.taskCode}>
                       {tk.taskName} · {tk.taskCode}
                     </option>
@@ -1171,7 +1408,7 @@ export function DwdToDimCenterPage() {
                       <tr key={row.run_id} className="border-b border-border-light/60">
                         <td className="py-1.5 pr-2">
                           <div className="font-medium text-text">
-                            {TASK_CODE_TO_NAME[row.task_code] ?? t.dwdToDimCenterUi.runLogUnknownTask}
+                            {taskCodeToName[row.task_code] ?? t.dwdToDimCenterUi.runLogUnknownTask}
                           </div>
                           <div className="font-mono text-il-meta text-text-3">{row.task_code || '—'}</div>
                         </td>

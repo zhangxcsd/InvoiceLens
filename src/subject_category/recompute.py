@@ -6,7 +6,7 @@ import uuid
 from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from db.schema_sqlfiles import init_all_tables
 from src.subject_category.infer import (
@@ -424,6 +424,7 @@ def recompute_org_subject_categories_and_relations(
     run_id: str | None = None,
     snapshot_id: str | None = None,
     overwrite_manual_repairs: bool = False,
+    on_progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """
     联动重算：
@@ -432,12 +433,16 @@ def recompute_org_subject_categories_and_relations(
     """
     run_id = run_id or _make_run_id("subject_run")
     snapshot_id = snapshot_id or _make_run_id("subject_snapshot")
+    if on_progress:
+        on_progress("category", "正在重算机构主体分类（dim_subject_category_snapshot）…")
     cat = recompute_org_subject_categories(
         conn,
         run_id=run_id,
         snapshot_id=snapshot_id,
         overwrite_manual_repairs=overwrite_manual_repairs,
     )
+    if on_progress:
+        on_progress("relations", "正在重建主体交易关联（TRADE_COUNTERPARTY）…")
     rel = recompute_subject_relations_from_dwd(conn, run_id=run_id, snapshot_id=snapshot_id)
     return {
         "run_id": run_id,

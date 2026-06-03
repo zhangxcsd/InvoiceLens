@@ -23,6 +23,7 @@ export type NavKey =
   | 'dim_audited_invoice_link'
   | 'dim_enterprise_library'
   | 'dim_audit_related_library'
+  | 'dim_level1_enterprise_year'
   | 'dim_org_equity'
   | 'dim_org_diff'
   | 'dim_tax_lib'

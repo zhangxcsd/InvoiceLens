@@ -34,6 +34,7 @@ import { DataQualityTrendPage } from './quality/DataQualityTrendPage'
 import { HealthScorePage } from './quality/HealthScorePage'
 import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
 import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
+import { Level1EnterpriseYearPage } from './dim/Level1EnterpriseYearPage'
 import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
 import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
@@ -291,6 +292,7 @@ function Sidebar(props: {
     if (
       props.nav !== 'dim_enterprise_library' &&
       props.nav !== 'dim_audit_related_library' &&
+      props.nav !== 'dim_level1_enterprise_year' &&
       props.nav !== 'dim_audited_registry' &&
       props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_audited_invoice_link' &&
@@ -305,6 +307,7 @@ function Sidebar(props: {
       props.nav === 'dim_audited_registry' ||
       props.nav === 'dim_audited_contribution' ||
       props.nav === 'dim_audited_invoice_link' ||
+      props.nav === 'dim_level1_enterprise_year' ||
       props.nav === 'dim_org_manage' ||
       props.nav === 'dim_org_equity' ||
       props.nav === 'dim_org_diff'
@@ -696,6 +699,10 @@ function Sidebar(props: {
               open: !!openChildren.audited,
             })}
             <div className={openChildren.audited ? 'block' : 'hidden'}>
+              {navGrand('dim_level1_enterprise_year', t.sidebar.dimLevel1EnterpriseYear, {
+                active: props.nav === 'dim_level1_enterprise_year',
+                tier: 'great',
+              })}
               {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
                 active: props.nav === 'dim_audited_registry',
                 tier: 'great',
@@ -892,6 +899,8 @@ function Sidebar(props: {
 
 const LS_MAX_UPLOAD_MB = 'invoicelens.maxUploadMb'
 const LS_AUTO_IMPORT_AFTER_FORMAT = 'invoicelens.autoImportAfterFormat'
+const LS_AUTO_DWD_AFTER_IMPORT = 'invoicelens.autoDwdAfterImport'
+const LS_REBUILD_REL_AFTER_DWD = 'invoicelens.rebuildEnterpriseYearRelAfterDwd'
 
 function readStoredMaxUploadMb(): number {
   try {
@@ -914,6 +923,32 @@ function readStoredAutoImportAfterFormat(): boolean {
     /* ignore */
   }
   return true
+}
+
+function readStoredAutoDwdAfterImport(): boolean {
+  try {
+    const raw = localStorage.getItem(LS_AUTO_DWD_AFTER_IMPORT)
+    if (raw == null) return false
+    const v = String(raw).trim().toLowerCase()
+    if (v === '0' || v === 'false' || v === 'no') return false
+    if (v === '1' || v === 'true' || v === 'yes') return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
+function readStoredRebuildRelAfterDwd(): boolean {
+  try {
+    const raw = localStorage.getItem(LS_REBUILD_REL_AFTER_DWD)
+    if (raw == null) return false
+    const v = String(raw).trim().toLowerCase()
+    if (v === '0' || v === 'false' || v === 'no') return false
+    if (v === '1' || v === 'true' || v === 'yes') return true
+  } catch {
+    /* ignore */
+  }
+  return false
 }
 
 /** 本地日历日，批次基准日期用 YYYYMMDD（与导入 API batch_id 一致） */
@@ -978,6 +1013,8 @@ function ImportUploadPage(props: {
   const [fieldMappingConfig, setFieldMappingConfig] = useState<FieldMappingConfig>(() => FALLBACK_FIELD_MAPPING_CONFIG)
   const [maxUploadMb, setMaxUploadMb] = useState(readStoredMaxUploadMb)
   const [autoImportAfterFormat, setAutoImportAfterFormat] = useState(readStoredAutoImportAfterFormat)
+  const [autoDwdAfterImport, setAutoDwdAfterImport] = useState(readStoredAutoDwdAfterImport)
+  const [rebuildRelAfterDwd, setRebuildRelAfterDwd] = useState(readStoredRebuildRelAfterDwd)
   const [serverMaxUploadMb, setServerMaxUploadMb] = useState<number | null>(null)
   const pausedRef = useRef(paused)
   const importingRef = useRef(importing)
@@ -1029,6 +1066,32 @@ function ImportUploadPage(props: {
     },
     [effectiveCeiling],
   )
+
+  const persistAutoDwdAfterImport = useCallback((v: boolean) => {
+    setAutoDwdAfterImport(v)
+    try {
+      localStorage.setItem(LS_AUTO_DWD_AFTER_IMPORT, v ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+    if (!v) {
+      setRebuildRelAfterDwd(false)
+      try {
+        localStorage.setItem(LS_REBUILD_REL_AFTER_DWD, '0')
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [])
+
+  const persistRebuildRelAfterDwd = useCallback((v: boolean) => {
+    setRebuildRelAfterDwd(v)
+    try {
+      localStorage.setItem(LS_REBUILD_REL_AFTER_DWD, v ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const persistAutoImportAfterFormat = useCallback((v: boolean) => {
     setAutoImportAfterFormat(v)
@@ -1409,6 +1472,8 @@ function ImportUploadPage(props: {
           forceReimport,
           targetSheetKeys: sheets,
           maxUploadMb: capMb,
+          autoDwdAfterImport,
+          rebuildEnterpriseYearRelAfterDwd: rebuildRelAfterDwd,
           files: target.map((r) => ({ file: r.file, pathLabel: r.pathLabel })),
           onUploadProgress: (done, total) => {
             setImportPhase({ kind: 'upload', cur: done, total })
@@ -1551,16 +1616,46 @@ function ImportUploadPage(props: {
             </select>
           </div>
           <div className="w-[104px] shrink-0 sm:w-[116px]">
-            <label className="mb-1 block text-il-label font-medium leading-tight text-text-2">
+            <label
+              className="mb-1 block text-il-label font-medium leading-tight text-text-2"
+              title={t.importUpload.hintDwdAuto}
+            >
               {t.importUpload.labelDwd}
             </label>
             <select
+              value={autoDwdAfterImport ? 'auto' : 'manual'}
+              onChange={(e) => persistAutoDwdAfterImport(e.target.value === 'auto')}
               className="h-[33px] w-full rounded-[7px] border border-border bg-[#fafbfc] px-2 py-[7px] text-il-input text-text outline-none focus:border-accent focus:bg-white"
               disabled={importing}
+              title={t.importUpload.hintDwdAuto}
             >
-              <option>{t.importUpload.optDwdAuto}</option>
-              <option>{t.importUpload.optDwdManual}</option>
+              <option value="auto">{t.importUpload.optDwdAuto}</option>
+              <option value="manual">{t.importUpload.optDwdManual}</option>
             </select>
+          </div>
+          <div className="w-[152px] shrink-0">
+            <label
+              className="mb-1 block text-il-label font-medium leading-tight text-text-2"
+              title={t.importUpload.rebuildRelAfterDwdHint}
+            >
+              {t.importUpload.rebuildRelAfterDwdLabel}
+            </label>
+            <label
+              className={[
+                'flex h-[33px] cursor-pointer items-center gap-2 rounded-[7px] border border-border bg-[#fafbfc] px-2 text-il-input text-text-2',
+                importing || !autoDwdAfterImport ? 'cursor-not-allowed opacity-60' : 'hover:border-accent',
+              ].join(' ')}
+              title={t.importUpload.rebuildRelAfterDwdHint}
+            >
+              <input
+                type="checkbox"
+                checked={rebuildRelAfterDwd}
+                onChange={(e) => persistRebuildRelAfterDwd(e.target.checked)}
+                disabled={importing || !autoDwdAfterImport}
+                className="h-3.5 w-3.5 rounded border-border text-accent focus:ring-accent"
+              />
+              <span className="truncate text-il-meta">启用</span>
+            </label>
           </div>
           <div className="w-[152px] shrink-0">
             <label className="mb-1 block text-il-label font-medium leading-tight text-text-2">
@@ -1889,7 +1984,13 @@ function ImportUploadPage(props: {
                               ? `会话开始：批次=${ev.payload.batch_date} · 文件数=${ev.payload.total_files}`
                               : ev.type === 'session_end'
                                 ? `会话结束：成功=${ev.payload.success_files} · 失败=${ev.payload.failed_files} · 跳过=${ev.payload.skipped_files}`
-                                : ''}
+                                : ev.type === 'post_dwd_begin'
+                                  ? t.importUpload.importEventPostDwdBegin
+                                  : ev.type === 'post_dwd_end'
+                                    ? ev.payload.ok
+                                      ? `${t.importUpload.importEventPostDwdEndOk} · 年度=${(ev.payload.stat_years_built ?? []).join('、') || '—'}`
+                                      : `${t.importUpload.importEventPostDwdEndFail} · ${ev.payload.error?.message ?? ''}`
+                                    : ''}
                     </span>
                   </div>
                 ))
@@ -2657,6 +2758,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dimAuditRelatedLibrary}</b>
         </>
       )
+    if (props.nav === 'dim_level1_enterprise_year')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimLevel1EnterpriseYear}</b>
+        </>
+      )
     if (props.nav === 'dim_audited_registry')
       return (
         <>
@@ -2806,6 +2914,8 @@ function AppShell(props: {
             <EnterpriseLibraryPage onNav={props.onNav} />
           ) : props.nav === 'dim_audit_related_library' ? (
             <AuditRelatedEnterprisePage />
+          ) : props.nav === 'dim_level1_enterprise_year' ? (
+            <Level1EnterpriseYearPage />
           ) : props.nav === 'dim_audited_registry' ? (
             <AuditedEnterpriseLedgerPage />
           ) : props.nav === 'dim_audited_contribution' ? (

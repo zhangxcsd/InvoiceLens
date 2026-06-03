@@ -476,6 +476,7 @@ def force_rebuild_dwd_session(
     import_batch_id: str,
     import_session_id: str,
     stat_year: int | None = None,
+    rebuild_enterprise_year_rel: bool = False,
 ) -> dict[str, Any]:
     """
     运维「强制重洗」：删除该会话曾写入的 DWD 行，重置 ods_load_log 水位后按年重跑清洗。
@@ -542,6 +543,7 @@ def force_rebuild_dwd_session(
     if out.get("ok"):
         out["force_rebuild"] = True
         out["import_session_id"] = sid
+        _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
     return out
 
 
