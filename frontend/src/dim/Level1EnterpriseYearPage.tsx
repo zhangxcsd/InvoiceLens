@@ -18,9 +18,17 @@ import {
 
 function buildYearOptions(apiYears: string[]): string[] {
   const cy = new Date().getFullYear()
-  const fallback = Array.from({ length: 12 }, (_, i) => String(cy - i))
+  // 统计年度：当前年 +1（预编下年）至当前年往回 11 年
+  const fallback = Array.from({ length: 12 }, (_, i) => String(cy + 1 - i))
   const s = new Set<string>([...apiYears, ...fallback])
   return [...s].sort((a, b) => Number(b) - Number(a))
+}
+
+/** 实务默认年度：当前自然年（跨年自动变为新年份） */
+function defaultPracticeStatYear(yearOptions: string[]): string {
+  const cy = String(new Date().getFullYear())
+  if (yearOptions.includes(cy)) return cy
+  return yearOptions[0] ?? cy
 }
 
 function defaultSourceYear(targetYear: string): string {
@@ -61,7 +69,7 @@ export function Level1EnterpriseYearPage() {
   const ui = t.level1EnterpriseYearUi
   const [statYears, setStatYears] = useState<string[]>([])
   const [rowCountsByYear, setRowCountsByYear] = useState<Record<string, number>>({})
-  const [statYear, setStatYear] = useState('')
+  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [keyword, setKeyword] = useState('')
   const [activeOnly, setActiveOnly] = useState(false)
   const [rows, setRows] = useState<Level1EnterpriseYearRow[]>([])
@@ -114,12 +122,17 @@ export function Level1EnterpriseYearPage() {
   const effectiveYear = useMemo(() => {
     const y = statYear.trim()
     if (y && yearOptions.includes(y)) return y
-    return yearOptions[0] ?? String(new Date().getFullYear())
+    return defaultPracticeStatYear(yearOptions)
   }, [statYear, yearOptions])
 
+  const displayRows = useMemo(
+    () => (activeOnly ? rows.filter((r) => r.is_active !== false) : rows),
+    [activeOnly, rows],
+  )
+
   const memberTotalSum = useMemo(
-    () => rows.reduce((s, r) => s + (r.group_member_count ?? 0), 0),
-    [rows],
+    () => displayRows.reduce((s, r) => s + (r.group_member_count ?? 0), 0),
+    [displayRows],
   )
 
   const sourceYearOptions = useMemo(
@@ -139,7 +152,6 @@ export function Level1EnterpriseYearPage() {
       const res = await fetchLevel1EnterpriseYearList({
         statYear: effectiveYear,
         keyword,
-        activeOnly,
       })
       if (!res.ok) {
         setErr(res.error?.message ?? ui.loadFailed)
@@ -147,7 +159,12 @@ export function Level1EnterpriseYearPage() {
         return
       }
       if (res.stat_years?.length) setStatYears(res.stat_years)
-      if (res.selected_stat_year) setStatYear(res.selected_stat_year)
+      setStatYear((prev) => {
+        const merged = buildYearOptions(res.stat_years ?? [])
+        const p = prev.trim()
+        if (p && merged.includes(p)) return prev
+        return defaultPracticeStatYear(merged)
+      })
       setRows(res.rows ?? [])
     } catch (e) {
       setErr(e instanceof Error ? e.message : ui.loadFailed)
@@ -155,7 +172,7 @@ export function Level1EnterpriseYearPage() {
     } finally {
       setLoading(false)
     }
-  }, [activeOnly, effectiveYear, keyword, ui.loadFailed])
+  }, [effectiveYear, keyword, ui.loadFailed])
 
   useEffect(() => {
     void load()
@@ -515,7 +532,7 @@ export function Level1EnterpriseYearPage() {
       </Card>
 
       <Card
-        title={`${ui.listCardTitle.replace('{year}', effectiveYear).replace('{count}', String(rows.length))}${memberTotalSum > 0 ? ` · 成员单位合计 ${memberTotalSum}` : ''}`}
+        title={`${ui.listCardTitle.replace('{year}', effectiveYear).replace('{count}', String(displayRows.length))}${memberTotalSum > 0 ? ` · 成员单位合计 ${memberTotalSum}` : ''}`}
       >
         <div className="mb-3 flex flex-wrap gap-2">
           <button
@@ -557,7 +574,7 @@ export function Level1EnterpriseYearPage() {
         </div>
         {loading ? (
           <div className="text-sm text-text-2">{ui.loading}</div>
-        ) : rows.length === 0 ? (
+        ) : displayRows.length === 0 ? (
           <div className="text-sm text-text-2">{ui.emptyList}</div>
         ) : (
           <div className="overflow-x-auto">
@@ -575,7 +592,7 @@ export function Level1EnterpriseYearPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
+                {displayRows.map((row) => {
                   const memberTotal = row.group_member_count ?? 0
                   const memberActive = row.group_active_member_count ?? 0
                   const memberLabel =
