@@ -2876,7 +2876,11 @@ function AppShell(props: {
                   : 'flex-1 overflow-y-auto'
           }
         >
-          {props.nav === 'import_wizard_format_check' ? (
+          <div className={props.nav === 'dwd_to_dim_center' ? 'block' : 'hidden'} aria-hidden={props.nav !== 'dwd_to_dim_center'}>
+            <DwdToDimCenterPage visible={props.nav === 'dwd_to_dim_center'} />
+          </div>
+          {props.nav !== 'dwd_to_dim_center' &&
+            (props.nav === 'import_wizard_format_check' ? (
             <FormatCheckStandalonePage
               onNav={props.onNav}
               onProceedToUploadWithHandoff={props.onProceedToUploadWithHandoff}
@@ -2890,8 +2894,6 @@ function AppShell(props: {
             <DataPreviewPage onNav={props.onNav} />
           ) : props.nav === 'ods_to_dwd_center' ? (
             <OdsToDwdCenterPage />
-          ) : props.nav === 'dwd_to_dim_center' ? (
-            <DwdToDimCenterPage />
           ) : props.nav === 'processing_derived_dim_tasks' ? (
             <ProcessingDerivedDimTasksPage onNav={props.onNav} />
           ) : props.nav === 'dwd_data_preview' ? (
@@ -2946,7 +2948,7 @@ function AppShell(props: {
             <TaxCodeEnterpriseAnalysisPage />
           ) : (
             <div className="p-6 text-text-2">{t.importUpload.placeholderPage}</div>
-          )}
+          ))}
         </div>
       </div>
     </div>

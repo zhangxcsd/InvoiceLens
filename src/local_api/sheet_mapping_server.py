@@ -3509,7 +3509,7 @@ def main() -> int:
     assert_listen_port_free_or_exit(port)
     conn = None
     try:
-        from db.duckdb_conn import get_conn
+        from db.duckdb_conn import get_conn, warm_thread_local_connections
         from db.schema_sqlfiles import init_all_tables
         from src.bootstrap.dim_tax_code_seed import ensure_dim_tax_code_seeded
 
@@ -3517,6 +3517,8 @@ def main() -> int:
         init_all_tables(conn)
         seed_ret = ensure_dim_tax_code_seeded(conn)
         print(f"[InvoiceLensLocalAPI] dim_tax_code seed init: {seed_ret}")  # noqa: T201
+        warmed = warm_thread_local_connections(count=4)
+        print(f"[InvoiceLensLocalAPI] duckdb thread pool warmed: {warmed} connections")  # noqa: T201
     except Exception as exc:
         print(f"[InvoiceLensLocalAPI] bootstrap init warning: {type(exc).__name__}: {exc}")  # noqa: T201
     finally:

@@ -74,6 +74,25 @@ def close_conn():
         _tls.conn = None
 
 
+def warm_thread_local_connections(*, count: int = 4) -> int:
+    """
+    在多个工作线程上预建 DuckDB 连接并完成 init_all_tables，
+    避免 ThreadingHTTPServer 首次请求承担 DDL 冷启动（约 1～2s）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from db.schema_sqlfiles import init_all_tables
+
+    workers = max(1, int(count or 1))
+
+    def _warm_one() -> None:
+        init_all_tables(get_conn())
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(lambda _: _warm_one(), range(workers)))
+    return workers
+
+
 def rebuild_database_files(*, remove_tmp: bool = False) -> dict:
     """
     面向未来：不考虑历史兼容时的一键重建。

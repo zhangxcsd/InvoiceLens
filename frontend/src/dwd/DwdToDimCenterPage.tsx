@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
+import {
+  defaultDimTaskCode,
+  readDimRunLogsCache,
+  readDimTasksSessionCache,
+  writeDimRunLogsCache,
+  writeDimTasksSessionCache,
+} from './dimTasksSessionCache'
 import { clearDwdDimFocusTask, readDwdDimFocusTask, SUBJECT_DIM_TASK } from './dwdDimNav'
+import { DIM_TASK_CATALOG, mergeDimTaskRows } from './mergeDimTasks'
 import { liveElapsedMs, useLiveElapsedTick } from './useLiveElapsed'
 import {
   fetchDimTaskRunStatus,
@@ -18,6 +26,7 @@ import {
   postSubjectLibraryPipeline,
   postSubjectLibraryRebuildRenameSignals,
   type DimActiveRunRow,
+  type DimTasksResponse,
   type DimUnifiedTaskRow,
 } from '../config/localApi'
 
@@ -25,13 +34,21 @@ type TaskStatus = 'idle' | 'queued' | 'running' | 'failed'
 type TriggerMode = 'manual' | 'chained' | 'scheduled'
 
 type DimTask = {
+  taskNo: number
   taskCode: string
   taskName: string
   domain: string
   subjectCategory: 'SC-ENT' | 'SC-BRANCH' | 'SC-TEMP'
+  layer: string
+  queryGroup: string
+  queryGroupLabel: string
+  purpose: string
+  outputDesc: string
+  queryDesc: string
   outputTable: string
   triggerMode: TriggerMode[]
   dependsOn: string[]
+  softDependsOn: string[]
   queueDepth: number
   status: TaskStatus
   lastRunAt: string
@@ -77,13 +94,21 @@ function mapApiTask(raw: DimUnifiedTaskRow): DimTask {
   const durationMs = Number(raw.last_duration_ms ?? 0)
   const progressMessage = String(raw.progress_message ?? '').trim()
   return {
+    taskNo: Number(raw.task_no ?? 0),
     taskCode: String(raw.task_code ?? ''),
     taskName: String(raw.task_name ?? ''),
     domain: String(raw.domain ?? ''),
     subjectCategory: (raw.subject_category as DimTask['subjectCategory']) || 'SC-ENT',
+    layer: String(raw.layer ?? 'DIM'),
+    queryGroup: String(raw.query_group ?? ''),
+    queryGroupLabel: String(raw.query_group_label ?? ''),
+    purpose: String(raw.purpose ?? ''),
+    outputDesc: String(raw.output_desc ?? ''),
+    queryDesc: String(raw.query_desc ?? ''),
     outputTable: String(raw.output_table ?? ''),
     triggerMode: (Array.isArray(raw.trigger_modes) ? raw.trigger_modes : []) as TriggerMode[],
     dependsOn: Array.isArray(raw.depends_on) ? raw.depends_on.map(String) : [],
+    softDependsOn: Array.isArray(raw.soft_depends_on) ? raw.soft_depends_on.map(String) : [],
     queueDepth: Number(raw.queue_depth ?? 0),
     status,
     lastRunAt: lastStarted || '—',
@@ -142,16 +167,93 @@ function runStatusClass(status: string) {
   return 'border-[#d8dee7] bg-[#f8fafc] text-text-2'
 }
 
-export function DwdToDimCenterPage() {
-  const [tasks, setTasks] = useState<DimTask[]>([])
-  const [activeRuns, setActiveRuns] = useState<DimActiveRunRow[]>([])
-  const [failedRuns, setFailedRuns] = useState<FailedRun[]>([])
-  const [taskStats, setTaskStats] = useState({ running_count: 0, queued_count: 0, queue_depth_total: 0 })
-  const [tasksLoading, setTasksLoading] = useState(true)
-  const [tasksFetchedAtMs, setTasksFetchedAtMs] = useState(0)
+type RunLogRow = {
+  run_id: string
+  status: string
+  rows_affected: number
+  started_at: string
+  duration_ms: number
+  error_message: string
+}
+
+function mapTasksFromResponse(
+  response: Pick<DimTasksResponse, 'ok' | 'tasks' | 'registry'> & Partial<DimTasksResponse>,
+): DimTask[] {
+  const mergedRows = mergeDimTaskRows(response.ok ? response : { ok: false, tasks: [], registry: DIM_TASK_CATALOG })
+  return mergedRows.map((row) => mapApiTask(row))
+}
+
+function mapRunLogRows(
+  runs: Array<{
+    run_id?: string
+    status?: string
+    rows_affected?: number
+    started_at?: string
+    duration_ms?: number
+    error_message?: string
+  }>,
+): RunLogRow[] {
+  return runs.map((x) => ({
+    run_id: String(x.run_id ?? ''),
+    status: String(x.status ?? ''),
+    rows_affected: Number(x.rows_affected ?? 0),
+    started_at: String(x.started_at ?? ''),
+    duration_ms: Number(x.duration_ms ?? 0),
+    error_message: String(x.error_message ?? ''),
+  }))
+}
+
+function initialTasksState(): DimTask[] {
+  const cached = readDimTasksSessionCache()
+  if (cached?.ok) return mapTasksFromResponse(cached)
+  return mapTasksFromResponse({ ok: false, tasks: [], registry: DIM_TASK_CATALOG })
+}
+
+function initialActiveTaskCode(): string {
+  const cached = readDimTasksSessionCache()
+  if (cached?.ok && cached.tasks?.length) {
+    return String(cached.tasks[0]?.task_code ?? defaultDimTaskCode())
+  }
+  return defaultDimTaskCode()
+}
+
+function initialRunLogs(taskCode: string): RunLogRow[] {
+  return readDimRunLogsCache(taskCode) ?? []
+}
+
+export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
+  const bootTaskCode = useMemo(() => initialActiveTaskCode(), [])
+  const [tasks, setTasks] = useState<DimTask[]>(initialTasksState)
+  const [activeRuns, setActiveRuns] = useState<DimActiveRunRow[]>(
+    () => readDimTasksSessionCache()?.active_runs ?? [],
+  )
+  const [failedRuns, setFailedRuns] = useState<FailedRun[]>(() => {
+    const cached = readDimTasksSessionCache()
+    if (!cached?.ok) return []
+    return (cached.failed_recent ?? []).map((row) => ({
+      taskCode: String(row.task_code ?? ''),
+      taskName: String(row.task_name ?? ''),
+      errorType: String(row.error_message ?? '任务失败'),
+      lastFailAt: String(row.last_fail_at ?? ''),
+      action: 'inspect' as const,
+      runId: String(row.run_id ?? ''),
+    }))
+  })
+  const [taskStats, setTaskStats] = useState(() => {
+    const stats = readDimTasksSessionCache()?.stats
+    return {
+      running_count: Number(stats?.running_count ?? 0),
+      queued_count: Number(stats?.queued_count ?? 0),
+      queue_depth_total: Number(stats?.queue_depth_total ?? 0),
+    }
+  })
+  const [statusSyncing, setStatusSyncing] = useState(() => !readDimTasksSessionCache()?.ok)
+  const [tasksFetchedAtMs, setTasksFetchedAtMs] = useState(() =>
+    readDimTasksSessionCache()?.ok ? Date.now() : 0,
+  )
   const [statusRefreshSeq, setStatusRefreshSeq] = useState(0)
-  const [activeTaskCode, setActiveTaskCode] = useState('')
-  const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<'all' | 'SC-ENT' | 'SC-BRANCH' | 'SC-TEMP'>('all')
+  const [activeTaskCode, setActiveTaskCode] = useState(bootTaskCode)
+  const [queryGroupFilter, setQueryGroupFilter] = useState<string>('all')
   const [failureFocus, setFailureFocus] = useState<FailedRun | null>(null)
   const [showRunDialog, setShowRunDialog] = useState(false)
   const [runMode, setRunMode] = useState<'incremental' | 'full'>('incremental')
@@ -165,17 +267,8 @@ export function DwdToDimCenterPage() {
     startedAtMs: number
   } | null>(null)
   const [submitMsg, setSubmitMsg] = useState<string | null>(null)
-  const [runLogsBusy, setRunLogsBusy] = useState(false)
-  const [runLogs, setRunLogs] = useState<
-    Array<{
-      run_id: string
-      status: string
-      rows_affected: number
-      started_at: string
-      duration_ms: number
-      error_message: string
-    }>
-  >([])
+  const [runLogsBusy, setRunLogsBusy] = useState(() => !readDimRunLogsCache(bootTaskCode))
+  const [runLogs, setRunLogs] = useState<RunLogRow[]>(() => initialRunLogs(bootTaskCode))
   const [showRunLogsDialog, setShowRunLogsDialog] = useState(false)
   const [allRunsBusy, setAllRunsBusy] = useState(false)
   const [allRuns, setAllRuns] = useState<
@@ -196,7 +289,13 @@ export function DwdToDimCenterPage() {
   const taskDetailCardRef = useRef<HTMLDivElement>(null)
   const runLogSectionRef = useRef<HTMLDivElement>(null)
 
-  const taskCodeToName = useMemo(() => Object.fromEntries(tasks.map((x) => [x.taskCode, x.taskName])), [tasks])
+  const taskCodeToName = useMemo(
+    () =>
+      Object.fromEntries(
+        tasks.map((x) => [x.taskCode, x.taskNo > 0 ? `${x.taskNo}. ${x.taskName}` : x.taskName]),
+      ),
+    [tasks],
+  )
   const liveTick = useLiveElapsedTick(
     activeRuns.length > 0 || tasks.some((x) => x.status === 'running') || submitBusy,
   )
@@ -205,49 +304,67 @@ export function DwdToDimCenterPage() {
     return Math.max(0, Date.now() - runLive.startedAtMs)
   }, [runLive, liveTick])
 
-  const loadTasks = useCallback(async (signal?: AbortSignal) => {
-    setTasksLoading(true)
-    try {
-      const r = await fetchDimTasks(signal)
-      if (!r.ok) {
-        setTasks([])
-        setActiveRuns([])
-        setFailedRuns([])
-        return
-      }
-      const mapped = (r.tasks ?? []).map(mapApiTask)
-      setTasks(mapped)
-      setActiveRuns(Array.isArray(r.active_runs) ? r.active_runs : [])
-      setFailedRuns(
-        (r.failed_recent ?? []).map((row) => ({
-          taskCode: String(row.task_code ?? ''),
-          taskName: String(row.task_name ?? ''),
-          errorType: String(row.error_message ?? '任务失败'),
-          lastFailAt: String(row.last_fail_at ?? ''),
-          action: 'inspect' as const,
-          runId: String(row.run_id ?? ''),
-        })),
-      )
-      setTaskStats({
-        running_count: Number(r.stats?.running_count ?? 0),
-        queued_count: Number(r.stats?.queued_count ?? 0),
-        queue_depth_total: Number(r.stats?.queue_depth_total ?? 0),
-      })
-      setTasksFetchedAtMs(Date.now())
-      setActiveTaskCode((prev) => {
-        if (prev && mapped.some((x) => x.taskCode === prev)) return prev
-        return mapped[0]?.taskCode ?? ''
-      })
-    } finally {
-      setTasksLoading(false)
-    }
+  const applyTasksResponse = useCallback((r: Awaited<ReturnType<typeof fetchDimTasks>>) => {
+    const mapped = mapTasksFromResponse(r)
+    setTasks(mapped)
+    if (!r.ok) return mapped
+    writeDimTasksSessionCache(r)
+    setActiveRuns(Array.isArray(r.active_runs) ? r.active_runs : [])
+    setFailedRuns(
+      (r.failed_recent ?? []).map((row) => ({
+        taskCode: String(row.task_code ?? ''),
+        taskName: String(row.task_name ?? ''),
+        errorType: String(row.error_message ?? '任务失败'),
+        lastFailAt: String(row.last_fail_at ?? ''),
+        action: 'inspect' as const,
+        runId: String(row.run_id ?? ''),
+      })),
+    )
+    setTaskStats({
+      running_count: Number(r.stats?.running_count ?? 0),
+      queued_count: Number(r.stats?.queued_count ?? 0),
+      queue_depth_total: Number(r.stats?.queue_depth_total ?? 0),
+    })
+    setTasksFetchedAtMs(Date.now())
+    setActiveTaskCode((prev) => {
+      if (prev && mapped.some((x) => x.taskCode === prev)) return prev
+      return mapped[0]?.taskCode ?? ''
+    })
+    return mapped
   }, [])
+
+  const loadTasks = useCallback(
+    async (signal?: AbortSignal) => {
+      setStatusSyncing(true)
+      try {
+        const r = await fetchDimTasks(signal)
+        applyTasksResponse(r)
+        if (!r.ok) {
+          setActiveRuns([])
+          setFailedRuns([])
+        }
+      } finally {
+        setStatusSyncing(false)
+      }
+    },
+    [applyTasksResponse],
+  )
+
+  const prevVisibleRef = useRef(visible)
 
   useEffect(() => {
     const ac = new AbortController()
     void loadTasks(ac.signal)
     return () => ac.abort()
   }, [loadTasks, statusRefreshSeq])
+
+  useEffect(() => {
+    const wasVisible = prevVisibleRef.current
+    prevVisibleRef.current = visible
+    if (visible && !wasVisible) {
+      setStatusRefreshSeq((n) => n + 1)
+    }
+  }, [visible])
 
   useEffect(() => {
     const hasLive =
@@ -263,15 +380,20 @@ export function DwdToDimCenterPage() {
     () => tasks.find((x) => x.taskCode === activeTaskCode) ?? tasks[0] ?? null,
     [activeTaskCode, tasks],
   )
+  const queryGroupOptions = useMemo(() => {
+    const labels = new Map<string, string>()
+    for (const task of tasks) {
+      if (task.queryGroup) labels.set(task.queryGroup, task.queryGroupLabel || task.queryGroup)
+    }
+    return [...labels.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [tasks])
+
   const visibleTasks = useMemo(
     () =>
-      tasks.filter((x) => {
-        if (x.domain === t.dwdToDimCenterUi.subjectTaskDomain) {
-          return subjectCategoryFilter === 'all'
-        }
-        return subjectCategoryFilter === 'all' ? true : x.subjectCategory === subjectCategoryFilter
-      }),
-    [subjectCategoryFilter, tasks],
+      tasks
+        .filter((x) => queryGroupFilter === 'all' || x.queryGroup === queryGroupFilter)
+        .sort((a, b) => a.taskNo - b.taskNo || a.taskCode.localeCompare(b.taskCode)),
+    [queryGroupFilter, tasks],
   )
   const queueTotal = taskStats.queue_depth_total
   const runningCount = taskStats.running_count
@@ -327,27 +449,27 @@ export function DwdToDimCenterPage() {
 
   useEffect(() => {
     if (!activeTaskCode) return
+    const cached = readDimRunLogsCache(activeTaskCode)
+    if (cached) {
+      setRunLogs(cached)
+      setRunLogsBusy(false)
+    } else {
+      setRunLogs([])
+      setRunLogsBusy(true)
+    }
     let cancelled = false
     const ac = new AbortController()
     void (async () => {
-      setRunLogsBusy(true)
       try {
         const r = await fetchDimTaskRuns({ task_code: activeTaskCode, limit: 6 }, ac.signal)
         if (cancelled) return
         if (!r.ok) {
-          setRunLogs([])
+          if (!cached) setRunLogs([])
           return
         }
-        setRunLogs(
-          r.runs.map((x) => ({
-            run_id: String(x.run_id ?? ''),
-            status: String(x.status ?? ''),
-            rows_affected: Number(x.rows_affected ?? 0),
-            started_at: String(x.started_at ?? ''),
-            duration_ms: Number(x.duration_ms ?? 0),
-            error_message: String(x.error_message ?? ''),
-          })),
-        )
+        const rows = mapRunLogRows(r.runs)
+        writeDimRunLogsCache(activeTaskCode, rows)
+        setRunLogs(rows)
       } finally {
         if (!cancelled) setRunLogsBusy(false)
       }
@@ -517,7 +639,12 @@ export function DwdToDimCenterPage() {
 
   const handleConfirmRun = async () => {
     if (!activeTask) return
-    const effectiveScope = subjectCategoryFilter === 'all' ? activeTask.subjectCategory : subjectCategoryFilter
+    const enterpriseScoped = new Set([
+      'enterprise_master_build',
+      'enterprise_mapping_check',
+      'enterprise_profile_agg',
+    ])
+    const effectiveScope = enterpriseScoped.has(activeTask.taskCode) ? 'ALL' : 'SC-ENT'
     const scopeSuffix = t.dwdToDimCenterUi.runSubmitScopeSuffix.replace('{scope}', effectiveScope)
     const startedAtMs = Date.now()
     setSubmitMsg(null)
@@ -784,7 +911,7 @@ export function DwdToDimCenterPage() {
         <div className="mb-2 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h1 className="text-il-page-title font-semibold text-text">{t.dwdToDimCenterUi.pageTitle}</h1>
-            {tasksLoading ? (
+            {statusSyncing ? (
               <span className="rounded-full border border-border-light bg-[#f8fafc] px-2 py-[1px] text-il-pill font-semibold text-text-3">
                 {t.dwdToDimCenterUi.tasksLoading}
               </span>
@@ -794,7 +921,7 @@ export function DwdToDimCenterPage() {
             type="button"
             className="rounded-[7px] border border-border-light bg-white px-3 py-1.5 text-il-btn font-medium text-text hover:bg-[#f8fafc]"
             onClick={() => setStatusRefreshSeq((n) => n + 1)}
-            disabled={tasksLoading}
+            disabled={statusSyncing}
           >
             {t.dwdToDimCenterUi.refresh}
           </button>
@@ -830,16 +957,18 @@ export function DwdToDimCenterPage() {
           <div className="rounded-[8px] border border-border-light bg-white p-3">
             <div className="mb-2 flex items-center justify-end">
               <label className="flex items-center gap-2 text-il-meta text-text-2">
-                <span>{t.dwdToDimCenterUi.subjectCategoryFilter}</span>
+                <span>{t.dwdToDimCenterUi.querySourceFilter}</span>
                 <select
-                  value={subjectCategoryFilter}
-                  onChange={(e) => setSubjectCategoryFilter(e.target.value as 'all' | 'SC-ENT' | 'SC-BRANCH' | 'SC-TEMP')}
+                  value={queryGroupFilter}
+                  onChange={(e) => setQueryGroupFilter(e.target.value)}
                   className="rounded-[7px] border border-border bg-[#fafbfc] px-2 py-1 text-il-input text-text outline-none focus:border-accent"
                 >
-                  <option value="all">{t.dwdToDimCenterUi.subjectCategoryAll}</option>
-                  <option value="SC-ENT">{t.dwdToDimCenterUi.subjectCategoryEnt}</option>
-                  <option value="SC-BRANCH">{t.dwdToDimCenterUi.subjectCategoryBranch}</option>
-                  <option value="SC-TEMP">{t.dwdToDimCenterUi.subjectCategoryTemp}</option>
+                  <option value="all">{t.dwdToDimCenterUi.querySourceAll}</option>
+                  {queryGroupOptions.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>
@@ -856,10 +985,17 @@ export function DwdToDimCenterPage() {
                       : 'border-border-light bg-[#f8fafc] hover:border-accent/30 hover:bg-[#fafcff]',
                   ].join(' ')}
                 >
-                  <div className="text-il-card-title font-semibold text-text">{task.taskName}</div>
+                  <div className="text-il-card-title font-semibold text-text">
+                    {task.taskNo > 0 ? `${task.taskNo}. ` : ''}
+                    {task.taskName}
+                  </div>
                   <div className="font-mono text-il-meta text-text-3">{task.taskCode}</div>
+                  {task.purpose ? (
+                    <div className="mt-1 line-clamp-2 text-il-meta leading-snug text-text-3">{task.purpose}</div>
+                  ) : null}
                   <div className="mt-1 text-il-label text-text-2">
                     {t.dwdToDimCenterUi.dagNodeOutput}：{task.outputTable}
+                    {task.layer ? ` · ${task.layer}` : ''}
                   </div>
                   <div className="mt-1 text-il-label text-text-2">
                     {t.dwdToDimCenterUi.dagNodeDependsOn}：{task.dependsOn.join(' , ')}
@@ -953,7 +1089,9 @@ export function DwdToDimCenterPage() {
             <table className="min-w-full text-left text-il-page-desc">
               <thead>
                 <tr className="border-b border-border-light text-il-meta font-semibold text-text-3">
+                  <th className="w-10 py-2 pr-2 text-center">{t.dwdToDimCenterUi.colTaskNo}</th>
                   <th className="py-2 pr-3">{t.dwdToDimCenterUi.colTaskName}</th>
+                  <th className="py-2 pr-3">{t.dwdToDimCenterUi.colQuerySource}</th>
                   <th className="py-2 pr-3">{t.dwdToDimCenterUi.colOutput}</th>
                   <th className="py-2 pr-3">{t.dwdToDimCenterUi.colTriggerMode}</th>
                   <th className="py-2 pr-3 text-right">{t.dwdToDimCenterUi.colQueue}</th>
@@ -970,11 +1108,28 @@ export function DwdToDimCenterPage() {
                     ].join(' ')}
                     onClick={() => selectTaskFromList(row.taskCode)}
                   >
+                    <td className="py-2 pr-2 align-top text-center tabular-nums font-semibold text-text">
+                      {row.taskNo}
+                    </td>
                     <td className="py-2 pr-3 align-top">
                       <div className="font-medium text-text">{row.taskName}</div>
                       <div className="font-mono text-il-meta text-text-3">{row.taskCode}</div>
+                      {row.purpose ? (
+                        <div className="mt-0.5 line-clamp-2 text-il-meta leading-snug text-text-3">{row.purpose}</div>
+                      ) : null}
                     </td>
-                    <td className="py-2 pr-3 align-top font-mono text-text-2">{row.outputTable}</td>
+                    <td className="py-2 pr-3 align-top text-text-2">
+                      <div>{row.queryGroupLabel || '—'}</div>
+                      {row.queryGroup ? (
+                        <div className="font-mono text-il-meta text-text-3">{row.queryGroup}</div>
+                      ) : null}
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      <div className="font-mono text-text-2">{row.outputTable}</div>
+                      {row.layer ? (
+                        <div className="mt-0.5 text-il-meta text-text-3">{row.layer}</div>
+                      ) : null}
+                    </td>
                     <td className="py-2 pr-3 align-top text-text-2">{row.triggerMode.map(triggerText).join(' / ')}</td>
                     <td className="py-2 pr-3 align-top text-right tabular-nums text-text-2">{row.queueDepth}</td>
                     <td className="py-2 align-top">
@@ -999,20 +1154,56 @@ export function DwdToDimCenterPage() {
           ) : (
             <div className="space-y-3 text-il-page-desc">
               <div className="rounded-[8px] border border-border-light bg-[#f8fafc] p-3">
-                <div className="mb-1 font-semibold text-text">{activeTask.taskName}</div>
+                <div className="mb-1 font-semibold text-text">
+                  {activeTask.taskNo > 0 ? `${activeTask.taskNo}. ` : ''}
+                  {activeTask.taskName}
+                </div>
                 <div className="font-mono text-il-meta text-text-3">{activeTask.taskCode}</div>
               </div>
+              {activeTask.purpose || activeTask.outputDesc || activeTask.queryDesc ? (
+                <div className="rounded-[8px] border border-border-light bg-white p-3 text-il-meta leading-relaxed text-text-2">
+                  {activeTask.purpose ? (
+                    <p>
+                      <span className="font-semibold text-text">{t.dwdToDimCenterUi.detailPurpose}：</span>
+                      {activeTask.purpose}
+                    </p>
+                  ) : null}
+                  {activeTask.outputDesc ? (
+                    <p className={activeTask.purpose ? 'mt-2' : ''}>
+                      <span className="font-semibold text-text">{t.dwdToDimCenterUi.detailOutputDesc}：</span>
+                      {activeTask.outputDesc}
+                    </p>
+                  ) : null}
+                  {activeTask.queryDesc ? (
+                    <p className={activeTask.purpose || activeTask.outputDesc ? 'mt-2' : ''}>
+                      <span className="font-semibold text-text">{t.dwdToDimCenterUi.detailQueryDesc}：</span>
+                      {activeTask.queryDesc}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-x-3 gap-y-2">
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailDomain}</div>
                 <div className="text-text">{activeTask.domain}</div>
-                <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.subjectCategoryLabel}</div>
-                <div className="font-mono text-text">{activeTask.subjectCategory}</div>
+                <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailLayer}</div>
+                <div className="font-mono text-text">{activeTask.layer || '—'}</div>
+                <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.colQuerySource}</div>
+                <div className="text-text">
+                  {activeTask.queryGroupLabel || '—'}
+                  {activeTask.queryGroup ? (
+                    <span className="ml-1 font-mono text-il-meta text-text-3">({activeTask.queryGroup})</span>
+                  ) : null}
+                </div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailOwner}</div>
                 <div className="text-text">{activeTask.owner}</div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailOutput}</div>
                 <div className="font-mono text-text">{activeTask.outputTable}</div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailDependsOn}</div>
-                <div className="font-mono text-text">{activeTask.dependsOn.join(' , ')}</div>
+                <div className="font-mono text-text">{activeTask.dependsOn.length ? activeTask.dependsOn.join(' , ') : '—'}</div>
+                <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailSoftDependsOn}</div>
+                <div className="font-mono text-text">
+                  {activeTask.softDependsOn.length ? activeTask.softDependsOn.join(' , ') : '—'}
+                </div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailLastRun}</div>
                 <div className="text-text">{activeTask.lastRunAt}</div>
                 <div className="text-il-meta text-text-3">{t.dwdToDimCenterUi.detailDuration}</div>

@@ -546,7 +546,8 @@ def list_unified_dim_tasks() -> dict[str, Any]:
     summary = summarize_dim_task_status(task_codes=registry_task_codes())
     live_by_code = {str(t.get("task_code") or ""): t for t in summary.get("tasks") or []}
     merged_tasks: list[dict[str, Any]] = []
-    for reg in DIM_TASK_REGISTRY:
+    ordered_registry = sorted(DIM_TASK_REGISTRY, key=lambda x: int(x.get("task_no") or 0))
+    for reg in ordered_registry:
         code = str(reg.get("task_code") or "").strip()
         live = live_by_code.get(code) or {}
         merged_tasks.append(

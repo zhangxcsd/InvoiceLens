@@ -339,13 +339,21 @@ export type DimTaskBuildResult = {
 }
 
 export type DimUnifiedTaskRow = {
+  task_no?: number
   task_code: string
   task_name: string
   domain: string
   subject_category: string
+  layer?: string
+  query_group?: string
+  query_group_label?: string
   output_table: string
+  purpose?: string
+  output_desc?: string
+  query_desc?: string
   trigger_modes: string[]
   depends_on: string[]
+  soft_depends_on?: string[]
   owner: string
   status: string
   queue_depth: number
@@ -373,6 +381,7 @@ export type DimActiveRunRow = {
 
 export type DimTasksResponse = {
   ok: boolean
+  registry?: DimUnifiedTaskRow[]
   tasks: DimUnifiedTaskRow[]
   active_runs: DimActiveRunRow[]
   failed_recent: Array<{
