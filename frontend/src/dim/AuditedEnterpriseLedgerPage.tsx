@@ -10,8 +10,100 @@ import {
 
 type StateCapitalStatus = 'state_owned' | 'non_state_owned' | 'unmaintained'
 
+type LedgerGroupMode = 'flat' | 'stateInvestor' | 'mgmtParent'
+
+type LedgerTableSegment =
+  | { kind: 'group'; key: string; label: string }
+  | { kind: 'row'; row: AuditedEnterpriseRegistryRow; seqNo: number }
+
+const TABLE_COL_COUNT = 21
+const thSticky =
+  'sticky top-0 z-10 border-b border-border-light bg-[#fafbfd] px-3 py-2 font-medium shadow-[0_1px_0_0_rgba(15,23,42,0.06)]'
+
 function cellOrDash(value: string): string {
   return value.trim() ? value : '—'
+}
+
+function groupKeyStateInvestor(row: AuditedEnterpriseRegistryRow): string {
+  return row.stateInvestor.trim() || '__unnamed__'
+}
+
+function groupKeyMgmtParent(row: AuditedEnterpriseRegistryRow): string {
+  return row.mgmtParent.trim() || '__unnamed__'
+}
+
+function buildLedgerTableSegments(
+  rows: AuditedEnterpriseRegistryRow[],
+  groupMode: LedgerGroupMode,
+  ui: (typeof t)['auditedEnterpriseLedgerUi'],
+  seqOffset = 0,
+): LedgerTableSegment[] {
+  if (groupMode === 'flat') {
+    return rows.map((row, index) => ({ kind: 'row', row, seqNo: seqOffset + index + 1 }))
+  }
+
+  const keyFn = groupMode === 'stateInvestor' ? groupKeyStateInvestor : groupKeyMgmtParent
+  const labelFn =
+    groupMode === 'stateInvestor'
+      ? (row: AuditedEnterpriseRegistryRow) => row.stateInvestor.trim() || ui.groupHeaderUnnamed
+      : (row: AuditedEnterpriseRegistryRow) => row.mgmtParent.trim() || ui.groupHeaderUnnamed
+
+  const buckets = new Map<string, { label: string; rows: AuditedEnterpriseRegistryRow[] }>()
+  for (const row of rows) {
+    const key = keyFn(row)
+    const bucket = buckets.get(key)
+    if (bucket) {
+      bucket.rows.push(row)
+      continue
+    }
+    buckets.set(key, { label: labelFn(row), rows: [row] })
+  }
+
+  const segments: LedgerTableSegment[] = []
+  let seqNo = seqOffset
+  for (const [key, bucket] of buckets) {
+    const count = bucket.rows.length
+    const headerTemplate =
+      groupMode === 'stateInvestor' ? ui.groupHeaderStateInvestor : ui.groupHeaderMgmtParent
+    segments.push({
+      kind: 'group',
+      key,
+      label: headerTemplate.replace('{name}', bucket.label).replace('{count}', String(count)),
+    })
+    for (const row of bucket.rows) {
+      seqNo += 1
+      segments.push({ kind: 'row', row, seqNo })
+    }
+  }
+  return segments
+}
+
+function renderLedgerRow(row: AuditedEnterpriseRegistryRow, seqNo: number, ui: (typeof t)['auditedEnterpriseLedgerUi']) {
+  return (
+    <tr key={`${row.code}-${row.snapshotYear}-${seqNo}`} className="border-b border-border-light last:border-b-0">
+      <td className="px-3 py-2.5 tabular-nums text-text-3">{seqNo}</td>
+      <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
+      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
+      <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
+      <td className="px-3 py-2.5">{row.domesticOverseas}</td>
+      <td className="px-3 py-2.5 max-w-[220px]">{row.detailAddress}</td>
+      <td className="px-3 py-2.5">{row.currency}</td>
+      <td className="px-3 py-2.5 tabular-nums">{row.registeredCapital}</td>
+      <td className="px-3 py-2.5 tabular-nums">{row.registrationDate}</td>
+      <td className="px-3 py-2.5 max-w-[220px]">{row.nationalEconomyIndustryMajor}</td>
+      <td className="px-3 py-2.5 max-w-[240px]">{row.enterpriseCategory}</td>
+      <td className="px-3 py-2.5">{row.stateInvestor.trim() || ui.stateStatusUnmaintained}</td>
+      <td className="px-3 py-2.5 max-w-[200px]">{cellOrDash(row.sasacAuthority)}</td>
+      <td className="px-3 py-2.5 max-w-[180px]">{cellOrDash(row.sasacRelation)}</td>
+      <td className="px-3 py-2.5">{row.consolidatedReporting}</td>
+      <td className="px-3 py-2.5">{row.listedCompany}</td>
+      <td className="px-3 py-2.5">{row.mainBusiness}</td>
+      <td className="px-3 py-2.5">{row.mgmtLevel}</td>
+      <td className="px-3 py-2.5">{row.mgmtParent.trim() ? row.mgmtParent : '—'}</td>
+      <td className="px-3 py-2.5">{row.equityLevel}</td>
+      <td className="px-3 py-2.5">{row.shareholders}</td>
+    </tr>
+  )
 }
 
 export function AuditedEnterpriseLedgerPage() {
@@ -45,6 +137,9 @@ export function AuditedEnterpriseLedgerPage() {
   const [selectedYear, setSelectedYear] = useState('2026')
   const [stateInvestorFilter, setStateInvestorFilter] = useState('')
   const [enterpriseFilter, setEnterpriseFilter] = useState('')
+  const [groupMode, setGroupMode] = useState<LedgerGroupMode>('stateInvestor')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [rows, setRows] = useState<AuditedEnterpriseRegistryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -79,21 +174,40 @@ export function AuditedEnterpriseLedgerPage() {
     void load()
   }, [load])
 
-  const filteredRows = rows
+  useEffect(() => {
+    setPage(1)
+  }, [enterpriseFilter, groupMode, selectedYear, stateInvestorFilter])
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(rows.length / pageSize)), [pageSize, rows.length])
+  const effectivePage = Math.min(page, totalPages)
+
+  useEffect(() => {
+    if (page !== effectivePage) setPage(effectivePage)
+  }, [effectivePage, page])
+
+  const pagedRows = useMemo(() => {
+    const offset = (effectivePage - 1) * pageSize
+    return rows.slice(offset, offset + pageSize)
+  }, [effectivePage, pageSize, rows])
 
   const summary = useMemo(
     () => ({
-      total: filteredRows.length,
-      listedCompany: filteredRows.filter((r) => r.listedCompany.trim() === '是').length,
-      overseas: filteredRows.filter((r) => r.domesticOverseas.includes('境外')).length,
-      mgmtParentMaintained: filteredRows.filter((r) => r.mgmtParent.trim() !== '').length,
-      equityParentMaintained: filteredRows.filter((r) => {
+      total: rows.length,
+      listedCompany: rows.filter((r) => r.listedCompany.trim() === '是').length,
+      overseas: rows.filter((r) => r.domesticOverseas.includes('境外')).length,
+      mgmtParentMaintained: rows.filter((r) => r.mgmtParent.trim() !== '').length,
+      equityParentMaintained: rows.filter((r) => {
         const s = r.shareholders.trim()
         return Boolean(s) && s !== '待维护'
       }).length,
-      mainBusinessMaintained: filteredRows.filter((r) => r.mainBusiness.trim() !== '').length,
+      mainBusinessMaintained: rows.filter((r) => r.mainBusiness.trim() !== '').length,
     }),
-    [filteredRows],
+    [rows],
+  )
+
+  const tableSegments = useMemo(
+    () => buildLedgerTableSegments(pagedRows, groupMode, ui, (effectivePage - 1) * pageSize),
+    [effectivePage, groupMode, pageSize, pagedRows, ui],
   )
 
   const openCreate = () => {
@@ -218,7 +332,23 @@ export function AuditedEnterpriseLedgerPage() {
 
       <Card title={ui.tableTitle}>
         <div className="mb-3 flex flex-wrap items-center gap-3">
-          <div className="text-il-meta text-text-3">{loading ? '…' : ui.tableHint.replace('{year}', selectedYear)}</div>
+          <div className="text-il-meta text-text-3">
+            {loading
+              ? '…'
+              : ui.tableHint.replace('{year}', selectedYear).replace('{count}', String(rows.length))}
+          </div>
+          <label className="flex items-center gap-2 text-il-label text-text-2">
+            {ui.groupModeLabel}
+            <select
+              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={groupMode}
+              onChange={(e) => setGroupMode(e.target.value as LedgerGroupMode)}
+            >
+              <option value="flat">{ui.groupModeFlat}</option>
+              <option value="stateInvestor">{ui.groupModeStateInvestor}</option>
+              <option value="mgmtParent">{ui.groupModeMgmtParent}</option>
+            </select>
+          </label>
           <label className="flex items-center gap-2 text-il-label text-text-2">
             {ui.snapshotFilterLabel}
             <select
@@ -252,68 +382,105 @@ export function AuditedEnterpriseLedgerPage() {
             />
           </label>
         </div>
-        <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[2940px] border-collapse text-il-page-desc">
+        <div className="max-h-[min(calc(100vh-22rem),640px)] min-h-[240px] overflow-auto rounded-sm border border-border-light">
+          <table className="w-full min-w-[2940px] border-separate border-spacing-0 text-il-page-desc">
             <thead>
-              <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
-                <th className="px-3 py-2 font-medium">{ui.colSnapshotYear}</th>
-                <th className="px-3 py-2 font-medium">{ui.colCode}</th>
-                <th className="px-3 py-2 font-medium">{ui.colName}</th>
-                <th className="px-3 py-2 font-medium">{ui.colDomesticOverseas}</th>
-                <th className="px-3 py-2 font-medium">{ui.colDetailAddress}</th>
-                <th className="px-3 py-2 font-medium">{ui.colCurrency}</th>
-                <th className="px-3 py-2 font-medium">{ui.colRegisteredCapital}</th>
-                <th className="px-3 py-2 font-medium">{ui.colRegistrationDate}</th>
-                <th className="px-3 py-2 font-medium">{ui.colNationalEconomyIndustryMajor}</th>
-                <th className="px-3 py-2 font-medium">{ui.colEnterpriseCategory}</th>
-                <th className="px-3 py-2 font-medium">{ui.colStateInvestor}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSasacAuthority}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSasacRelation}</th>
-                <th className="px-3 py-2 font-medium">{ui.colConsolidatedReporting}</th>
-                <th className="px-3 py-2 font-medium">{ui.colListedCompany}</th>
-                <th className="px-3 py-2 font-medium">{ui.colMainBusiness}</th>
-                <th className="px-3 py-2 font-medium">{ui.colMgmtLevel}</th>
-                <th className="px-3 py-2 font-medium">{ui.colMgmtParent}</th>
-                <th className="px-3 py-2 font-medium">{ui.colEquityLevel}</th>
-                <th className="px-3 py-2 font-medium">{ui.colShareholders}</th>
+              <tr className="text-left text-il-label text-text-3">
+                <th className={`${thSticky} w-[52px]`}>{ui.colSeqNo}</th>
+                <th className={thSticky}>{ui.colSnapshotYear}</th>
+                <th className={thSticky}>{ui.colCode}</th>
+                <th className={thSticky}>{ui.colName}</th>
+                <th className={thSticky}>{ui.colDomesticOverseas}</th>
+                <th className={thSticky}>{ui.colDetailAddress}</th>
+                <th className={thSticky}>{ui.colCurrency}</th>
+                <th className={thSticky}>{ui.colRegisteredCapital}</th>
+                <th className={thSticky}>{ui.colRegistrationDate}</th>
+                <th className={thSticky}>{ui.colNationalEconomyIndustryMajor}</th>
+                <th className={thSticky}>{ui.colEnterpriseCategory}</th>
+                <th className={thSticky}>{ui.colStateInvestor}</th>
+                <th className={thSticky}>{ui.colSasacAuthority}</th>
+                <th className={thSticky}>{ui.colSasacRelation}</th>
+                <th className={thSticky}>{ui.colConsolidatedReporting}</th>
+                <th className={thSticky}>{ui.colListedCompany}</th>
+                <th className={thSticky}>{ui.colMainBusiness}</th>
+                <th className={thSticky}>{ui.colMgmtLevel}</th>
+                <th className={thSticky}>{ui.colMgmtParent}</th>
+                <th className={thSticky}>{ui.colEquityLevel}</th>
+                <th className={thSticky}>{ui.colShareholders}</th>
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {filteredRows.length === 0 ? (
+              {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={20} className="px-3 py-8 text-center text-il-page-desc text-text-3">
+                  <td colSpan={TABLE_COL_COUNT} className="px-3 py-8 text-center text-il-page-desc text-text-3">
                     {ui.tableEmpty}
                   </td>
                 </tr>
               ) : (
-                filteredRows.map((row) => (
-                  <tr key={`${row.code}-${row.snapshotYear}`} className="border-b border-border-light last:border-b-0">
-                    <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
-                    <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
-                    <td className="px-3 py-2.5">{row.domesticOverseas}</td>
-                    <td className="px-3 py-2.5 max-w-[220px]">{row.detailAddress}</td>
-                    <td className="px-3 py-2.5">{row.currency}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.registeredCapital}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.registrationDate}</td>
-                    <td className="px-3 py-2.5 max-w-[220px]">{row.nationalEconomyIndustryMajor}</td>
-                    <td className="px-3 py-2.5 max-w-[240px]">{row.enterpriseCategory}</td>
-                    <td className="px-3 py-2.5">{row.stateInvestor.trim() || ui.stateStatusUnmaintained}</td>
-                    <td className="px-3 py-2.5 max-w-[200px]">{cellOrDash(row.sasacAuthority)}</td>
-                    <td className="px-3 py-2.5 max-w-[180px]">{cellOrDash(row.sasacRelation)}</td>
-                    <td className="px-3 py-2.5">{row.consolidatedReporting}</td>
-                    <td className="px-3 py-2.5">{row.listedCompany}</td>
-                    <td className="px-3 py-2.5">{row.mainBusiness}</td>
-                    <td className="px-3 py-2.5">{row.mgmtLevel}</td>
-                    <td className="px-3 py-2.5">{row.mgmtParent.trim() ? row.mgmtParent : '—'}</td>
-                    <td className="px-3 py-2.5">{row.equityLevel}</td>
-                    <td className="px-3 py-2.5">{row.shareholders}</td>
-                  </tr>
-                ))
+                tableSegments.map((segment) => {
+                  if (segment.kind === 'group') {
+                    return (
+                      <tr key={`group-${segment.key}`} className="border-b border-border-light bg-[#f0f4fa]">
+                        <td colSpan={TABLE_COL_COUNT} className="px-3 py-2 text-il-label font-medium text-text">
+                          {segment.label}
+                        </td>
+                      </tr>
+                    )
+                  }
+                  return renderLedgerRow(segment.row, segment.seqNo, ui)
+                })
               )}
             </tbody>
           </table>
         </div>
+        {rows.length > 0 ? (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-border-light pt-2">
+            <div className="text-il-meta text-text-3">
+              {ui.tablePagedTotalHint.replace('{total}', String(rows.length))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-il-meta text-text-2">
+                <span>{ui.tablePageSizeLabel}</span>
+                <select
+                  className="h-8 rounded-sm border border-border-light bg-white px-2 text-il-meta text-text outline-none focus:border-accent"
+                  value={String(pageSize)}
+                  disabled={loading}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value))
+                    setPage(1)
+                  }}
+                >
+                  {[25, 50, 100, 200].map((n) => (
+                    <option key={n} value={String(n)}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={loading || effectivePage <= 1}
+                className="rounded-sm border border-border-light bg-white px-2.5 py-1 text-il-meta text-text disabled:opacity-50"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                {ui.tablePagePrev}
+              </button>
+              <span className="tabular-nums text-il-meta text-text-3">
+                {ui.tablePageOf
+                  .replace('{page}', String(effectivePage))
+                  .replace('{pages}', String(totalPages))}
+              </span>
+              <button
+                type="button"
+                disabled={loading || effectivePage >= totalPages}
+                className="rounded-sm border border-border-light bg-white px-2.5 py-1 text-il-meta text-text disabled:opacity-50"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                {ui.tablePageNext}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Card>
 
       {showCreateModal ? (

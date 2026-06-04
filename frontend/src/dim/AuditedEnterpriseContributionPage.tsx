@@ -22,6 +22,75 @@ function formatRatio(value: number): string {
   return `${value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}%`
 }
 
+type ContributionGroupMode = 'flat' | 'investee' | 'stateInvestor'
+
+type ContributionTableSegment =
+  | { kind: 'group'; key: string; label: string }
+  | { kind: 'row'; row: AuditedEnterpriseContributionRow; seqNo: number }
+
+const TABLE_COL_COUNT = 14
+const thSticky =
+  'sticky top-0 z-10 border-b border-border-light bg-[#fafbfd] px-3 py-2 font-medium shadow-[0_1px_0_0_rgba(15,23,42,0.06)]'
+
+function groupKeyInvestee(row: AuditedEnterpriseContributionRow): string {
+  const code = row.unifiedCreditCode.trim()
+  const name = row.investeeName.trim()
+  return code || name || '__unnamed__'
+}
+
+function groupKeyStateInvestor(row: AuditedEnterpriseContributionRow): string {
+  return row.stateInvestorEnterprise.trim() || '__unnamed__'
+}
+
+function buildContributionTableSegments(
+  rows: AuditedEnterpriseContributionRow[],
+  groupMode: ContributionGroupMode,
+  ui: (typeof t)['auditedEnterpriseContributionUi'],
+  seqOffset = 0,
+): ContributionTableSegment[] {
+  if (groupMode === 'flat') {
+    return rows.map((row, index) => ({ kind: 'row', row, seqNo: seqOffset + index + 1 }))
+  }
+
+  const keyFn = groupMode === 'investee' ? groupKeyInvestee : groupKeyStateInvestor
+  const labelFn =
+    groupMode === 'investee'
+      ? (row: AuditedEnterpriseContributionRow) => {
+          const name = row.investeeName.trim() || ui.groupHeaderUnnamed
+          const code = row.unifiedCreditCode.trim()
+          return code ? `${name}（${code}）` : name
+        }
+      : (row: AuditedEnterpriseContributionRow) => row.stateInvestorEnterprise.trim() || ui.groupHeaderUnnamed
+
+  const buckets = new Map<string, { label: string; rows: AuditedEnterpriseContributionRow[] }>()
+  for (const row of rows) {
+    const key = keyFn(row)
+    const bucket = buckets.get(key)
+    if (bucket) {
+      bucket.rows.push(row)
+      continue
+    }
+    buckets.set(key, { label: labelFn(row), rows: [row] })
+  }
+
+  const segments: ContributionTableSegment[] = []
+  let seqNo = seqOffset
+  for (const [key, bucket] of buckets) {
+    const count = bucket.rows.length
+    const headerTemplate = groupMode === 'investee' ? ui.groupHeaderInvestee : ui.groupHeaderStateInvestor
+    segments.push({
+      kind: 'group',
+      key,
+      label: headerTemplate.replace('{name}', bucket.label).replace('{count}', String(count)),
+    })
+    for (const row of bucket.rows) {
+      seqNo += 1
+      segments.push({ kind: 'row', row, seqNo })
+    }
+  }
+  return segments
+}
+
 export function AuditedEnterpriseContributionPage() {
   const ui = t.auditedEnterpriseContributionUi
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -29,6 +98,9 @@ export function AuditedEnterpriseContributionPage() {
   const [snapshotYears, setSnapshotYears] = useState<string[]>(['2026'])
   const [selectedYear, setSelectedYear] = useState('2026')
   const [investeeFilter, setInvesteeFilter] = useState('')
+  const [groupMode, setGroupMode] = useState<ContributionGroupMode>('investee')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [rows, setRows] = useState<AuditedEnterpriseContributionRow[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -76,6 +148,22 @@ export function AuditedEnterpriseContributionPage() {
     void load()
   }, [load])
 
+  useEffect(() => {
+    setPage(1)
+  }, [groupMode, investeeFilter, selectedYear])
+
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(rows.length / pageSize)), [pageSize, rows.length])
+  const effectivePage = Math.min(page, totalPages)
+
+  useEffect(() => {
+    if (page !== effectivePage) setPage(effectivePage)
+  }, [effectivePage, page])
+
+  const pagedRows = useMemo(() => {
+    const offset = (effectivePage - 1) * pageSize
+    return rows.slice(offset, offset + pageSize)
+  }, [effectivePage, pageSize, rows])
+
   const summary = useMemo(() => {
     const investees = new Set(rows.map((r) => r.investeeName.trim()).filter(Boolean))
     const contributors = new Set(rows.map((r) => r.contributorName.trim()).filter(Boolean))
@@ -85,6 +173,11 @@ export function AuditedEnterpriseContributionPage() {
       contributors: contributors.size,
     }
   }, [rows])
+
+  const tableSegments = useMemo(
+    () => buildContributionTableSegments(pagedRows, groupMode, ui, (effectivePage - 1) * pageSize),
+    [effectivePage, groupMode, pageSize, pagedRows, ui],
+  )
 
   const openCreate = () => {
     setCreateSnapshotYear(selectedYear)
@@ -187,7 +280,23 @@ export function AuditedEnterpriseContributionPage() {
 
       <Card title={ui.tableTitle}>
         <div className="mb-3 flex flex-wrap items-center gap-3">
-          <div className="text-il-meta text-text-3">{loading ? '…' : ui.tableHint.replace('{year}', selectedYear)}</div>
+          <div className="text-il-meta text-text-3">
+            {loading
+              ? '…'
+              : ui.tableHint.replace('{year}', selectedYear).replace('{count}', String(rows.length))}
+          </div>
+          <label className="flex items-center gap-2 text-il-label text-text-2">
+            {ui.groupModeLabel}
+            <select
+              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+              value={groupMode}
+              onChange={(e) => setGroupMode(e.target.value as ContributionGroupMode)}
+            >
+              <option value="flat">{ui.groupModeFlat}</option>
+              <option value="investee">{ui.groupModeInvestee}</option>
+              <option value="stateInvestor">{ui.groupModeStateInvestor}</option>
+            </select>
+          </label>
           <label className="flex items-center gap-2 text-il-label text-text-2">
             {ui.snapshotFilterLabel}
             <select
@@ -212,54 +321,119 @@ export function AuditedEnterpriseContributionPage() {
             />
           </label>
         </div>
-        <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1960px] border-collapse text-il-page-desc">
+        <div className="max-h-[min(calc(100vh-22rem),640px)] min-h-[240px] overflow-auto rounded-sm border border-border-light">
+          <table className="w-full min-w-[1960px] border-separate border-spacing-0 text-il-page-desc">
             <thead>
-              <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
-                <th className="px-3 py-2 font-medium">{ui.colSnapshotYear}</th>
-                <th className="px-3 py-2 font-medium">{ui.colUnifiedCreditCode}</th>
-                <th className="px-3 py-2 font-medium">{ui.colInvesteeName}</th>
-                <th className="px-3 py-2 font-medium">{ui.colStateInvestorEnterprise}</th>
-                <th className="px-3 py-2 font-medium">{ui.colStateInvestorUnifiedCreditCode}</th>
-                <th className="px-3 py-2 font-medium">{ui.colContributorName}</th>
-                <th className="px-3 py-2 font-medium">{ui.colContributorOrgCode}</th>
-                <th className="px-3 py-2 font-medium">{ui.colContributorCategory}</th>
-                <th className="px-3 py-2 font-medium">{ui.colContributionInfo}</th>
-                <th className="px-3 py-2 font-medium">{ui.colRelationToTarget}</th>
-                <th className="px-3 py-2 font-medium">{ui.colCurrency}</th>
-                <th className="px-3 py-2 font-medium">{ui.colSubscribedAmount}</th>
-                <th className="px-3 py-2 font-medium">{ui.colShareRatio}</th>
+              <tr className="text-left text-il-label text-text-3">
+                <th className={`${thSticky} w-[52px]`}>{ui.colSeqNo}</th>
+                <th className={thSticky}>{ui.colSnapshotYear}</th>
+                <th className={thSticky}>{ui.colUnifiedCreditCode}</th>
+                <th className={thSticky}>{ui.colInvesteeName}</th>
+                <th className={thSticky}>{ui.colStateInvestorEnterprise}</th>
+                <th className={thSticky}>{ui.colStateInvestorUnifiedCreditCode}</th>
+                <th className={thSticky}>{ui.colContributorName}</th>
+                <th className={thSticky}>{ui.colContributorOrgCode}</th>
+                <th className={thSticky}>{ui.colContributorCategory}</th>
+                <th className={thSticky}>{ui.colContributionInfo}</th>
+                <th className={thSticky}>{ui.colRelationToTarget}</th>
+                <th className={thSticky}>{ui.colCurrency}</th>
+                <th className={thSticky}>{ui.colSubscribedAmount}</th>
+                <th className={thSticky}>{ui.colShareRatio}</th>
               </tr>
             </thead>
             <tbody className="text-text-2">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="px-3 py-8 text-center text-il-page-desc text-text-3">
+                  <td colSpan={TABLE_COL_COUNT} className="px-3 py-8 text-center text-il-page-desc text-text-3">
                     {ui.tableEmpty}
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => (
-                  <tr key={row.rowId || `${row.unifiedCreditCode}-${row.contributorName}`} className="border-b border-border-light last:border-b-0">
-                    <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{cellOrDash(row.unifiedCreditCode)}</td>
-                    <td className="px-3 py-2.5 font-medium text-text">{row.investeeName}</td>
-                    <td className="px-3 py-2.5">{cellOrDash(row.stateInvestorEnterprise)}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px]">{cellOrDash(row.stateInvestorUnifiedCreditCode)}</td>
-                    <td className="px-3 py-2.5">{row.contributorName}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px]">{cellOrDash(row.contributorOrgCode)}</td>
-                    <td className="px-3 py-2.5">{cellOrDash(row.contributorCategory)}</td>
-                    <td className="px-3 py-2.5 max-w-[200px]">{cellOrDash(row.contributionInfo)}</td>
-                    <td className="px-3 py-2.5">{cellOrDash(row.relationToTarget)}</td>
-                    <td className="px-3 py-2.5">{row.currency || '—'}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatAmount(row.subscribedAmountWan)}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{formatRatio(row.shareRatio)}</td>
-                  </tr>
-                ))
+                tableSegments.map((segment) => {
+                  if (segment.kind === 'group') {
+                    return (
+                      <tr key={`group-${segment.key}`} className="border-b border-border-light bg-[#f0f4fa]">
+                        <td colSpan={TABLE_COL_COUNT} className="px-3 py-2 text-il-label font-medium text-text">
+                          {segment.label}
+                        </td>
+                      </tr>
+                    )
+                  }
+                  const row = segment.row
+                  return (
+                    <tr
+                      key={row.rowId || `${row.unifiedCreditCode}-${row.contributorName}-${segment.seqNo}`}
+                      className="border-b border-border-light last:border-b-0"
+                    >
+                      <td className="px-3 py-2.5 tabular-nums text-text-3">{segment.seqNo}</td>
+                      <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{cellOrDash(row.unifiedCreditCode)}</td>
+                      <td className="px-3 py-2.5 font-medium text-text">{row.investeeName}</td>
+                      <td className="px-3 py-2.5">{cellOrDash(row.stateInvestorEnterprise)}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px]">{cellOrDash(row.stateInvestorUnifiedCreditCode)}</td>
+                      <td className="px-3 py-2.5">{row.contributorName}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px]">{cellOrDash(row.contributorOrgCode)}</td>
+                      <td className="px-3 py-2.5">{cellOrDash(row.contributorCategory)}</td>
+                      <td className="px-3 py-2.5 max-w-[200px]">{cellOrDash(row.contributionInfo)}</td>
+                      <td className="px-3 py-2.5">{cellOrDash(row.relationToTarget)}</td>
+                      <td className="px-3 py-2.5">{row.currency || '—'}</td>
+                      <td className="px-3 py-2.5 tabular-nums">{formatAmount(row.subscribedAmountWan)}</td>
+                      <td className="px-3 py-2.5 tabular-nums">{formatRatio(row.shareRatio)}</td>
+                    </tr>
+                  )
+                })
               )}
             </tbody>
           </table>
         </div>
+        {rows.length > 0 ? (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-border-light pt-2">
+            <div className="text-il-meta text-text-3">
+              {ui.tablePagedTotalHint.replace('{total}', String(rows.length))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-il-meta text-text-2">
+                <span>{ui.tablePageSizeLabel}</span>
+                <select
+                  className="h-8 rounded-sm border border-border-light bg-white px-2 text-il-meta text-text outline-none focus:border-accent"
+                  value={String(pageSize)}
+                  disabled={loading}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value))
+                    setPage(1)
+                  }}
+                >
+                  {[25, 50, 100, 200].map((n) => (
+                    <option key={n} value={String(n)}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={loading || effectivePage <= 1}
+                className="rounded-sm border border-border-light bg-white px-2.5 py-1 text-il-meta text-text disabled:opacity-50"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                {ui.tablePagePrev}
+              </button>
+              <span className="tabular-nums text-il-meta text-text-3">
+                {ui.tablePageOf
+                  .replace('{page}', String(effectivePage))
+                  .replace('{pages}', String(totalPages))}
+              </span>
+              <button
+                type="button"
+                disabled={loading || effectivePage >= totalPages}
+                className="rounded-sm border border-border-light bg-white px-2.5 py-1 text-il-meta text-text disabled:opacity-50"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                {ui.tablePageNext}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Card>
 
       {showCreateModal ? (
