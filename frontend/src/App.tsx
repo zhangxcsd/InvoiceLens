@@ -34,6 +34,7 @@ import { DataQualityTrendPage } from './quality/DataQualityTrendPage'
 import { HealthScorePage } from './quality/HealthScorePage'
 import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
 import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
+import { EnterpriseYearRosterPage } from './dim/EnterpriseYearRosterPage'
 import { Level1EnterpriseYearPage } from './dim/Level1EnterpriseYearPage'
 import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
@@ -294,6 +295,7 @@ function Sidebar(props: {
       props.nav !== 'dim_audit_related_library' &&
       props.nav !== 'dim_level1_enterprise_year' &&
       props.nav !== 'dim_audited_registry' &&
+      props.nav !== 'dim_enterprise_year_roster' &&
       props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_audited_invoice_link' &&
       props.nav !== 'dim_org_manage' &&
@@ -305,6 +307,7 @@ function Sidebar(props: {
     setOpenChildren((c) => ({ ...c, org: true }))
     if (
       props.nav === 'dim_audited_registry' ||
+      props.nav === 'dim_enterprise_year_roster' ||
       props.nav === 'dim_audited_contribution' ||
       props.nav === 'dim_audited_invoice_link' ||
       props.nav === 'dim_level1_enterprise_year' ||
@@ -705,6 +708,10 @@ function Sidebar(props: {
               })}
               {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
                 active: props.nav === 'dim_audited_registry',
+                tier: 'great',
+              })}
+              {navGrand('dim_enterprise_year_roster', t.sidebar.dimEnterpriseYearRoster, {
+                active: props.nav === 'dim_enterprise_year_roster',
                 tier: 'great',
               })}
               {navGrand('dim_audited_contribution', t.sidebar.dimAuditedContribution, {
@@ -2772,6 +2779,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dimAuditedLedger}</b>
         </>
       )
+    if (props.nav === 'dim_enterprise_year_roster')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
+          <b className="text-text font-medium">{t.sidebar.dimEnterpriseYearRoster}</b>
+        </>
+      )
     if (props.nav === 'dim_audited_contribution')
       return (
         <>
@@ -2920,6 +2934,8 @@ function AppShell(props: {
             <Level1EnterpriseYearPage />
           ) : props.nav === 'dim_audited_registry' ? (
             <AuditedEnterpriseLedgerPage />
+          ) : props.nav === 'dim_enterprise_year_roster' ? (
+            <EnterpriseYearRosterPage onNav={(k) => props.onNav(k as NavKey)} />
           ) : props.nav === 'dim_audited_contribution' ? (
             <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_audited_invoice_link' ? (

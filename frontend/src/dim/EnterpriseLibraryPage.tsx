@@ -550,11 +550,8 @@ export function EnterpriseLibraryPage(props: { onNav?: (k: NavKey) => void }) {
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.prototypeNote}
-        descriptionTone="compact"
         note={ui.pageIntroMerged}
         noteTone="callout"
-        expandLabel={ui.moreTipsToggle}
-        collapseLabel={ui.lessTipsToggle}
         actions={
           <div className="flex items-center gap-2">
             <button

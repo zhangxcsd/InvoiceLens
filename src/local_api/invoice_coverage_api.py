@@ -6,17 +6,46 @@ from __future__ import annotations
 """
 
 import logging
+from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def _safe_int_year(v: str | None, default: int = 2024) -> int:
+def _calendar_year() -> int:
+    return date.today().year
+
+
+def _practice_year_options(extra_years: list[str] | None = None) -> list[str]:
+    """实务可选年度：下一年（预编）+ 当前年往回 11 年，并与库内已有年度合并。"""
+    cy = _calendar_year()
+    y_set: set[int] = {cy, cy + 1}
+    for i in range(11):
+        y_set.add(cy - i)
+    for s in extra_years or []:
+        try:
+            yi = int(str(s).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1990 <= yi <= 2100:
+            y_set.add(yi)
+    return [str(y) for y in sorted(y_set, reverse=True)]
+
+
+def _default_practice_stat_year(years: list[str]) -> str:
+    cy = str(_calendar_year())
+    if cy in years:
+        return cy
+    return years[0] if years else cy
+
+
+def _safe_int_year(v: str | None, default: int | None = None) -> int:
+    d = _calendar_year() if default is None else default
     if not v or not str(v).strip().isdigit():
-        return default
+        return d
     y = int(str(v).strip())
     if y < 1990 or y > 2100:
-        return default
+        return d
     return y
 
 
@@ -50,11 +79,11 @@ def api_invoice_coverage_meta(conn: Any) -> dict[str, Any]:
                 "views_ready": False,
                 "stat_years": [],
                 "default_stat_year": None,
-                "hint": "请先执行数据库初始化（init_all_tables）并导入 dim_group_enterprise_year 等维度后重试。",
+                "hint": "请先执行数据库初始化（init_all_tables）并维护台账、同步 dim_enterprise_year_roster 后重试。",
             }
         y_set: set[int] = set()
         for sql in (
-            "SELECT DISTINCT stat_year FROM dim_group_enterprise_year WHERE stat_year IS NOT NULL",
+            "SELECT DISTINCT stat_year FROM dim_enterprise_year_roster WHERE stat_year IS NOT NULL",
             "SELECT DISTINCT stat_year FROM dwd_inv_header WHERE stat_year IS NOT NULL",
         ):
             for s in _distinct_stat_years(conn, sql):
@@ -64,17 +93,33 @@ def api_invoice_coverage_meta(conn: Any) -> dict[str, Any]:
                     continue
                 if 1990 <= yi <= 2100:
                     y_set.add(yi)
-        years = [str(y) for y in sorted(y_set, reverse=True)]
-        if not years:
-            years = _distinct_stat_years(
+        data_years = [str(y) for y in sorted(y_set, reverse=True)]
+        if not data_years:
+            data_years = _distinct_stat_years(
                 conn, "SELECT DISTINCT stat_year FROM vw_audit_invoice_coverage_group_member ORDER BY stat_year DESC"
             )
-        if not years:
-            years = _distinct_stat_years(
+        if not data_years:
+            data_years = _distinct_stat_years(
                 conn, "SELECT DISTINCT stat_year FROM dim_enterprise_year_rel ORDER BY stat_year DESC"
             )
-        default_y = years[0] if years else None
-        return {"ok": True, "views_ready": True, "stat_years": years, "default_stat_year": default_y}
+        years = _practice_year_options(data_years)
+        default_y = _default_practice_stat_year(years)
+        group_years = _distinct_stat_years(
+            conn,
+            "SELECT DISTINCT stat_year FROM dim_enterprise_year_roster WHERE stat_year IS NOT NULL ORDER BY stat_year DESC",
+        )
+        level1_years = _distinct_stat_years(
+            conn,
+            "SELECT DISTINCT stat_year FROM dim_level1_enterprise_year WHERE stat_year IS NOT NULL ORDER BY stat_year DESC",
+        )
+        return {
+            "ok": True,
+            "views_ready": True,
+            "stat_years": years,
+            "default_stat_year": default_y,
+            "group_member_stat_years": group_years,
+            "level1_stat_years": level1_years,
+        }
     except Exception as exc:
         return {
             "ok": False,
@@ -141,14 +186,8 @@ def _member_base_sql() -> str:
             v.has_seller_role,
             v.has_buyer_role,
             v.is_member,
-            g.mgmt_level,
-            g.mgmt_parent_enterprise_name,
-            g.equity_level,
-            g.equity_parent_enterprise_name,
             r.year_last_seen_batch_id
         FROM vw_audit_invoice_coverage_group_member v
-        INNER JOIN dim_group_enterprise_year g
-            ON g.stat_year = v.stat_year AND g.enterprise_id = v.enterprise_id
         LEFT JOIN dim_enterprise_year_rel r
             ON r.subject_id = v.subject_id AND r.stat_year = v.stat_year
     """
@@ -328,8 +367,6 @@ def api_invoice_coverage_members(
         count_sql = f"""
             SELECT COUNT(*)
             FROM vw_audit_invoice_coverage_group_member v
-            INNER JOIN dim_group_enterprise_year g
-                ON g.stat_year = v.stat_year AND g.enterprise_id = v.enterprise_id
             LEFT JOIN dim_enterprise_year_rel r
                 ON r.subject_id = v.subject_id AND r.stat_year = v.stat_year
             WHERE {where_sql}
@@ -371,11 +408,7 @@ def api_invoice_coverage_members(
                     "has_seller_role": hs,
                     "has_buyer_role": hb,
                     "role_tag": role,
-                    "mgmt_level": int(r[15]) if r[15] is not None else None,
-                    "mgmt_parent_enterprise_name": str(r[16] or "") if r[16] is not None else "",
-                    "equity_level": int(r[17]) if r[17] is not None else None,
-                    "equity_parent_enterprise_name": str(r[18] or "") if r[18] is not None else "",
-                    "year_last_seen_batch_id": str(r[19] or "") if r[19] is not None else "",
+                    "year_last_seen_batch_id": str(r[15] or "") if r[15] is not None else "",
                 }
             )
         return {

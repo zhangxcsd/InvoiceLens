@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
 import {
@@ -128,10 +129,7 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div>
-        <h1 className="text-[20px] font-semibold text-text">{ui.pageTitle}</h1>
-        <p className="mt-1 max-w-[920px] text-il-page-desc text-text-2">{ui.pageDesc}</p>
-      </div>
+      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
 
       {err ? (
         <div className="rounded-md border border-danger/30 bg-[#fff5f5] px-3 py-2 text-sm text-danger">{err}</div>

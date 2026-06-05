@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _INIT_ALL_TABLES_LOCK = threading.RLock()
 # 每连接只跑完整 DDL/迁移一次（线程本地 duckdb 连接复用时显著降低主体库首屏延迟）
 _INIT_DONE_CONN_IDS: set[int] = set()
+# 进程级：迁移/DDL 写入 duckdb 文件，任意连接完成一次后其余线程无需重复（避免每 HTTP 线程 ~1s 冷启动）
+_GLOBAL_SCHEMA_INIT_DONE = False
 
 _DDL_ROOT = Path(__file__).resolve().parents[1] / "config" / "ddl"
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -444,6 +446,47 @@ def migrate_dim_subject_governance_columns(conn) -> None:
                 logger.debug("主体治理补列跳过：%s.%s (%s)", tbl, col, exc)
 
 
+def _refresh_audit_coverage_views_from_dim_ddl(conn) -> None:
+    """将 dim.sql 中报送覆盖相关视图以 OR REPLACE 重载（旧库 IF NOT EXISTS 不会更新定义）。"""
+    dim_path = _DDL_ROOT / "dim.sql"
+    if not dim_path.is_file():
+        return
+    raw = dim_path.read_text(encoding="utf-8")
+    for view_name in (
+        "vw_audit_invoice_coverage_group_member",
+        "vw_audit_invoice_coverage_soe_year",
+    ):
+        marker = f"CREATE VIEW IF NOT EXISTS {view_name}"
+        start = raw.find(marker)
+        if start < 0:
+            continue
+        end = raw.find(";", start)
+        if end < 0:
+            continue
+        stmt = raw[start : end + 1].replace(
+            "CREATE VIEW IF NOT EXISTS",
+            "CREATE OR REPLACE VIEW",
+            1,
+        )
+        try:
+            conn.execute(stmt)
+            logger.info("已刷新视图：%s", view_name)
+        except Exception as exc:
+            logger.warning("刷新视图 %s 失败: %s", view_name, exc)
+
+
+def migrate_dim_enterprise_year_roster_schema(conn) -> None:
+    """企业年度花名册表 + 报送覆盖视图口径迁移。"""
+    patch = _DDL_ROOT / "patch_enterprise_year_roster.sql"
+    if patch.is_file():
+        try:
+            conn.execute(patch.read_text(encoding="utf-8"))
+            logger.info("已应用 patch_enterprise_year_roster.sql")
+        except Exception as exc:
+            logger.debug("花名册 patch 跳过: %s", exc)
+    _refresh_audit_coverage_views_from_dim_ddl(conn)
+
+
 def migrate_dim_enterprise_year_rel_columns(conn) -> None:
     """
     企业-年度关系表补列迁移：
@@ -480,13 +523,30 @@ def migrate_dim_enterprise_year_rel_columns(conn) -> None:
             logger.debug("年度关系补列跳过：%s.%s (%s)", tbl, col, exc)
 
 
+def ensure_audited_enterprise_registry_table(conn) -> None:
+    """
+    台账只读列表用：表已存在则跳过全量 init_all_tables（避免每次打开「管理与产权层级信息」承担 1～2s DDL）。
+    表不存在时仍走完整初始化。
+    """
+    try:
+        conn.execute("SELECT 1 FROM dim_audited_enterprise_registry LIMIT 0")
+        return
+    except Exception:
+        pass
+    init_all_tables(conn)
+
+
 def init_all_tables(conn, *, force: bool = False) -> dict:
     """加载/迁移 DuckDB DDL。多线程各持连接访问同一库文件时须串行，避免 ods_* 等视图的目录写冲突。"""
+    global _GLOBAL_SCHEMA_INIT_DONE
     cid = id(conn)
     with _INIT_ALL_TABLES_LOCK:
+        if not force and _GLOBAL_SCHEMA_INIT_DONE:
+            return {"skipped": True, "reason": "already_initialized_global"}
         if not force and cid in _INIT_DONE_CONN_IDS:
             return {"skipped": True, "reason": "already_initialized"}
         out = _init_all_tables_impl(conn)
+        _GLOBAL_SCHEMA_INIT_DONE = True
         _INIT_DONE_CONN_IDS.add(cid)
         return out
 
@@ -498,6 +558,7 @@ def _init_all_tables_impl(conn) -> dict:
     migrate_dim_subject_governance_columns(conn)
     migrate_dim_subject_display_cache_columns(conn)
     migrate_dim_enterprise_year_rel_columns(conn)
+    migrate_dim_enterprise_year_roster_schema(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]
 

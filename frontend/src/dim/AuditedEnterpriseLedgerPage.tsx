@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchAuditedEnterpriseRegistry,
+  fetchAuditedEnterpriseRegistryMeta,
   postAuditedEnterpriseRegistryBootstrapDemo,
   postAuditedEnterpriseRegistryRow,
   type AuditedEnterpriseRegistryRow,
+  type AuditedEnterpriseRegistrySummary,
 } from '../config/localApi'
+
+const FILTER_DEBOUNCE_MS = 320
 
 type StateCapitalStatus = 'state_owned' | 'non_state_owned' | 'unmaintained'
 
@@ -137,77 +142,114 @@ export function AuditedEnterpriseLedgerPage() {
   const [selectedYear, setSelectedYear] = useState('2026')
   const [stateInvestorFilter, setStateInvestorFilter] = useState('')
   const [enterpriseFilter, setEnterpriseFilter] = useState('')
+  const [debouncedStateInvestor, setDebouncedStateInvestor] = useState('')
+  const [debouncedEnterprise, setDebouncedEnterprise] = useState('')
   const [groupMode, setGroupMode] = useState<LedgerGroupMode>('stateInvestor')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [totalCount, setTotalCount] = useState(0)
   const [rows, setRows] = useState<AuditedEnterpriseRegistryRow[]>([])
+  const [summary, setSummary] = useState<AuditedEnterpriseRegistrySummary>({
+    total: 0,
+    listed_company: 0,
+    overseas: 0,
+    mgmt_parent_maintained: 0,
+    equity_parent_maintained: 0,
+    main_business_maintained: 0,
+  })
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [importBanner, setImportBanner] = useState('')
   const [importBusy, setImportBusy] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setLoadError('')
-    const res = await fetchAuditedEnterpriseRegistry({
-      snapshotYear: selectedYear,
-      stateInvestor: stateInvestorFilter,
-      enterprise: enterpriseFilter,
-    })
-    if (!res.ok) {
-      setLoadError(res.error?.message ?? ui.loadFailed)
-      setRows([])
-      setLoading(false)
-      return
-    }
-    const years = res.snapshot_years?.length ? res.snapshot_years : ['2026']
-    setSnapshotYears(years)
-    if (!years.includes(selectedYear)) {
-      setSelectedYear(res.selected_year ?? years[0])
-    }
-    setRows(res.rows ?? [])
-    setLoading(false)
-  }, [enterpriseFilter, selectedYear, stateInvestorFilter, ui.loadFailed])
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      setDebouncedStateInvestor(stateInvestorFilter)
+      setDebouncedEnterprise(enterpriseFilter)
+    }, FILTER_DEBOUNCE_MS)
+    return () => window.clearTimeout(t)
+  }, [stateInvestorFilter, enterpriseFilter])
 
   useEffect(() => {
-    void load()
+    const ac = new AbortController()
+    void (async () => {
+      const m = await fetchAuditedEnterpriseRegistryMeta(ac.signal)
+      if (ac.signal.aborted || !m.ok) return
+      const years = m.snapshot_years?.length ? m.snapshot_years : ['2026']
+      setSnapshotYears(years)
+      setSelectedYear((prev) => (years.includes(prev) ? prev : years[0] ?? '2026'))
+    })()
+    return () => ac.abort()
+  }, [])
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true)
+      setLoadError('')
+      const offset = (page - 1) * pageSize
+      const res = await fetchAuditedEnterpriseRegistry(
+        {
+          snapshotYear: selectedYear,
+          stateInvestor: debouncedStateInvestor,
+          enterprise: debouncedEnterprise,
+          limit: pageSize,
+          offset,
+          includeYears: false,
+        },
+        signal,
+      )
+      if (signal?.aborted || res.error?.message === 'aborted') return
+      if (!res.ok) {
+        setLoadError(res.error?.message ?? ui.loadFailed)
+        setRows([])
+        setTotalCount(0)
+        setLoading(false)
+        return
+      }
+      if (res.selected_year && res.selected_year !== selectedYear) {
+        setSelectedYear(res.selected_year)
+      }
+      setRows(res.rows ?? [])
+      setTotalCount(res.total ?? res.rows?.length ?? 0)
+      if (res.summary) setSummary(res.summary)
+      setLoading(false)
+    },
+    [debouncedEnterprise, debouncedStateInvestor, page, pageSize, selectedYear, ui.loadFailed],
+  )
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void load(ac.signal)
+    return () => ac.abort()
   }, [load])
 
   useEffect(() => {
     setPage(1)
-  }, [enterpriseFilter, groupMode, selectedYear, stateInvestorFilter])
+  }, [debouncedEnterprise, debouncedStateInvestor, groupMode, pageSize, selectedYear])
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(rows.length / pageSize)), [pageSize, rows.length])
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(totalCount / pageSize)), [pageSize, totalCount])
   const effectivePage = Math.min(page, totalPages)
 
   useEffect(() => {
     if (page !== effectivePage) setPage(effectivePage)
   }, [effectivePage, page])
 
-  const pagedRows = useMemo(() => {
-    const offset = (effectivePage - 1) * pageSize
-    return rows.slice(offset, offset + pageSize)
-  }, [effectivePage, pageSize, rows])
-
-  const summary = useMemo(
+  const kpiSummary = useMemo(
     () => ({
-      total: rows.length,
-      listedCompany: rows.filter((r) => r.listedCompany.trim() === '是').length,
-      overseas: rows.filter((r) => r.domesticOverseas.includes('境外')).length,
-      mgmtParentMaintained: rows.filter((r) => r.mgmtParent.trim() !== '').length,
-      equityParentMaintained: rows.filter((r) => {
-        const s = r.shareholders.trim()
-        return Boolean(s) && s !== '待维护'
-      }).length,
-      mainBusinessMaintained: rows.filter((r) => r.mainBusiness.trim() !== '').length,
+      total: summary.total,
+      listedCompany: summary.listed_company,
+      overseas: summary.overseas,
+      mgmtParentMaintained: summary.mgmt_parent_maintained,
+      equityParentMaintained: summary.equity_parent_maintained,
+      mainBusinessMaintained: summary.main_business_maintained,
     }),
-    [rows],
+    [summary],
   )
 
   const tableSegments = useMemo(
-    () => buildLedgerTableSegments(pagedRows, groupMode, ui, (effectivePage - 1) * pageSize),
-    [effectivePage, groupMode, pageSize, pagedRows, ui],
+    () => buildLedgerTableSegments(rows, groupMode, ui, (effectivePage - 1) * pageSize),
+    [effectivePage, groupMode, rows, ui],
   )
 
   const openCreate = () => {
@@ -287,11 +329,11 @@ export function AuditedEnterpriseLedgerPage() {
 
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          </div>
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        note={ui.pageIntroMerged}
+        noteTone="compact"
+        actions={
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
@@ -308,20 +350,18 @@ export function AuditedEnterpriseLedgerPage() {
               {ui.createBtn}
             </button>
           </div>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
-        {loadError ? <p className="mt-2 text-il-meta text-red-600">{loadError}</p> : null}
-      </div>
+        }
+      />
+      {loadError ? <p className="-mt-3 mb-5 text-il-meta text-red-600">{loadError}</p> : null}
 
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         {[
-          { label: ui.kpiTotal, value: summary.total },
-          { label: ui.kpiListedCompany, value: summary.listedCompany },
-          { label: ui.kpiOverseasEnterprises, value: summary.overseas },
-          { label: ui.kpiMgmtParentMaintained, value: summary.mgmtParentMaintained },
-          { label: ui.kpiEquityParentMaintained, value: summary.equityParentMaintained },
-          { label: ui.kpiMainBusinessMaintained, value: summary.mainBusinessMaintained },
+          { label: ui.kpiTotal, value: kpiSummary.total },
+          { label: ui.kpiListedCompany, value: kpiSummary.listedCompany },
+          { label: ui.kpiOverseasEnterprises, value: kpiSummary.overseas },
+          { label: ui.kpiMgmtParentMaintained, value: kpiSummary.mgmtParentMaintained },
+          { label: ui.kpiEquityParentMaintained, value: kpiSummary.equityParentMaintained },
+          { label: ui.kpiMainBusinessMaintained, value: kpiSummary.mainBusinessMaintained },
         ].map((item) => (
           <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
             <div className="text-il-label text-text-3">{item.label}</div>
@@ -335,7 +375,7 @@ export function AuditedEnterpriseLedgerPage() {
           <div className="text-il-meta text-text-3">
             {loading
               ? '…'
-              : ui.tableHint.replace('{year}', selectedYear).replace('{count}', String(rows.length))}
+              : ui.tableHint.replace('{year}', selectedYear).replace('{count}', String(totalCount))}
           </div>
           <label className="flex items-center gap-2 text-il-label text-text-2">
             {ui.groupModeLabel}
@@ -375,7 +415,7 @@ export function AuditedEnterpriseLedgerPage() {
           <label className="flex items-center gap-2 text-il-label text-text-2">
             {ui.enterpriseFilterLabel}
             <input
-              className="rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
+              className="min-w-[360px] rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none placeholder:text-text-3 focus:border-accent"
               value={enterpriseFilter}
               onChange={(e) => setEnterpriseFilter(e.target.value)}
               placeholder={ui.enterpriseFilterPlaceholder}
@@ -436,7 +476,7 @@ export function AuditedEnterpriseLedgerPage() {
         {rows.length > 0 ? (
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3 border-t border-border-light pt-2">
             <div className="text-il-meta text-text-3">
-              {ui.tablePagedTotalHint.replace('{total}', String(rows.length))}
+              {ui.tablePagedTotalHint.replace('{total}', String(totalCount))}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label className="flex items-center gap-1.5 text-il-meta text-text-2">

@@ -137,12 +137,9 @@ export function DimVersionPage() {
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.pageNote}
-        descriptionTone="compact"
         note={ui.pageDesc}
         noteTone="plain"
         badgeText={ui.prototypeBadge}
-        expandLabel={ui.moreTipsToggle}
-        collapseLabel={ui.lessTipsToggle}
         actions={
           <button
             type="button"

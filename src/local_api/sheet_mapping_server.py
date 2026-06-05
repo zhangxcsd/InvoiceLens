@@ -1299,23 +1299,181 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if payload.get("ok") else 500, payload)
             return
 
+        if path == "/api/dim/enterprise-year-roster/meta":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_api import api_enterprise_year_roster_meta
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_enterprise_year_roster_meta(conn)
+                self._send(200, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/enterprise-year-roster/bootstrap":
+            qs = parse_qs(parsed.query or "")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_api import api_enterprise_year_roster_bootstrap
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_enterprise_year_roster_bootstrap(
+                    conn,
+                    stat_year=(qs.get("stat_year") or [None])[0],
+                    state_investor_kw=(qs.get("state_investor_kw") or [""])[0],
+                    enterprise_kw=(qs.get("enterprise_kw") or qs.get("keyword") or [""])[0],
+                    limit=int((qs.get("limit") or ["50"])[0] or 50),
+                    offset=int((qs.get("offset") or ["0"])[0] or 0),
+                )
+                self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/enterprise-year-roster/kpi":
+            qs = parse_qs(parsed.query or "")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_api import api_enterprise_year_roster_kpi
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_enterprise_year_roster_kpi(
+                    conn,
+                    stat_year=(qs.get("stat_year") or [None])[0],
+                )
+                self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/enterprise-year-roster/summary":
+            qs = parse_qs(parsed.query or "")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_api import api_enterprise_year_roster_summary
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_enterprise_year_roster_summary(
+                    conn,
+                    stat_year=(qs.get("stat_year") or [None])[0],
+                    state_investor_kw=(qs.get("state_investor_kw") or qs.get("state_investor") or [""])[0],
+                )
+                self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/enterprise-year-roster/list":
+            qs = parse_qs(parsed.query or "")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_api import api_enterprise_year_roster_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_enterprise_year_roster_list(
+                    conn,
+                    stat_year=(qs.get("stat_year") or [None])[0],
+                    state_investor=(qs.get("state_investor") or [""])[0],
+                    state_investor_code=(qs.get("state_investor_code") or [""])[0],
+                    state_investor_kw=(qs.get("state_investor_kw") or [""])[0],
+                    enterprise_kw=(qs.get("enterprise_kw") or qs.get("keyword") or [""])[0],
+                    quality_status=(qs.get("quality_status") or [""])[0],
+                    limit=int((qs.get("limit") or ["50"])[0] or 50),
+                    offset=int((qs.get("offset") or ["0"])[0] or 0),
+                )
+                self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/audited-enterprise/registry/meta":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import ensure_audited_enterprise_registry_table
+                from src.local_api.audited_enterprise_dims import api_registry_meta
+
+                conn = get_conn()
+                ensure_audited_enterprise_registry_table(conn)
+                payload = api_registry_meta(conn)
+                self._send(200, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取台账年度元数据失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         if path == "/api/audited-enterprise/registry":
             qs = parse_qs(parsed.query or "")
             snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip() or None
             state_investor = (qs.get("state_investor", [""])[0] or "").strip()
             enterprise = (qs.get("enterprise", [""])[0] or "").strip()
             try:
+                limit = int((qs.get("limit", ["50"])[0] or "50").strip())
+            except (TypeError, ValueError):
+                limit = 50
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip())
+            except (TypeError, ValueError):
+                offset = 0
+            include_years = (qs.get("include_years", ["1"])[0] or "1").strip().lower() not in (
+                "0",
+                "false",
+                "no",
+            )
+            try:
                 from db.duckdb_conn import get_conn
-                from db.schema_sqlfiles import init_all_tables
+                from db.schema_sqlfiles import ensure_audited_enterprise_registry_table
                 from src.local_api.audited_enterprise_dims import api_registry_list
 
                 conn = get_conn()
-                init_all_tables(conn)
+                ensure_audited_enterprise_registry_table(conn)
                 payload = api_registry_list(
                     conn,
                     snapshot_year=snapshot_year,
                     state_investor_kw=state_investor,
                     enterprise_kw=enterprise,
+                    limit=limit,
+                    offset=offset,
+                    include_years=include_years,
                 )
                 self._send(200, payload)
             except Exception as exc:
@@ -2665,6 +2823,47 @@ class Handler(BaseHTTPRequestHandler):
                 }
             code = 200 if payload.get("ok") or payload.get("skipped") else 400
             self._send(code, payload, cors=True)
+            return
+
+        if path == "/api/dim/enterprise-year-roster/rebuild":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.enterprise_year_roster_build import rebuild_enterprise_year_roster_from_registry
+
+                stat_years_raw = body.get("stat_years") if isinstance(body, dict) else None
+                stat_years: list[int] | None = None
+                if isinstance(stat_years_raw, list) and stat_years_raw:
+                    stat_years = []
+                    for y in stat_years_raw:
+                        try:
+                            yi = int(y)
+                            if 1990 <= yi <= 2100:
+                                stat_years.append(yi)
+                        except (TypeError, ValueError):
+                            continue
+                    if not stat_years:
+                        stat_years = None
+                replace_years = bool(body.get("replace_years", body.get("replaceYears", True)))
+                run_id = str(body.get("run_id") or "").strip() or None
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = rebuild_enterprise_year_roster_from_registry(
+                    conn,
+                    stat_years=stat_years,
+                    replace_years=replace_years,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"企业年度花名册同步失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
             return
 
         if path == "/api/dim/group-enterprise-year/rebuild":

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchLevel1EnterpriseYearCandidates,
@@ -479,10 +480,12 @@ export function Level1EnterpriseYearPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <div>
-        <h1 className="text-[20px] font-semibold text-text">{ui.pageTitle}</h1>
-        <p className="mt-1 max-w-[920px] text-il-page-desc text-text-2">{ui.pageDesc}</p>
-      </div>
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        description={ui.pageDesc}
+        note={ui.groupRosterViewHint}
+        noteTone="compact"
+      />
 
       {err ? (
         <div className="rounded-md border border-danger/30 bg-[#fff5f5] px-3 py-2 text-sm text-danger">{err}</div>
@@ -987,11 +990,8 @@ export function Level1EnterpriseYearPage() {
                       <th className="py-2 pr-2 font-medium">{ui.membersColName}</th>
                       <th className="py-2 pr-2 font-medium">{ui.membersColId}</th>
                       <th className="py-2 pr-2 font-medium">{ui.membersColActive}</th>
-                      <th className="py-2 pr-2 font-medium">{ui.membersColMgmtLevel}</th>
-                      <th className="py-2 pr-2 font-medium">{ui.membersColMgmtParent}</th>
-                      <th className="py-2 pr-2 font-medium">{ui.membersColEquityLevel}</th>
-                      <th className="py-2 pr-2 font-medium">{ui.membersColEquityParent}</th>
-                      <th className="py-2 font-medium">{ui.membersColStateInvestor}</th>
+                      <th className="py-2 pr-2 font-medium">{ui.membersColStateInvestor}</th>
+                      <th className="py-2 font-medium">{ui.membersColQuality}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1000,16 +1000,11 @@ export function Level1EnterpriseYearPage() {
                         <td className="py-1.5 pr-2 font-medium text-text">{m.enterprise_name || '—'}</td>
                         <td className="py-1.5 pr-2 font-mono text-xs text-text-2">{m.enterprise_id}</td>
                         <td className="py-1.5 pr-2">{m.is_member ? ui.yes : ui.no}</td>
-                        <td className="py-1.5 pr-2 tabular-nums">{m.mgmt_level ?? '—'}</td>
-                        <td className="py-1.5 pr-2 max-w-[140px] truncate text-text-2" title={m.mgmt_parent_enterprise_name}>
-                          {m.mgmt_parent_enterprise_name || '—'}
-                        </td>
-                        <td className="py-1.5 pr-2 tabular-nums">{m.equity_level ?? '—'}</td>
-                        <td className="py-1.5 pr-2 max-w-[140px] truncate text-text-2" title={m.equity_parent_enterprise_name}>
-                          {m.equity_parent_enterprise_name || '—'}
-                        </td>
-                        <td className="py-1.5 max-w-[140px] truncate text-text-2" title={m.state_investor}>
+                        <td className="py-1.5 pr-2 max-w-[160px] truncate text-text-2" title={m.state_investor}>
                           {m.state_investor || '—'}
+                        </td>
+                        <td className="py-1.5 max-w-[200px] truncate text-text-3" title={m.quality_issue}>
+                          {m.quality_issue || (m.quality_status === 'conflict' ? '待核对' : '—')}
                         </td>
                       </tr>
                     ))}

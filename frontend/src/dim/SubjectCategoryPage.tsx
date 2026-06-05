@@ -427,8 +427,7 @@ export function SubjectCategoryPage(props: { onNavigateToRebuild?: () => void })
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
         title={ui.pageTitle}
-        description={ui.pageDesc}
-        showExpandableNote={false}
+        note={ui.pageDesc}
         actions={
           <div className="flex items-center gap-2">
             <button

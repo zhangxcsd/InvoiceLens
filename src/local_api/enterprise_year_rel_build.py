@@ -123,7 +123,7 @@ def _distinct_stat_years_from_group(conn: Any) -> list[int]:
         rows = conn.execute(
             """
             SELECT DISTINCT CAST(stat_year AS INTEGER) AS y
-            FROM dim_group_enterprise_year
+            FROM dim_enterprise_year_roster
             WHERE stat_year IS NOT NULL
             ORDER BY y
             """
@@ -172,7 +172,7 @@ WITH group_member_norm AS (
     SELECT DISTINCT
         CAST(stat_year AS SMALLINT) AS stat_year,
         upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\\s-]+', '', 'g')) AS norm_no
-    FROM dim_group_enterprise_year
+    FROM dim_enterprise_year_roster
     WHERE CAST(stat_year AS INTEGER) IN ({ph})
       AND trim(COALESCE(enterprise_id, '')) <> ''
       AND length(upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\\s-]+', '', 'g'))) > 0
@@ -267,7 +267,7 @@ WITH group_member_norm AS (
     SELECT DISTINCT
         CAST(stat_year AS SMALLINT) AS stat_year,
         upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\\s-]+', '', 'g')) AS norm_no
-    FROM dim_group_enterprise_year
+    FROM dim_enterprise_year_roster
     WHERE CAST(stat_year AS INTEGER) IN ({ph})
       AND trim(COALESCE(enterprise_id, '')) <> ''
       AND length(upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\\s-]+', '', 'g'))) > 0
@@ -664,7 +664,7 @@ def api_dim_enterprise_year_rel_meta(conn: Any) -> dict[str, Any]:
         pass
 
     try:
-        conn.execute("SELECT 1 FROM dim_group_enterprise_year LIMIT 1")
+        conn.execute("SELECT 1 FROM dim_enterprise_year_roster LIMIT 1")
         group_years = _distinct_stat_years_from_group(conn)
     except Exception:
         pass

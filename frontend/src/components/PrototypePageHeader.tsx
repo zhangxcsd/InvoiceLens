@@ -4,12 +4,15 @@ import { useState } from 'react'
 /** plain：页顶说明段落；callout：浅蓝提示条；compact：小号次色说明（原折叠区默认样式） */
 export type PrototypePageHeaderBodyTone = 'plain' | 'callout' | 'compact'
 
+const DEFAULT_EXPAND_LABEL = '查看更多说明'
+const DEFAULT_COLLAPSE_LABEL = '收起说明'
+
 type PrototypePageHeaderProps = {
   title: string
-  /** 空字符串则不占位（用于页内另有独立说明时） */
+  /** 空字符串则不占位；开启折叠时与 note 合并，不再单独常驻展示 */
   description?: string
   descriptionTone?: PrototypePageHeaderBodyTone
-  /** 折叠说明正文；仅当 showExpandableNote 为 true 时需要 */
+  /** 折叠说明正文；与 description 合并为一条，默认折叠 */
   note?: string
   /** 展开后正文的展示样式；默认 compact */
   noteTone?: PrototypePageHeaderBodyTone
@@ -18,7 +21,7 @@ type PrototypePageHeaderProps = {
   expandLabel?: string
   collapseLabel?: string
   actions?: ReactNode
-  /** 为 false 时不展示「查看更多操作提示」及折叠说明（默认 true，兼容旧页） */
+  /** 为 false 时不折叠，description 常驻展示（默认 true） */
   showExpandableNote?: boolean
 }
 
@@ -55,42 +58,43 @@ function renderBody(text: string, t: PrototypePageHeaderBodyTone, layout: BodyLa
 
 export function PrototypePageHeader(props: PrototypePageHeaderProps) {
   const [showTips, setShowTips] = useState(false)
-  const showNote = props.showExpandableNote !== false
-  const expand = props.expandLabel ?? ''
-  const collapse = props.collapseLabel ?? ''
+  const collapsible = props.showExpandableNote !== false
+  const expand = (props.expandLabel ?? '').trim() || DEFAULT_EXPAND_LABEL
+  const collapse = (props.collapseLabel ?? '').trim() || DEFAULT_COLLAPSE_LABEL
 
   const desc = (props.description ?? '').trim()
-  const tone = props.descriptionTone ?? 'plain'
-  const noteText = (props.note ?? '').trim()
+  const noteRaw = (props.note ?? '').trim()
   const noteTone = props.noteTone ?? 'compact'
+  const collapsibleText = collapsible ? [desc, noteRaw].filter(Boolean).join(' ') : noteRaw
+  const staticDesc = collapsible ? '' : desc
+  const staticTone = props.descriptionTone ?? 'plain'
+  const showToggle = collapsible && collapsibleText.length > 0
 
   return (
     <div className="mb-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h1 className="text-il-page-title font-semibold text-text">{props.title}</h1>
           {props.badgeText ? (
             <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
               {props.badgeText}
             </span>
           ) : null}
+          {showToggle ? (
+            <button
+              type="button"
+              className="text-il-meta text-accent hover:underline"
+              onClick={() => setShowTips((v) => !v)}
+              aria-expanded={showTips}
+            >
+              {showTips ? collapse : expand}
+            </button>
+          ) : null}
         </div>
         {props.actions ? <div className="flex shrink-0 items-center gap-2">{props.actions}</div> : null}
       </div>
-      {desc ? renderBody(desc, tone) : null}
-      {showNote ? (
-        <>
-          <button
-            type="button"
-            className="mt-2 text-il-meta text-accent hover:underline"
-            onClick={() => setShowTips((v) => !v)}
-            aria-expanded={showTips}
-          >
-            {showTips ? collapse : expand}
-          </button>
-          {showTips && noteText ? renderBody(noteText, noteTone, 'fullWidth') : null}
-        </>
-      ) : null}
+      {staticDesc ? renderBody(staticDesc, staticTone) : null}
+      {showTips && collapsibleText ? renderBody(collapsibleText, noteTone, 'fullWidth') : null}
     </div>
   )
 }

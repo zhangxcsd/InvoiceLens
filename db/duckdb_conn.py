@@ -62,6 +62,9 @@ def get_conn() -> duckdb.DuckDBPyConnection:
         tmp_dir = DB_PATH.parent / "tmp"
         tmp_dir.mkdir(exist_ok=True)
         conn.execute(f"SET temp_directory = '{tmp_dir}'")
+        # DuckDB 1.5+ top_n 优化在 ORDER BY 中文 VARCHAR + LIMIT 时会触发
+        # InvalidInputException: Invalid unicode (byte sequence mismatch)。
+        conn.execute("SET disabled_optimizers='top_n'")
         _tls.conn = conn
     return conn
 

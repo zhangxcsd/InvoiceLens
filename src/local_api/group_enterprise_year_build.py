@@ -155,6 +155,23 @@ def rebuild_group_enterprise_year_from_registry(
     year_summaries: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
 
+    # 企业年度花名册与集团双树表同源刷新：花名册为覆盖分析/一级名单成员查询的权威口径
+    try:
+        from src.local_api.enterprise_year_roster_build import rebuild_enterprise_year_roster_from_registry
+
+        roster_payload = rebuild_enterprise_year_roster_from_registry(
+            conn,
+            stat_years=years,
+            replace_years=replace_years,
+            run_id=build_run_id,
+            on_progress=on_progress,
+        )
+        if not roster_payload.get("ok"):
+            return roster_payload
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("同步企业年度花名册失败")
+        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
     for year_i in years:
         _prog("load_registry", f"读取 {year_i} 年度管理与产权台账…")
         try:

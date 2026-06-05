@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchAuditedEnterpriseInvoiceLink, type AuditedEnterpriseInvoiceLinkRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 
@@ -68,15 +69,14 @@ export function AuditedEnterpriseInvoiceLinkPage() {
 
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">{ui.prototypeBadge}</span>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
-        {loadError ? <p className="mt-2 text-il-meta text-red-600">{loadError}</p> : null}
-      </div>
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        description={ui.pageDesc}
+        note={ui.pageNote}
+        noteTone="compact"
+        badgeText={ui.prototypeBadge}
+      />
+      {loadError ? <p className="-mt-3 mb-5 text-il-meta text-red-600">{loadError}</p> : null}
 
       <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-4">
         {[

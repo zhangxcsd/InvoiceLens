@@ -133,6 +133,36 @@ CREATE INDEX IF NOT EXISTS idx_group_year_eq_parent   ON dim_group_enterprise_ye
 CREATE INDEX IF NOT EXISTS idx_group_year_status      ON dim_group_enterprise_year (stat_year, mgmt_status, equity_status);
 
 -- -----------------------------------------------------------------------------
+-- dim_enterprise_year_roster：企业年度花名册（集团成员平铺清单，权威消费口径）
+-- 审计含义：
+-- 1) 一行 = 某 stat_year 下应纳入集团成员范围的一个企业（enterprise_id 为统一社会信用代码）；
+-- 2) 仅承载「成员是谁、归属哪家国家出资企业」，不记录管理/产权层级与上下级树结构（见台账与 dim_group_enterprise_year）；
+-- 3) 由 dim_audited_enterprise_registry 重算写入；台账变更或加工中心「集团成员表」任务后须同步刷新；
+-- 4) 发票报送覆盖分析、dim_enterprise_year_rel 重算、花名册查询页均以本表为成员清单权威来源。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dim_enterprise_year_roster (
+    stat_year                         SMALLINT NOT NULL,
+    enterprise_id                     VARCHAR NOT NULL,
+    enterprise_name                   VARCHAR,
+    state_investor                    VARCHAR NOT NULL,
+    state_investor_unified_credit_code VARCHAR,
+    is_member                         BOOLEAN DEFAULT TRUE,
+    registry_row_id                   VARCHAR,
+    data_source                       VARCHAR,
+    source_record_id                  VARCHAR,
+    calc_version                      VARCHAR,
+    quality_status                    VARCHAR,
+    quality_issue                     VARCHAR,
+    updated_at                        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (stat_year, enterprise_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ent_year_roster_year_state
+    ON dim_enterprise_year_roster (stat_year, state_investor);
+CREATE INDEX IF NOT EXISTS idx_ent_year_roster_state_code
+    ON dim_enterprise_year_roster (stat_year, state_investor_unified_credit_code);
+
+-- -----------------------------------------------------------------------------
 -- dim_level1_enterprise_year：年度一级企业名单（聚合维度权威清单）
 -- 用途：
 -- 1) 按 stat_year 维护当年度参与分析/报送上卷的一级企业集团清单（每 year 一份）；
@@ -581,17 +611,16 @@ GROUP BY stat_year;
 -- -----------------------------------------------------------------------------
 -- vw_audit_invoice_coverage_group_member：集团年度成员 × 主体库 × 年度购销角色（发票报送覆盖明细）
 -- 审计含义：
--- 1) 以 dim_group_enterprise_year 为集团「成员清单」权威口径（stat_year + enterprise_id）；
+-- 1) 以 dim_enterprise_year_roster 为集团「成员清单」权威口径（stat_year + enterprise_id）；
 -- 2) 纳税人标识与主体库对齐：成员 enterprise_id 与 dim_subject_master.subject_no 使用同一规范化
 --    （大写、去首尾空白、去空白与连字符），且仅 subject_category='org' 参与匹配；
 -- 3) 「已报送」采用严口径：dim_enterprise_year_rel 中该年度 has_seller_role 与 has_buyer_role 同时为真
---    （本表行仅覆盖台账成员映射后的主体，与第 2 点一致）；
 --    （购销双向均在发票事实中出现过）；
--- 4) 国家出资企业分组锚点：优先显式产权根 enterprise_id，其次管理根，二者皆空时回落一级集团
---    level1_group_id（与业务约定「双根不一致时以产权根为主」一致：本视图以 COALESCE 顺序体现优先级）；
--- 5) in_coverage_denominator：仅「成员行且已成功映射到 org 主体」计入报送覆盖率分母；未映射成员仍保留在
---    明细中便于补录主体或核对税号，但不进入分母，避免分母虚增。
--- 粒度：一行 = 一条集团年度成员记录（与 dim_group_enterprise_year 主键一致）。
+-- 4) 国家出资企业分组锚点：与花名册一致，取台账固化字段 state_investor / state_investor_unified_credit_code
+--    （soe_anchor_* 列名保留，供前端与历史 API 兼容，语义为国家出资企业）；
+-- 5) level1_group_* 列与 soe_anchor 对齐，便于按一级集团税号筛选（通常等于国家出资企业统一社会信用代码）；
+-- 6) in_coverage_denominator：仅「成员行且已成功映射到 org 主体」计入报送覆盖率分母。
+-- 粒度：一行 = 一条企业年度花名册记录。
 -- -----------------------------------------------------------------------------
 CREATE VIEW IF NOT EXISTS vw_audit_invoice_coverage_group_member AS
 WITH org_subject_ranked AS (
@@ -614,33 +643,22 @@ org_subject_dedup AS (
     WHERE rn = 1
 )
 SELECT
-    g.stat_year,
-    g.enterprise_id,
-    g.enterprise_name,
-    g.is_member,
-    upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g')) AS norm_enterprise_id,
-    g.level1_group_id,
-    g.level1_group_name,
-    g.mgmt_root_enterprise_id,
-    g.mgmt_root_enterprise_name,
-    g.equity_root_enterprise_id,
-    g.equity_root_enterprise_name,
-    -- 国家出资企业锚点（上卷维度）：产权根 > 管理根 > 一级集团
-    CASE
-        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN g.equity_root_enterprise_id
-        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN g.mgmt_root_enterprise_id
-        ELSE g.level1_group_id
-    END AS soe_anchor_enterprise_id,
-    CASE
-        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN g.equity_root_enterprise_name
-        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN g.mgmt_root_enterprise_name
-        ELSE g.level1_group_name
-    END AS soe_anchor_enterprise_name,
-    CASE
-        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> '' THEN 'equity_root'
-        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> '' THEN 'mgmt_root'
-        ELSE 'level1_group'
-    END AS soe_anchor_source,
+    ro.stat_year,
+    ro.enterprise_id,
+    ro.enterprise_name,
+    ro.is_member,
+    upper(regexp_replace(trim(COALESCE(ro.enterprise_id, '')), '[\s-]+', '', 'g')) AS norm_enterprise_id,
+    -- 与一级企业名单税号筛选兼容：为国家出资企业在同年度台账匹配到的统一社会信用代码（可空）
+    NULLIF(trim(ro.state_investor_unified_credit_code), '') AS level1_group_id,
+    trim(COALESCE(ro.state_investor, '')) AS level1_group_name,
+    CAST(NULL AS VARCHAR) AS mgmt_root_enterprise_id,
+    CAST(NULL AS VARCHAR) AS mgmt_root_enterprise_name,
+    CAST(NULL AS VARCHAR) AS equity_root_enterprise_id,
+    CAST(NULL AS VARCHAR) AS equity_root_enterprise_name,
+    -- 国家出资企业锚点：与花名册一致（state_investor）
+    NULLIF(trim(ro.state_investor_unified_credit_code), '') AS soe_anchor_enterprise_id,
+    trim(COALESCE(ro.state_investor, '')) AS soe_anchor_enterprise_name,
+    'state_investor' AS soe_anchor_source,
     m.subject_id AS subject_id,
     m.subject_name AS subject_name,
     COALESCE(r.has_seller_role, FALSE) AS has_seller_role,
@@ -650,16 +668,16 @@ SELECT
         AND COALESCE(r.has_seller_role, FALSE)
         AND COALESCE(r.has_buyer_role, FALSE)) AS is_reported_both,
     -- 报送覆盖分析分母（映射后的集团成员）
-    (COALESCE(g.is_member, TRUE)
+    (COALESCE(ro.is_member, TRUE)
         AND m.subject_id IS NOT NULL
-        AND length(upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g'))) > 0
+        AND length(upper(regexp_replace(trim(COALESCE(ro.enterprise_id, '')), '[\s-]+', '', 'g'))) > 0
     ) AS in_coverage_denominator
-FROM dim_group_enterprise_year g
+FROM dim_enterprise_year_roster ro
 LEFT JOIN org_subject_dedup m
-    ON m.norm_no = upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\s-]+', '', 'g'))
+    ON m.norm_no = upper(regexp_replace(trim(COALESCE(ro.enterprise_id, '')), '[\s-]+', '', 'g'))
 LEFT JOIN dim_enterprise_year_rel r
     ON r.subject_id = m.subject_id
-   AND r.stat_year = g.stat_year;
+   AND r.stat_year = ro.stat_year;
 
 -- -----------------------------------------------------------------------------
 -- vw_audit_invoice_coverage_soe_year：按「国家出资企业锚点 × 统计年度」上卷的报送覆盖汇总

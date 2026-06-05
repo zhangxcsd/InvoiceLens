@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchAuditedEnterpriseContribution,
@@ -168,7 +169,6 @@ export function AuditedEnterpriseContributionPage() {
     const investees = new Set(rows.map((r) => r.investeeName.trim()).filter(Boolean))
     const contributors = new Set(rows.map((r) => r.contributorName.trim()).filter(Boolean))
     return {
-      relationRows: rows.length,
       investees: investees.size,
       contributors: contributors.size,
     }
@@ -236,14 +236,23 @@ export function AuditedEnterpriseContributionPage() {
     await load()
   }
 
+  const tableHintText = loading
+    ? '…'
+    : ui.tableHint
+        .replace('{year}', selectedYear)
+        .replace('{count}', String(rows.length))
+        .replace('{investees}', String(summary.investees))
+        .replace('{contributors}', String(summary.contributors))
+
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        description={ui.pageNote}
+        note={ui.pageDesc}
+        noteTone="plain"
+        actions={
+          <>
             <button
               type="button"
               className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
@@ -258,33 +267,15 @@ export function AuditedEnterpriseContributionPage() {
             >
               {ui.createBtn}
             </button>
-          </div>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.pageNote}</p>
-        {loadError ? <p className="mt-2 text-il-meta text-red-600">{loadError}</p> : null}
-      </div>
+          </>
+        }
+      />
 
-      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {[
-          { label: ui.kpiRelationRows, value: summary.relationRows },
-          { label: ui.kpiInvestees, value: summary.investees },
-          { label: ui.kpiContributors, value: summary.contributors },
-        ].map((item) => (
-          <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
-            <div className="text-il-label text-text-3">{item.label}</div>
-            <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
-          </div>
-        ))}
-      </div>
+      {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
 
       <Card title={ui.tableTitle}>
         <div className="mb-3 flex flex-wrap items-center gap-3">
-          <div className="text-il-meta text-text-3">
-            {loading
-              ? '…'
-              : ui.tableHint.replace('{year}', selectedYear).replace('{count}', String(rows.length))}
-          </div>
+          <div className="text-il-meta text-text-3">{tableHintText}</div>
           <label className="flex items-center gap-2 text-il-label text-text-2">
             {ui.groupModeLabel}
             <select

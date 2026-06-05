@@ -84,72 +84,161 @@ def _pick_year(requested: str | None, years: list[str]) -> str:
     return (requested or "2026").strip() or "2026"
 
 
+_REGISTRY_SELECT_COLS = """
+    row_id, snapshot_year, unified_social_credit_code, enterprise_name,
+    domestic_overseas, detail_address, currency, registered_capital, registration_date,
+    national_economy_industry_major, enterprise_category, sasac_authority, sasac_relation,
+    consolidated_reporting, listed_company, main_business, state_investor,
+    mgmt_level, mgmt_parent, equity_level, shareholders
+"""
+
+
+def _registry_filter_clause(
+    *,
+    year_i: int,
+    state_investor_kw: str,
+    enterprise_kw: str,
+) -> tuple[str, list[Any]]:
+    clauses = ["snapshot_year = ?"]
+    params: list[Any] = [year_i]
+    si = state_investor_kw.strip().lower()
+    ek = enterprise_kw.strip().lower()
+    if si:
+        clauses.append("lower(state_investor) LIKE ?")
+        params.append(f"%{si}%")
+    if ek:
+        clauses.append(
+            "(lower(enterprise_name) LIKE ? OR lower(unified_social_credit_code) LIKE ?)"
+        )
+        params.extend([f"%{ek}%", f"%{ek}%"])
+    return " AND ".join(clauses), params
+
+
+def _fetch_registry_rows(conn: Any, sql: str, params: list[Any]) -> list[tuple[Any, ...]]:
+    """
+    读取台账列表行。DuckDB 1.5+ 的 top_n 优化在 ORDER BY 中文列 + LIMIT 时会报
+    InvalidInputException（unicode byte sequence mismatch），连接层已默认禁用 top_n，
+    此处再兜底一次，避免旧连接或未走 get_conn 的路径。
+    """
+    try:
+        conn.execute("SET disabled_optimizers='top_n'")
+    except Exception:
+        pass
+    return conn.execute(sql, params).fetchall()
+
+
+def _row_to_registry_dict(r: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "rowId": str(r[0] or ""),
+        "snapshotYear": str(int(r[1])),
+        "code": str(r[2] or ""),
+        "name": str(r[3] or ""),
+        "domesticOverseas": str(r[4] or ""),
+        "detailAddress": str(r[5] or ""),
+        "currency": str(r[6] or ""),
+        "registeredCapital": str(r[7] or ""),
+        "registrationDate": str(r[8] or ""),
+        "nationalEconomyIndustryMajor": str(r[9] or ""),
+        "enterpriseCategory": str(r[10] or ""),
+        "sasacAuthority": str(r[11] or ""),
+        "sasacRelation": str(r[12] or ""),
+        "consolidatedReporting": str(r[13] or ""),
+        "listedCompany": str(r[14] or ""),
+        "mainBusiness": str(r[15] or ""),
+        "stateInvestor": str(r[16] or ""),
+        "mgmtLevel": int(r[17] or 0),
+        "mgmtParent": str(r[18] or ""),
+        "equityLevel": int(r[19] or 0),
+        "shareholders": str(r[20] or ""),
+    }
+
+
+def api_registry_meta(conn: Any) -> dict[str, Any]:
+    """仅返回可选快照年度（轻量，供台账页首屏）。"""
+    years = _snapshot_years_registry(conn)
+    return {"ok": True, "snapshot_years": years}
+
+
 def api_registry_list(
     conn: Any,
     *,
     snapshot_year: str | None,
     state_investor_kw: str = "",
     enterprise_kw: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    include_years: bool = True,
 ) -> dict[str, Any]:
-    years = _snapshot_years_registry(conn)
-    year_s = _pick_year(snapshot_year, years)
+    years = _snapshot_years_registry(conn) if include_years else []
+    year_s = _pick_year(snapshot_year, years if years else [str(snapshot_year or "2026")])
     year_i = int(year_s) if year_s.isdigit() else 2026
 
-    si = state_investor_kw.strip().lower()
-    ek = enterprise_kw.strip().lower()
+    where_sql, params = _registry_filter_clause(
+        year_i=year_i,
+        state_investor_kw=state_investor_kw,
+        enterprise_kw=enterprise_kw,
+    )
+    lim = max(1, min(int(limit or 50), 500))
+    off = max(0, int(offset or 0))
 
-    sql = """
-        SELECT
-            row_id, snapshot_year, unified_social_credit_code, enterprise_name,
-            domestic_overseas, detail_address, currency, registered_capital, registration_date,
-            national_economy_industry_major, enterprise_category, sasac_authority, sasac_relation,
-            consolidated_reporting, listed_company, main_business, state_investor,
-            mgmt_level, mgmt_parent, equity_level, shareholders
-        FROM dim_audited_enterprise_registry
-        WHERE snapshot_year = ?
-    """
-    params: list[Any] = [year_i]
-    if si:
-        sql += " AND lower(state_investor) LIKE ?"
-        params.append(f"%{si}%")
-    if ek:
-        sql += " AND (lower(enterprise_name) LIKE ? OR lower(unified_social_credit_code) LIKE ?)"
-        params.extend([f"%{ek}%", f"%{ek}%"])
-    sql += " ORDER BY enterprise_name ASC, unified_social_credit_code ASC"
-
-    rows_out: list[dict[str, Any]] = []
     try:
-        for r in conn.execute(sql, params).fetchall():
-            rows_out.append(
-                {
-                    "rowId": str(r[0] or ""),
-                    "snapshotYear": str(int(r[1])),
-                    "code": str(r[2] or ""),
-                    "name": str(r[3] or ""),
-                    "domesticOverseas": str(r[4] or ""),
-                    "detailAddress": str(r[5] or ""),
-                    "currency": str(r[6] or ""),
-                    "registeredCapital": str(r[7] or ""),
-                    "registrationDate": str(r[8] or ""),
-                    "nationalEconomyIndustryMajor": str(r[9] or ""),
-                    "enterpriseCategory": str(r[10] or ""),
-                    "sasacAuthority": str(r[11] or ""),
-                    "sasacRelation": str(r[12] or ""),
-                    "consolidatedReporting": str(r[13] or ""),
-                    "listedCompany": str(r[14] or ""),
-                    "mainBusiness": str(r[15] or ""),
-                    "stateInvestor": str(r[16] or ""),
-                    "mgmtLevel": int(r[17] or 0),
-                    "mgmtParent": str(r[18] or ""),
-                    "equityLevel": int(r[19] or 0),
-                    "shareholders": str(r[20] or ""),
-                }
-            )
+        total = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM dim_audited_enterprise_registry WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
+            or 0
+        )
+        agg = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE trim(COALESCE(listed_company, '')) = '是') AS listed_company,
+                COUNT(*) FILTER (WHERE COALESCE(domestic_overseas, '') LIKE '%境外%') AS overseas,
+                COUNT(*) FILTER (WHERE trim(COALESCE(mgmt_parent, '')) <> '') AS mgmt_parent_maintained,
+                COUNT(*) FILTER (
+                    WHERE trim(COALESCE(shareholders, '')) <> ''
+                      AND trim(COALESCE(shareholders, '')) <> '待维护'
+                ) AS equity_parent_maintained,
+                COUNT(*) FILTER (WHERE trim(COALESCE(main_business, '')) <> '') AS main_business_maintained
+            FROM dim_audited_enterprise_registry
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()
+        list_sql = f"""
+            SELECT {_REGISTRY_SELECT_COLS}
+            FROM dim_audited_enterprise_registry
+            WHERE {where_sql}
+            ORDER BY enterprise_name ASC, unified_social_credit_code ASC
+            LIMIT {lim} OFFSET {off}
+        """
+        rows_out = [_row_to_registry_dict(r) for r in _fetch_registry_rows(conn, list_sql, params)]
     except Exception as exc:
         logger.exception("registry list failed: %s", exc)
         raise
 
-    return {"ok": True, "snapshot_years": years, "selected_year": year_s, "rows": rows_out}
+    summary = {
+        "total": int(agg[0] or 0) if agg else 0,
+        "listed_company": int(agg[1] or 0) if agg else 0,
+        "overseas": int(agg[2] or 0) if agg else 0,
+        "mgmt_parent_maintained": int(agg[3] or 0) if agg else 0,
+        "equity_parent_maintained": int(agg[4] or 0) if agg else 0,
+        "main_business_maintained": int(agg[5] or 0) if agg else 0,
+    }
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "selected_year": year_s,
+        "rows": rows_out,
+        "total": total,
+        "limit": lim,
+        "offset": off,
+        "summary": summary,
+    }
+    if include_years:
+        out["snapshot_years"] = years
+    return out
 
 
 def _merge_shareholders(name: str, ratio: str) -> str:
@@ -219,7 +308,15 @@ def api_registry_insert(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         conn.execute(sql, list(fields.values()))
-        return {"ok": True, "row_id": row_id}
+        from src.local_api.enterprise_year_roster_build import sync_enterprise_year_roster_for_snapshot_year
+
+        roster_sync = sync_enterprise_year_roster_for_snapshot_year(conn, year_i)
+        out: dict[str, Any] = {"ok": True, "row_id": row_id}
+        if roster_sync.get("ok"):
+            out["roster_rows_written"] = roster_sync.get("rows_written", 0)
+        else:
+            out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
+        return out
     except Exception as exc:
         logger.exception("registry insert failed: %s", exc)
         return {
@@ -314,7 +411,25 @@ def api_registry_bootstrap_demo(conn: Any) -> dict[str, Any]:
                     list(row25.values()),
                 )
                 n += 1
-        return {"ok": True, "inserted": n}
+        years_synced: set[int] = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                years_synced.add(int(item.get("snapshotYear") or 0))
+                years_synced.add(int(item.get("snapshotYear") or 0) - 1)
+            except (TypeError, ValueError):
+                pass
+        from src.local_api.enterprise_year_roster_build import rebuild_enterprise_year_roster_from_registry
+
+        roster_years = sorted(y for y in years_synced if 1990 <= y <= 2100)
+        roster_sync = rebuild_enterprise_year_roster_from_registry(conn, stat_years=roster_years, replace_years=True)
+        out: dict[str, Any] = {"ok": True, "inserted": n}
+        if roster_sync.get("ok"):
+            out["roster_rows_written"] = roster_sync.get("rows_written", 0)
+        else:
+            out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
+        return out
     except Exception as exc:
         logger.exception("registry bootstrap: %s", exc)
         return {

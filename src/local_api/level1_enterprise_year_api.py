@@ -40,7 +40,7 @@ def _distinct_stat_years(conn: Any) -> list[str]:
     years: set[int] = set()
     for sql in (
         "SELECT DISTINCT stat_year FROM dim_level1_enterprise_year WHERE stat_year IS NOT NULL",
-        "SELECT DISTINCT stat_year FROM dim_group_enterprise_year WHERE stat_year IS NOT NULL",
+        "SELECT DISTINCT stat_year FROM dim_enterprise_year_roster WHERE stat_year IS NOT NULL",
     ):
         try:
             rows = conn.execute(sql).fetchall()
@@ -126,16 +126,16 @@ def _target_level1_id_set(conn: Any, year_i: int) -> set[str]:
 
 
 def _group_level1_name_map(conn: Any, year_i: int) -> dict[str, str]:
-    """目标年度 dim_group_enterprise_year 中 distinct level1_group 规范化 id → 名称。"""
+    """目标年度花名册中 distinct 国家出资企业税号 → 名称。"""
     try:
         rows = conn.execute(
             """
             SELECT
-                upper(regexp_replace(trim(COALESCE(g.level1_group_id, '')), '[\\s-]+', '', 'g')) AS norm_id,
-                any_value(trim(COALESCE(g.level1_group_name, ''))) AS level1_name
-            FROM dim_group_enterprise_year g
-            WHERE CAST(g.stat_year AS INTEGER) = ?
-              AND trim(COALESCE(g.level1_group_id, '')) <> ''
+                upper(regexp_replace(trim(COALESCE(ro.state_investor_unified_credit_code, '')), '[\\s-]+', '', 'g')) AS norm_id,
+                any_value(trim(COALESCE(ro.state_investor, ''))) AS level1_name
+            FROM dim_enterprise_year_roster ro
+            WHERE CAST(ro.stat_year AS INTEGER) = ?
+              AND trim(COALESCE(ro.state_investor_unified_credit_code, '')) <> ''
             GROUP BY norm_id
             HAVING length(norm_id) > 0
             """,
@@ -305,40 +305,33 @@ def api_level1_enterprise_year_copy_from_previous(conn: Any, body: dict[str, Any
 
 
 def _level1_group_member_stats(conn: Any, year_i: int) -> dict[str, dict[str, Any]]:
-    """按规范化 level1_group_id 汇总集团年度成员数及国家出资企业锚点（与报送覆盖视图同口径）。"""
+    """按国家出资企业税号汇总企业年度花名册成员数（与报送覆盖、花名册页同口径）。"""
     out: dict[str, dict[str, Any]] = {}
     try:
         rows = conn.execute(
             """
             SELECT
-                upper(regexp_replace(trim(COALESCE(g.level1_group_id, '')), '[\\s-]+', '', 'g')) AS norm_l1,
+                upper(regexp_replace(trim(COALESCE(ro.state_investor_unified_credit_code, '')), '[\\s-]+', '', 'g')) AS norm_si,
                 COUNT(*)::BIGINT AS member_count,
-                SUM(CASE WHEN COALESCE(g.is_member, TRUE) THEN 1 ELSE 0 END)::BIGINT AS active_member_count,
-                any_value(
-                    CASE
-                        WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> ''
-                            THEN trim(COALESCE(g.equity_root_enterprise_name, ''))
-                        WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> ''
-                            THEN trim(COALESCE(g.mgmt_root_enterprise_name, ''))
-                        ELSE trim(COALESCE(g.level1_group_name, ''))
-                    END
-                ) AS soe_anchor_name
-            FROM dim_group_enterprise_year g
-            WHERE CAST(g.stat_year AS INTEGER) = ?
-              AND trim(COALESCE(g.level1_group_id, '')) <> ''
-            GROUP BY norm_l1
-            HAVING length(norm_l1) > 0
+                SUM(CASE WHEN COALESCE(ro.is_member, TRUE) THEN 1 ELSE 0 END)::BIGINT AS active_member_count,
+                any_value(trim(COALESCE(ro.state_investor, ''))) AS state_investor_name
+            FROM dim_enterprise_year_roster ro
+            WHERE CAST(ro.stat_year AS INTEGER) = ?
+              AND trim(COALESCE(ro.state_investor_unified_credit_code, '')) <> ''
+            GROUP BY norm_si
+            HAVING length(norm_si) > 0
             """,
             [year_i],
         ).fetchall()
-        for norm_l1, member_count, active_member_count, soe_anchor_name in rows or []:
-            nid = str(norm_l1 or "").strip()
+        for norm_si, member_count, active_member_count, state_investor_name in rows or []:
+            nid = str(norm_si or "").strip()
             if not nid:
                 continue
             out[nid] = {
                 "group_member_count": int(member_count or 0),
                 "group_active_member_count": int(active_member_count or 0),
-                "soe_anchor_name": str(soe_anchor_name or "").strip(),
+                "soe_anchor_name": str(state_investor_name or "").strip(),
+                "state_investor": str(state_investor_name or "").strip(),
             }
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取一级企业下属成员统计失败: %s", exc)
@@ -600,19 +593,19 @@ def api_level1_enterprise_year_import_batch(conn: Any, body: dict[str, Any]) -> 
 
 
 def api_level1_enterprise_year_candidates(conn: Any, *, stat_year: str | None) -> dict[str, Any]:
-    """从 dim_group_enterprise_year 推断尚未纳入名单的一级企业（distinct level1_group）。"""
+    """从企业年度花名册推断尚未纳入名单的一级企业（按国家出资企业税号）。"""
     year_i = _safe_int_year(stat_year)
     try:
         rows = conn.execute(
             """
             WITH grp AS (
                 SELECT DISTINCT
-                    CAST(g.stat_year AS INTEGER) AS stat_year,
-                    upper(regexp_replace(trim(COALESCE(g.level1_group_id, '')), '[\\s-]+', '', 'g')) AS norm_id,
-                    trim(COALESCE(g.level1_group_name, '')) AS level1_name
-                FROM dim_group_enterprise_year g
-                WHERE CAST(g.stat_year AS INTEGER) = ?
-                  AND trim(COALESCE(g.level1_group_id, '')) <> ''
+                    CAST(ro.stat_year AS INTEGER) AS stat_year,
+                    upper(regexp_replace(trim(COALESCE(ro.state_investor_unified_credit_code, '')), '[\\s-]+', '', 'g')) AS norm_id,
+                    trim(COALESCE(ro.state_investor, '')) AS level1_name
+                FROM dim_enterprise_year_roster ro
+                WHERE CAST(ro.stat_year AS INTEGER) = ?
+                  AND trim(COALESCE(ro.state_investor_unified_credit_code, '')) <> ''
             )
             SELECT g.norm_id, any_value(g.level1_name) AS level1_name
             FROM grp g
@@ -645,8 +638,8 @@ def api_level1_enterprise_year_members(
     keyword: str = "",
 ) -> dict[str, Any]:
     """
-    按年度 + 一级企业识别号，汇总 dim_group_enterprise_year 中归属该一级企业的下属成员单位明细。
-    同一 stat_year 内，成员 level1_group_id 与名单 level1_enterprise_id 规范化后对齐。
+    按年度 + 一级企业识别号，汇总 dim_enterprise_year_roster 中归属该国家出资企业的成员明细。
+    同一 stat_year 内，state_investor_unified_credit_code 与名单 level1_enterprise_id 规范化后对齐。
     """
     year_i = _safe_int_year(stat_year)
     l1_norm = _norm_enterprise_id(level1_enterprise_id)
@@ -675,10 +668,10 @@ def api_level1_enterprise_year_members(
         elif not l1_row:
             grp_name = conn.execute(
                 """
-                SELECT any_value(trim(COALESCE(level1_group_name, '')))
-                FROM dim_group_enterprise_year
+                SELECT any_value(trim(COALESCE(state_investor, '')))
+                FROM dim_enterprise_year_roster
                 WHERE CAST(stat_year AS INTEGER) = ?
-                  AND upper(regexp_replace(trim(COALESCE(level1_group_id, '')), '[\\s-]+', '', 'g')) = ?
+                  AND upper(regexp_replace(trim(COALESCE(state_investor_unified_credit_code, '')), '[\\s-]+', '', 'g')) = ?
                 """,
                 [year_i, l1_norm],
             ).fetchone()
@@ -690,55 +683,42 @@ def api_level1_enterprise_year_members(
     kw = keyword.strip().lower()
     sql = """
         SELECT
-            g.enterprise_id,
-            g.enterprise_name,
-            COALESCE(g.is_member, TRUE) AS is_member,
-            g.mgmt_level,
-            g.mgmt_parent_enterprise_id,
-            g.mgmt_parent_enterprise_name,
-            g.equity_level,
-            g.equity_parent_enterprise_id,
-            g.equity_parent_enterprise_name,
-            CASE
-                WHEN trim(COALESCE(g.equity_root_enterprise_id, '')) <> ''
-                    THEN trim(COALESCE(g.equity_root_enterprise_name, ''))
-                WHEN trim(COALESCE(g.mgmt_root_enterprise_id, '')) <> ''
-                    THEN trim(COALESCE(g.mgmt_root_enterprise_name, ''))
-                ELSE trim(COALESCE(g.level1_group_name, ''))
-            END AS soe_anchor_name,
-            trim(COALESCE(r.state_investor, '')) AS registry_state_investor
-        FROM dim_group_enterprise_year g
-        LEFT JOIN dim_audited_enterprise_registry r
-            ON CAST(r.snapshot_year AS INTEGER) = CAST(g.stat_year AS INTEGER)
-           AND upper(regexp_replace(trim(COALESCE(r.unified_social_credit_code, '')), '[\\s-]+', '', 'g'))
-               = upper(regexp_replace(trim(COALESCE(g.enterprise_id, '')), '[\\s-]+', '', 'g'))
-        WHERE CAST(g.stat_year AS INTEGER) = ?
-          AND upper(regexp_replace(trim(COALESCE(g.level1_group_id, '')), '[\\s-]+', '', 'g')) = ?
+            ro.enterprise_id,
+            ro.enterprise_name,
+            COALESCE(ro.is_member, TRUE) AS is_member,
+            trim(COALESCE(ro.state_investor, '')) AS state_investor,
+            trim(COALESCE(ro.state_investor_unified_credit_code, '')) AS state_investor_code,
+            ro.quality_status,
+            ro.quality_issue
+        FROM dim_enterprise_year_roster ro
+        WHERE CAST(ro.stat_year AS INTEGER) = ?
+          AND (
+              upper(regexp_replace(trim(COALESCE(ro.state_investor_unified_credit_code, '')), '[\\s-]+', '', 'g')) = ?
+              OR (
+                  trim(COALESCE(ro.state_investor_unified_credit_code, '')) = ''
+                  AND lower(trim(COALESCE(ro.state_investor, ''))) = lower(trim(?))
+              )
+          )
     """
-    params: list[Any] = [year_i, l1_norm]
+    params: list[Any] = [year_i, l1_norm, level1_name]
     if kw:
-        sql += " AND (lower(COALESCE(g.enterprise_name, '')) LIKE ? OR lower(COALESCE(g.enterprise_id, '')) LIKE ?)"
+        sql += " AND (lower(COALESCE(ro.enterprise_name, '')) LIKE ? OR lower(COALESCE(ro.enterprise_id, '')) LIKE ?)"
         like = f"%{kw}%"
         params.extend([like, like])
-    sql += " ORDER BY g.mgmt_level ASC NULLS LAST, g.enterprise_name ASC NULLS LAST, g.enterprise_id ASC"
+    sql += " ORDER BY ro.enterprise_name ASC NULLS LAST, ro.enterprise_id ASC"
 
     members: list[dict[str, Any]] = []
     try:
         for r in conn.execute(sql, params).fetchall():
-            registry_si = str(r[10] or "").strip()
-            soe_anchor = str(r[9] or "").strip()
             members.append(
                 {
                     "enterprise_id": str(r[0] or ""),
                     "enterprise_name": str(r[1] or ""),
                     "is_member": bool(r[2]),
-                    "mgmt_level": int(r[3]) if r[3] is not None else None,
-                    "mgmt_parent_enterprise_id": str(r[4] or ""),
-                    "mgmt_parent_enterprise_name": str(r[5] or ""),
-                    "equity_level": int(r[6]) if r[6] is not None else None,
-                    "equity_parent_enterprise_name": str(r[8] or ""),
-                    "state_investor": registry_si or soe_anchor,
-                    "soe_anchor_name": soe_anchor,
+                    "state_investor": str(r[3] or ""),
+                    "state_investor_unified_credit_code": str(r[4] or ""),
+                    "quality_status": str(r[5] or ""),
+                    "quality_issue": str(r[6] or "") if r[6] else "",
                 }
             )
     except Exception as exc:

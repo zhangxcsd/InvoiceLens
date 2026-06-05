@@ -2691,12 +2691,248 @@ export type Level1EnterpriseYearMemberRow = {
   enterprise_id: string
   enterprise_name: string
   is_member: boolean
-  mgmt_level?: number | null
-  mgmt_parent_enterprise_name?: string
-  equity_level?: number | null
-  equity_parent_enterprise_name?: string
   state_investor?: string
-  soe_anchor_name?: string
+  state_investor_unified_credit_code?: string
+  quality_status?: string
+  quality_issue?: string
+}
+
+export type EnterpriseYearRosterGroupSummary = {
+  state_investor: string
+  state_investor_unified_credit_code: string
+  member_count: number
+  active_member_count: number
+  conflict_count: number
+}
+
+export type EnterpriseYearRosterRow = {
+  enterprise_id: string
+  enterprise_name: string
+  state_investor: string
+  state_investor_unified_credit_code: string
+  is_member: boolean
+  quality_status: string
+  quality_issue: string
+  source_record_id: string
+  updated_at: string
+}
+
+export type EnterpriseYearRosterKpi = {
+  group_count: number
+  total_members: number
+  active_member_count: number
+  conflict_count: number
+}
+
+export async function fetchEnterpriseYearRosterBootstrap(
+  params: {
+    statYear?: string
+    stateInvestorKw?: string
+    enterpriseKw?: string
+    limit?: number
+    offset?: number
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_years?: string[]
+  data_stat_years?: string[]
+  default_stat_year?: string
+  table_ready?: boolean
+  stat_year?: string
+  group_count?: number
+  total_members?: number
+  active_member_count?: number
+  conflict_count?: number
+  rows?: EnterpriseYearRosterRow[]
+  total?: number
+  limit?: number
+  offset?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  if (params.statYear?.trim()) sp.set('stat_year', params.statYear.trim())
+  if (params.stateInvestorKw?.trim()) sp.set('state_investor_kw', params.stateInvestorKw.trim())
+  if (params.enterpriseKw?.trim()) sp.set('enterprise_kw', params.enterpriseKw.trim())
+  sp.set('limit', String(params.limit ?? 50))
+  sp.set('offset', String(params.offset ?? 0))
+  try {
+    const res = await fetch(apiUrl(`/api/dim/enterprise-year-roster/bootstrap?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_years: Array.isArray(json.stat_years) ? (json.stat_years as string[]) : [],
+      data_stat_years: Array.isArray(json.data_stat_years) ? (json.data_stat_years as string[]) : [],
+      default_stat_year: json.default_stat_year != null ? String(json.default_stat_year) : undefined,
+      table_ready: Boolean(json.table_ready),
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      group_count: Number(json.group_count ?? 0),
+      total_members: Number(json.total_members ?? 0),
+      active_member_count: Number(json.active_member_count ?? 0),
+      conflict_count: Number(json.conflict_count ?? 0),
+      rows: Array.isArray(json.rows) ? (json.rows as EnterpriseYearRosterRow[]) : [],
+      total: Number(json.total ?? 0),
+      limit: Number(json.limit ?? 50),
+      offset: Number(json.offset ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchEnterpriseYearRosterKpi(
+  params: { statYear: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_year?: string
+  group_count?: number
+  total_members?: number
+  active_member_count?: number
+  conflict_count?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/dim/enterprise-year-roster/kpi?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      group_count: Number(json.group_count ?? 0),
+      total_members: Number(json.total_members ?? 0),
+      active_member_count: Number(json.active_member_count ?? 0),
+      conflict_count: Number(json.conflict_count ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchEnterpriseYearRosterMeta(signal?: AbortSignal): Promise<{
+  ok: boolean
+  stat_years?: string[]
+  data_stat_years?: string[]
+  default_stat_year?: string
+  table_ready?: boolean
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/enterprise-year-roster/meta'), { signal })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_years: Array.isArray(json.stat_years) ? (json.stat_years as string[]) : [],
+      data_stat_years: Array.isArray(json.data_stat_years) ? (json.data_stat_years as string[]) : [],
+      default_stat_year: json.default_stat_year != null ? String(json.default_stat_year) : undefined,
+      table_ready: Boolean(json.table_ready),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchEnterpriseYearRosterSummary(
+  params: { statYear: string; stateInvestorKw?: string },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_year?: string
+  group_count?: number
+  total_members?: number
+  groups?: EnterpriseYearRosterGroupSummary[]
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  if (params.stateInvestorKw?.trim()) sp.set('state_investor_kw', params.stateInvestorKw.trim())
+  try {
+    const res = await fetch(apiUrl(`/api/dim/enterprise-year-roster/summary?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      group_count: Number(json.group_count ?? 0),
+      total_members: Number(json.total_members ?? 0),
+      groups: Array.isArray(json.groups) ? (json.groups as EnterpriseYearRosterGroupSummary[]) : [],
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function fetchEnterpriseYearRosterList(
+  params: {
+    statYear: string
+    stateInvestor?: string
+    stateInvestorCode?: string
+    stateInvestorKw?: string
+    enterpriseKw?: string
+    qualityStatus?: string
+    limit?: number
+    offset?: number
+  },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  stat_year?: string
+  rows?: EnterpriseYearRosterRow[]
+  total?: number
+  limit?: number
+  offset?: number
+  error?: { message?: string }
+}> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  if (params.stateInvestor?.trim()) sp.set('state_investor', params.stateInvestor.trim())
+  if (params.stateInvestorCode?.trim()) sp.set('state_investor_code', params.stateInvestorCode.trim())
+  if (params.stateInvestorKw?.trim()) sp.set('state_investor_kw', params.stateInvestorKw.trim())
+  if (params.enterpriseKw?.trim()) sp.set('enterprise_kw', params.enterpriseKw.trim())
+  if (params.qualityStatus?.trim()) sp.set('quality_status', params.qualityStatus.trim())
+  sp.set('limit', String(params.limit ?? 50))
+  sp.set('offset', String(params.offset ?? 0))
+  try {
+    const res = await fetch(apiUrl(`/api/dim/enterprise-year-roster/list?${sp.toString()}`), { signal })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return {
+      ok: true,
+      stat_year: json.stat_year != null ? String(json.stat_year) : params.statYear,
+      rows: Array.isArray(json.rows) ? (json.rows as EnterpriseYearRosterRow[]) : [],
+      total: Number(json.total ?? 0),
+      limit: Number(json.limit ?? 50),
+      offset: Number(json.offset ?? 0),
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export async function postEnterpriseYearRosterRebuild(
+  body: { statYears?: number[]; replaceYears?: boolean },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; rows_written?: number; run_id?: string; error?: { message?: string } }> {
+  try {
+    const res = await fetch(apiUrl('/api/dim/enterprise-year-roster/rebuild'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stat_years: body.statYears,
+        replace_years: body.replaceYears ?? true,
+      }),
+      signal,
+    })
+    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok || !json?.ok) return { ok: false, error: (json?.error as { message?: string }) ?? { message: `HTTP ${res.status}` } }
+    return { ok: true, rows_written: Number(json.rows_written ?? 0), run_id: json.run_id != null ? String(json.run_id) : undefined }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
 }
 
 export async function fetchLevel1EnterpriseYearMembers(
@@ -3007,11 +3243,44 @@ export type AuditedEnterpriseRegistryRow = {
   shareholders: string
 }
 
+export type AuditedEnterpriseRegistrySummary = {
+  total: number
+  listed_company: number
+  overseas: number
+  mgmt_parent_maintained: number
+  equity_parent_maintained: number
+  main_business_maintained: number
+}
+
+export async function fetchAuditedEnterpriseRegistryMeta(signal?: AbortSignal): Promise<{
+  ok: boolean
+  snapshot_years?: string[]
+  error?: { message?: string }
+}> {
+  try {
+    const res = await fetch(apiUrl('/api/audited-enterprise/registry/meta'), { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const snapshot_years = Array.isArray(json.snapshot_years)
+      ? json.snapshot_years.map((x: unknown) => String(x))
+      : []
+    return { ok: true, snapshot_years }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, error: { message: 'aborted' } }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
 export async function fetchAuditedEnterpriseRegistry(
   params: {
     snapshotYear: string
     stateInvestor?: string
     enterprise?: string
+    limit?: number
+    offset?: number
+    includeYears?: boolean
   },
   signal?: AbortSignal,
 ): Promise<{
@@ -3019,12 +3288,19 @@ export async function fetchAuditedEnterpriseRegistry(
   snapshot_years?: string[]
   selected_year?: string
   rows?: AuditedEnterpriseRegistryRow[]
+  total?: number
+  limit?: number
+  offset?: number
+  summary?: AuditedEnterpriseRegistrySummary
   error?: { message?: string; detail?: string; exception_type?: string }
 }> {
   const sp = new URLSearchParams()
   sp.set('snapshot_year', params.snapshotYear.trim())
   if (params.stateInvestor?.trim()) sp.set('state_investor', params.stateInvestor.trim())
   if (params.enterprise?.trim()) sp.set('enterprise', params.enterprise.trim())
+  sp.set('limit', String(params.limit ?? 50))
+  sp.set('offset', String(params.offset ?? 0))
+  if (params.includeYears === false) sp.set('include_years', '0')
   try {
     const res = await fetch(apiUrl(`/api/audited-enterprise/registry?${sp.toString()}`), { signal })
     const json = (await res.json().catch(() => ({}))) as any
@@ -3035,13 +3311,30 @@ export async function fetchAuditedEnterpriseRegistry(
     const snapshot_years = Array.isArray(json.snapshot_years)
       ? json.snapshot_years.map((x: unknown) => String(x))
       : []
+    const summaryRaw = json.summary
+    const summary: AuditedEnterpriseRegistrySummary | undefined =
+      summaryRaw && typeof summaryRaw === 'object'
+        ? {
+            total: Number(summaryRaw.total ?? 0),
+            listed_company: Number(summaryRaw.listed_company ?? 0),
+            overseas: Number(summaryRaw.overseas ?? 0),
+            mgmt_parent_maintained: Number(summaryRaw.mgmt_parent_maintained ?? 0),
+            equity_parent_maintained: Number(summaryRaw.equity_parent_maintained ?? 0),
+            main_business_maintained: Number(summaryRaw.main_business_maintained ?? 0),
+          }
+        : undefined
     return {
       ok: true,
       snapshot_years,
       selected_year: json.selected_year != null ? String(json.selected_year) : params.snapshotYear,
       rows,
+      total: json.total != null ? Number(json.total) : rows.length,
+      limit: json.limit != null ? Number(json.limit) : params.limit,
+      offset: json.offset != null ? Number(json.offset) : params.offset,
+      summary,
     }
   } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, error: { message: 'aborted' } }
     return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
   }
 }
@@ -3262,6 +3555,8 @@ export async function fetchInvoiceCoverageMeta(signal?: AbortSignal): Promise<{
   views_ready?: boolean
   stat_years?: string[]
   default_stat_year?: string | null
+  group_member_stat_years?: string[]
+  level1_stat_years?: string[]
   hint?: string
   error?: { message?: string; exception_type?: string }
 }> {
@@ -3271,11 +3566,15 @@ export async function fetchInvoiceCoverageMeta(signal?: AbortSignal): Promise<{
     if (!res.ok || !json?.ok) {
       return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
     }
+    const toYearList = (key: string) =>
+      Array.isArray(json[key]) ? json[key].map((x: unknown) => String(x)) : []
     return {
       ok: true,
       views_ready: Boolean(json.views_ready),
-      stat_years: Array.isArray(json.stat_years) ? json.stat_years.map((x: unknown) => String(x)) : [],
+      stat_years: toYearList('stat_years'),
       default_stat_year: json.default_stat_year != null ? String(json.default_stat_year) : null,
+      group_member_stat_years: toYearList('group_member_stat_years'),
+      level1_stat_years: toYearList('level1_stat_years'),
       hint: json.hint != null ? String(json.hint) : undefined,
     }
   } catch (e) {

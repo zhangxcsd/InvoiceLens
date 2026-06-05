@@ -19,6 +19,7 @@ export type NavKey =
   // 维度管理（3级）
   | 'dim_org_manage'
   | 'dim_audited_registry'
+  | 'dim_enterprise_year_roster'
   | 'dim_audited_contribution'
   | 'dim_audited_invoice_link'
   | 'dim_enterprise_library'

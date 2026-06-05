@@ -86,12 +86,9 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode }) {
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.pageNote}
-        descriptionTone="compact"
         note={ui.pageDesc}
         noteTone="plain"
         badgeText={ui.prototypeBadge}
-        expandLabel={ui.moreTipsToggle}
-        collapseLabel={ui.lessTipsToggle}
         actions={
           <div className="flex items-center gap-2">
             {exported ? <span className="text-il-meta text-[#1b6b3a]">{ui.exportSuccess}</span> : null}

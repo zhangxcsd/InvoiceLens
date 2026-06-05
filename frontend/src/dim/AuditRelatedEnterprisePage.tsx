@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchInvoiceCoverageMembers,
@@ -10,23 +11,29 @@ import {
   type InvoiceCoverageSoeOption,
 } from '../config/localApi'
 
-/** 与后端返回的年度合并本地近年份，避免「无集团成员表」时统计年度下拉被禁用。 */
+/** 统计年度：下一年（预编）+ 当前年往回 11 年，并与 API 返回年度合并。 */
 function buildYearOptions(apiYears: string[]): string[] {
   const cy = new Date().getFullYear()
-  const fallback = Array.from({ length: 16 }, (_, i) => String(cy - i))
-  const s = new Set<string>()
-  for (const x of apiYears) {
-    const t = String(x ?? '').trim()
-    if (t) s.add(t)
-  }
-  for (const x of fallback) s.add(x)
+  const fallback = Array.from({ length: 12 }, (_, i) => String(cy + 1 - i))
+  const s = new Set<string>([...fallback, ...apiYears.map((x) => String(x ?? '').trim()).filter(Boolean)])
   return Array.from(s).sort((a, b) => Number(b) - Number(a))
+}
+
+/** 实务默认年度：当前自然年（跨年自动变为新年份）。 */
+function defaultPracticeStatYear(yearOptions: string[], apiDefault?: string | null): string {
+  const cy = String(new Date().getFullYear())
+  if (yearOptions.includes(cy)) return cy
+  const d = (apiDefault ?? '').trim()
+  if (d && yearOptions.includes(d)) return d
+  return yearOptions[0] ?? cy
 }
 
 export function AuditRelatedEnterprisePage() {
   const ui = t.auditRelatedEnterpriseUi
   const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState('')
+  const [groupMemberYears, setGroupMemberYears] = useState<string[]>([])
+  const [level1Years, setLevel1Years] = useState<string[]>([])
+  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [viewsReady, setViewsReady] = useState<boolean | null>(null)
   const [metaHint, setMetaHint] = useState<string | undefined>(undefined)
   const [level1Kw, setLevel1Kw] = useState('')
@@ -81,10 +88,10 @@ export function AuditRelatedEnterprisePage() {
       setMetaHint(m.hint)
       const ys = m.stat_years ?? []
       setStatYears(ys)
+      setGroupMemberYears(m.group_member_stat_years ?? [])
+      setLevel1Years(m.level1_stat_years ?? [])
       const merged = buildYearOptions(ys)
-      const defRaw = m.default_stat_year != null ? String(m.default_stat_year).trim() : ''
-      const def =
-        defRaw && merged.includes(defRaw) ? defRaw : (merged[0] ?? '')
+      const def = defaultPracticeStatYear(merged, m.default_stat_year)
       setStatYear((prev) => {
         const p = prev.trim()
         if (p && merged.includes(p)) return prev
@@ -205,32 +212,30 @@ export function AuditRelatedEnterprisePage() {
         ? ui.allListHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
         : ui.unreportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
 
-  const hasApiGroupYears = statYears.length > 0
+  const hasGroupMembersForYear = groupMemberYears.includes(effectiveStatYear)
+  const hasLevel1OnlyForYear =
+    !hasGroupMembersForYear && level1Years.includes(effectiveStatYear)
   const emptyListMessage =
     viewsReady === false || viewsReady === null
       ? ui.emptyByData
-      : viewsReady && !hasApiGroupYears
-        ? ui.emptyNoGroupYear
-        : ui.emptyByFilter
+      : viewsReady && hasLevel1OnlyForYear
+        ? ui.emptyLevel1WithoutGroup
+        : viewsReady && groupMemberYears.length === 0
+          ? ui.emptyNoGroupYear
+          : ui.emptyByFilter
   const showBadge = String(ui.prototypeBadge ?? '').trim().length > 0
 
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          {showBadge ? (
-            <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
-              {ui.prototypeBadge}
-            </span>
-          ) : null}
-        </div>
-        <p className="mt-2 max-w-[820px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.prototypeNote}</p>
-        {metaHint ? <p className="mt-2 text-il-meta text-amber-800">{metaHint}</p> : null}
-        {loadErr ? <p className="mt-2 text-il-meta text-red-600">{loadErr}</p> : null}
-        {loading ? <p className="mt-2 text-il-meta text-text-3">加载中…</p> : null}
-      </div>
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        note={ui.pageDesc}
+        noteTone="plain"
+        badgeText={showBadge ? ui.prototypeBadge : undefined}
+      />
+      {metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{metaHint}</p> : null}
+      {loadErr ? <p className="mb-2 text-il-meta text-red-600">{loadErr}</p> : null}
+      {loading ? <p className="mb-2 text-il-meta text-text-3">加载中…</p> : null}
 
       <Card title={ui.compareTitle}>
         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-x-3 sm:gap-y-3">
@@ -368,7 +373,7 @@ export function AuditRelatedEnterprisePage() {
                     <td className="px-3 py-2.5 font-medium text-text">{row.enterprise_name || '—'}</td>
                     <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.enterprise_id || '—'}</td>
                     <td className="px-3 py-2.5">{row.soe_anchor_enterprise_name || row.soe_anchor_enterprise_id || '—'}</td>
-                    <td className="px-3 py-2.5">{row.mgmt_level != null ? row.mgmt_level : '—'}</td>
+                    <td className="px-3 py-2.5 text-text-3">—</td>
                     <td className="px-3 py-2.5">{row.mgmt_parent_enterprise_name || '—'}</td>
                     <td className="px-3 py-2.5">{row.equity_level != null ? row.equity_level : '—'}</td>
                     <td className="px-3 py-2.5">{row.equity_parent_enterprise_name || '—'}</td>
