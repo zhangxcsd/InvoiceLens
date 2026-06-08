@@ -36,6 +36,7 @@ export type NavKey =
   | 'dim_version'
   // 分析看板
   | 'tax_enterprise_structure'
+  | 'tax_in_out_deviation'
   | 'overview_summary'
   | 'overview_trend'
   | 'overview_tax'
@@ -47,6 +48,7 @@ export type NavKey =
   | 'flags_rules'
   | 'flags_track'
   | 'related_graph'
+  | 'trade_relationships'
   | 'related_pairs'
   | 'related_shell'
   | 'finance_reconcile'

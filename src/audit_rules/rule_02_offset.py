@@ -1,7 +1,4 @@
-from typing import Any
+"""已迁移至 rule_03_red_offset（RULE-03）。保留模块名仅为向后兼容。"""
+from src.audit_rules.rule_03_red_offset import run_rule
 
-
-def run_rule(context: dict[str, Any]) -> list[dict[str, Any]]:
-    """红字对冲异常检测（占位）。"""
-    _ = context
-    return []
+__all__ = ["run_rule"]

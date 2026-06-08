@@ -1,7 +1,4 @@
-from typing import Any
+"""已迁移至 rule_09_circular（RULE-09）。保留模块名仅为向后兼容。"""
+from src.audit_rules.rule_09_circular import run_rule
 
-
-def run_rule(context: dict[str, Any]) -> list[dict[str, Any]]:
-    """关联交易图谱规则（占位）。"""
-    _ = context
-    return []
+__all__ = ["run_rule"]

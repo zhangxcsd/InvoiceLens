@@ -1,7 +1,4 @@
-from typing import Any
+"""已迁移至 rule_02_abnormal_date（RULE-02）。保留模块名仅为向后兼容。"""
+from src.audit_rules.rule_02_abnormal_date import run_rule
 
-
-def run_rule(context: dict[str, Any]) -> list[dict[str, Any]]:
-    """节假日开票异常检测（占位）。"""
-    _ = context
-    return []
+__all__ = ["run_rule"]

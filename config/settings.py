@@ -20,6 +20,8 @@ SETTINGS = {
     "cr1_warn": 0.30,
     "cr1_high": 0.50,
     "min_graph_amount": 10000.0,
+    # L1 分析主体池：当年发票张数下限（含等于，见 analysis_subject_pool）
+    "min_analysis_subject_invoice_count": 10,
 }
 
 IMPORT_SETTINGS = {

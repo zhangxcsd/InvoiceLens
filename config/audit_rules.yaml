@@ -1,0 +1,105 @@
+# 审计疑点规则阈值与开关（RULE-01~10 + 通道公司检测）
+# 修改后通过 POST /api/audit/run 重新扫描即可生效，无需重导 DWD。
+
+defaults:
+  group_id_prefix: "Y"  # 落库 group_id = Y{stat_year}，如 Y2024
+
+rules:
+  RULE-01:
+    enabled: true
+    name: 重复开票
+    duplicate_window_days: 30
+    split_threshold: 500000
+    risk_level: 高风险
+
+  RULE-02:
+    enabled: true
+    name: 异常开票日期
+    weekend_large_amount: 100000
+    yearend_month_ratio: 0.5
+    risk_level_weekend: 中风险
+    risk_level_yearend: 中风险
+    risk_level_future: 高风险
+    risk_level_holiday: 中风险
+
+  RULE-03:
+    enabled: true
+    name: 红冲异常
+    reissue_window_days: 30
+    red_ratio_threshold: 0.2
+    risk_level_reissue: 高风险
+    risk_level_cross_year: 中风险
+    risk_level_ratio: 中风险
+    risk_level_orphan: 高风险
+
+  RULE-04:
+    enabled: true
+    name: 发票状态异常
+    void_rate_warn: 0.05
+    void_rate_high: 0.10
+    supplier_void_rate: 0.30
+    risk_level_warn: 中风险
+    risk_level_high: 高风险
+    risk_level_supplier: 中风险
+
+  RULE-05:
+    enabled: true
+    name: 税率品类不匹配
+    risk_level_mismatch: 中风险
+    risk_level_inconsistent: 中风险
+    category_tax_map:
+      - keywords: ["建筑", "安装", "工程"]
+        expected_rate: 0.09
+      - keywords: ["餐饮", "住宿", "酒店"]
+        expected_rate: 0.06
+      - keywords: ["货物", "设备", "材料", "商品"]
+        expected_rate: 0.13
+      - keywords: ["金融", "保险", "理财"]
+        expected_rate: 0.06
+      - keywords: ["咨询", "顾问", "服务"]
+        expected_rate: 0.06
+
+  RULE-06:
+    enabled: true
+    name: 金额异常值
+    min_invoice_count: 5
+    sigma_multiplier: 3.0
+    risk_level: 中风险
+
+  RULE-07:
+    enabled: true
+    name: 开票频率突变
+    monthly_multiplier: 3.0
+    min_monthly_avg: 1.0
+    risk_level: 中风险
+
+  RULE-08:
+    enabled: true
+    name: 价格一致性
+    price_dispersion: 0.2
+    min_suppliers: 2
+    risk_level: 低风险
+
+  RULE-09:
+    enabled: true
+    name: 对开发票
+    ratio_high: 0.8
+    ratio_medium: 0.5
+    min_amount: 10000
+    risk_level_high: 高风险
+    risk_level_medium: 中风险
+    risk_level_low: 低风险
+
+  RULE-10:
+    enabled: true
+    name: 集团内部互开
+    use_enterprise_year_roster: true
+    min_amount: 10000
+    risk_level: 中风险
+
+  RULE-SHELL:
+    enabled: true
+    name: 疑似通道公司
+    min_amount: 500000
+    passthrough_ratio: 0.6
+    risk_level: 中风险

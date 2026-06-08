@@ -33,6 +33,24 @@ import { DataQualityDetailPage } from './quality/DataQualityDetailPage'
 import { DataQualityTrendPage } from './quality/DataQualityTrendPage'
 import { HealthScorePage } from './quality/HealthScorePage'
 import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
+import { OverviewSummaryPage } from './dws/OverviewSummaryPage'
+import { OverviewTrendPage } from './dws/OverviewTrendPage'
+import { OverviewTaxPage } from './dws/OverviewTaxPage'
+import { SupplierCrPage } from './dws/SupplierCrPage'
+import { SupplierNewPage } from './dws/SupplierNewPage'
+import { SupplierTopPage } from './dws/SupplierTopPage'
+import { TradeRelationshipsPage } from './dws/TradeRelationshipsPage'
+import { TaxInOutDeviationPage } from './dws/TaxInOutDeviationPage'
+import { FlagsListPage } from './dm/FlagsListPage'
+import { FlagsTrackPage } from './dm/FlagsTrackPage'
+import { FlagsRulesPage } from './dm/FlagsRulesPage'
+import { RelatedPairsPage } from './dm/RelatedPairsPage'
+import { RelatedShellPage } from './dm/RelatedShellPage'
+import { CompareRankPage } from './ads/CompareRankPage'
+import { CompareChartsPage } from './ads/CompareChartsPage'
+import { ReportConfigPage } from './report/ReportConfigPage'
+import { ReportTemplatesPage } from './report/ReportTemplatesPage'
+import { SettingsThresholdsPage } from './settings/SettingsThresholdsPage'
 import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
 import { EnterpriseYearRosterPage } from './dim/EnterpriseYearRosterPage'
 import { Level1EnterpriseYearPage } from './dim/Level1EnterpriseYearPage'
@@ -339,8 +357,24 @@ function Sidebar(props: {
   }, [props.nav])
 
   useEffect(() => {
-    if (props.nav !== 'tax_enterprise_structure') return
+    if (props.nav !== 'tax_enterprise_structure' && props.nav !== 'tax_in_out_deviation') return
     setOpenParents((p) => ({ ...p, tax_analysis: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'supplier_cr' &&
+      props.nav !== 'supplier_top' &&
+      props.nav !== 'supplier_new' &&
+      props.nav !== 'trade_relationships'
+    )
+      return
+    setOpenParents((p) => ({ ...p, supplier: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'related_pairs' && props.nav !== 'related_shell') return
+    setOpenParents((p) => ({ ...p, related: true }))
   }, [props.nav])
 
   useEffect(() => {
@@ -789,9 +823,9 @@ function Sidebar(props: {
 
         {navParent('overview', t.sidebar.overview, <IconChartBars className="h-[15px] w-[15px]" />)}
         <div className={openParents.overview && !collapsed ? 'block' : 'hidden'}>
-          {navChild('ov1', t.sidebar.ovSummary, <span />, { onClick: () => props.onNav('overview_summary'), soon: true })}
-          {navChild('ov2', t.sidebar.ovTrend, <span />, { onClick: () => props.onNav('overview_trend'), soon: true })}
-          {navChild('ov3', t.sidebar.ovTax, <span />, { onClick: () => props.onNav('overview_tax'), soon: true })}
+          {navChild('ov1', t.sidebar.ovSummary, <span />, { onClick: () => props.onNav('overview_summary') })}
+          {navChild('ov2', t.sidebar.ovTrend, <span />, { onClick: () => props.onNav('overview_trend') })}
+          {navChild('ov3', t.sidebar.ovTax, <span />, { onClick: () => props.onNav('overview_tax') })}
         </div>
 
         {navParent('tax_analysis', t.sidebar.taxAnalysis, <IconChartBars className="h-[15px] w-[15px]" />)}
@@ -799,15 +833,16 @@ function Sidebar(props: {
           {navGrand('tax_enterprise_structure', t.sidebar.taxEnterpriseStructure, {
             active: props.nav === 'tax_enterprise_structure',
           })}
-          {navChild('ta2', t.sidebar.taxInOutDeviation, <span />, { soon: true })}
+          {navChild('ta2', t.sidebar.taxInOutDeviation, <span />, { onClick: () => props.onNav('tax_in_out_deviation') })}
           {navChild('ta3', t.sidebar.taxRiskExposure, <span />, { soon: true })}
         </div>
 
         {navParent('supplier', t.sidebar.supplier, <IconClock className="h-[15px] w-[15px]" />)}
         <div className={openParents.supplier && !collapsed ? 'block' : 'hidden'}>
-          {navChild('s1', t.sidebar.supplierCr, <span />, { onClick: () => props.onNav('supplier_cr'), soon: true })}
-          {navChild('s2', t.sidebar.supplierTop, <span />, { onClick: () => props.onNav('supplier_top'), soon: true })}
-          {navChild('s3', t.sidebar.supplierNew, <span />, { onClick: () => props.onNav('supplier_new'), soon: true })}
+          {navChild('s1', t.sidebar.supplierCr, <span />, { onClick: () => props.onNav('supplier_cr') })}
+          {navChild('s2', t.sidebar.supplierTop, <span />, { onClick: () => props.onNav('supplier_top') })}
+          {navChild('s3', t.sidebar.supplierNew, <span />, { onClick: () => props.onNav('supplier_new') })}
+          {navChild('s4', t.sidebar.tradeRelationships, <span />, { onClick: () => props.onNav('trade_relationships') })}
         </div>
 
         {navStandalone('health_score', t.sidebar.healthScore, <IconMiniCheck className="h-[15px] w-[15px]" />)}
@@ -819,9 +854,9 @@ function Sidebar(props: {
           !collapsed ? <span className="rounded-full bg-danger px-1.5 py-[1px] text-il-soon font-semibold text-white">12</span> : null,
         )}
         <div className={openParents.flags && !collapsed ? 'block' : 'hidden'}>
-          {navChild('f1', t.sidebar.flagsList, <span />, { onClick: () => props.onNav('flags_list'), soon: true })}
-          {navChild('f2', t.sidebar.flagsRules, <span />, { onClick: () => props.onNav('flags_rules'), soon: true })}
-          {navChild('f3', t.sidebar.flagsTrack, <span />, { onClick: () => props.onNav('flags_track'), soon: true })}
+          {navChild('f1', t.sidebar.flagsList, <span />, { onClick: () => props.onNav('flags_list') })}
+          {navChild('f2', t.sidebar.flagsRules, <span />, { onClick: () => props.onNav('flags_rules') })}
+          {navChild('f3', t.sidebar.flagsTrack, <span />, { onClick: () => props.onNav('flags_track') })}
         </div>
 
         {navParent(
@@ -832,8 +867,8 @@ function Sidebar(props: {
         )}
         <div className={openParents.related && !collapsed ? 'block' : 'hidden'}>
           {navChild('r1', t.sidebar.relatedGraph, <span />, { onClick: () => props.onNav('related_graph'), soon: true })}
-          {navChild('r2', t.sidebar.relatedPairs, <span />, { onClick: () => props.onNav('related_pairs'), soon: true })}
-          {navChild('r3', t.sidebar.relatedShell, <span />, { onClick: () => props.onNav('related_shell'), soon: true })}
+          {navChild('r2', t.sidebar.relatedPairs, <span />, { onClick: () => props.onNav('related_pairs') })}
+          {navChild('r3', t.sidebar.relatedShell, <span />, { onClick: () => props.onNav('related_shell') })}
         </div>
 
         {navParent('finance', t.sidebar.finance, <IconReportDoc className="h-[15px] w-[15px]" />)}
@@ -844,8 +879,8 @@ function Sidebar(props: {
 
         {navParent('compare', t.sidebar.compare, <IconCompare className="h-[15px] w-[15px]" />)}
         <div className={openParents.compare && !collapsed ? 'block' : 'hidden'}>
-          {navChild('c1', t.sidebar.compareRank, <span />, { onClick: () => props.onNav('compare_rank'), soon: true })}
-          {navChild('c2', t.sidebar.compareCharts, <span />, { onClick: () => props.onNav('compare_charts'), soon: true })}
+          {navChild('c1', t.sidebar.compareRank, <span />, { onClick: () => props.onNav('compare_rank') })}
+          {navChild('c2', t.sidebar.compareCharts, <span />, { onClick: () => props.onNav('compare_charts') })}
         </div>
 
         <div className="my-1 border-t border-border-light" />
@@ -856,9 +891,9 @@ function Sidebar(props: {
 
         {navParent('report', t.sidebar.report, <IconReportDoc className="h-[15px] w-[15px]" />)}
         <div className={openParents.report && !collapsed ? 'block' : 'hidden'}>
-          {navChild('rp1', t.sidebar.reportConfig, <span />, { onClick: () => props.onNav('report_config'), soon: true })}
-          {navChild('rp2', t.sidebar.reportTemplates, <span />, { onClick: () => props.onNav('report_templates'), soon: true })}
-          {navChild('rp3', t.sidebar.reportArchive, <span />, { onClick: () => props.onNav('report_archive'), soon: true })}
+          {navChild('rp1', t.sidebar.reportConfig, <span />, { onClick: () => props.onNav('report_config') })}
+          {navChild('rp2', t.sidebar.reportTemplates, <span />, { onClick: () => props.onNav('report_templates') })}
+          {navChild('rp3', t.sidebar.reportArchive, <span />, { onClick: () => props.onNav('report_archive') })}
         </div>
 
         <div className="my-1 border-t border-border-light" />
@@ -876,7 +911,7 @@ function Sidebar(props: {
 
         {navParent('settings', t.sidebar.settings, <IconSettings className="h-[15px] w-[15px]" />)}
         <div className={openParents.settings && !collapsed ? 'block' : 'hidden'}>
-          {navChild('st1', t.sidebar.settingsThresholds, <span />, { onClick: () => props.onNav('settings_thresholds'), soon: true })}
+          {navChild('st1', t.sidebar.settingsThresholds, <span />, { onClick: () => props.onNav('settings_thresholds') })}
           {navChild('st2', t.sidebar.settingsLicense, <span />, { onClick: () => props.onNav('settings_license'), soon: true })}
           {navChild('st3', t.sidebar.settingsInstance, <span />, { onClick: () => props.onNav('settings_instance'), soon: true })}
         </div>
@@ -2751,6 +2786,124 @@ function AppShell(props: {
           {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.healthScore}</b>
         </>
       )
+    if (props.nav === 'overview_summary')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.ovSummary}</b>
+        </>
+      )
+    if (props.nav === 'overview_trend')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.ovTrend}</b>
+        </>
+      )
+    if (props.nav === 'overview_tax')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.ovTax}</b>
+        </>
+      )
+    if (props.nav === 'supplier_cr')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.supplier} /{' '}
+          <b className="text-text font-medium">{t.sidebar.supplierCr}</b>
+        </>
+      )
+    if (props.nav === 'supplier_top')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.supplier} /{' '}
+          <b className="text-text font-medium">{t.sidebar.supplierTop}</b>
+        </>
+      )
+    if (props.nav === 'supplier_new')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.supplier} /{' '}
+          <b className="text-text font-medium">{t.sidebar.supplierNew}</b>
+        </>
+      )
+    if (props.nav === 'tax_in_out_deviation')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.taxAnalysis} /{' '}
+          <b className="text-text font-medium">{t.sidebar.taxInOutDeviation}</b>
+        </>
+      )
+    if (props.nav === 'trade_relationships')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.supplier} /{' '}
+          <b className="text-text font-medium">{t.sidebar.tradeRelationships}</b>
+        </>
+      )
+    if (props.nav === 'flags_list')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.flags} /{' '}
+          <b className="text-text font-medium">{t.sidebar.flagsList}</b>
+        </>
+      )
+    if (props.nav === 'flags_rules')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.flags} /{' '}
+          <b className="text-text font-medium">{t.sidebar.flagsRules}</b>
+        </>
+      )
+    if (props.nav === 'flags_track')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.flags} /{' '}
+          <b className="text-text font-medium">{t.sidebar.flagsTrack}</b>
+        </>
+      )
+    if (props.nav === 'related_pairs')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.related} /{' '}
+          <b className="text-text font-medium">{t.sidebar.relatedPairs}</b>
+        </>
+      )
+    if (props.nav === 'related_shell')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.related} /{' '}
+          <b className="text-text font-medium">{t.sidebar.relatedShell}</b>
+        </>
+      )
+    if (props.nav === 'compare_rank')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.compare} /{' '}
+          <b className="text-text font-medium">{t.sidebar.compareRank}</b>
+        </>
+      )
+    if (props.nav === 'compare_charts')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.compare} /{' '}
+          <b className="text-text font-medium">{t.sidebar.compareCharts}</b>
+        </>
+      )
+    if (props.nav === 'report_config' || props.nav === 'report_archive' || props.nav === 'report_templates')
+      return (
+        <>
+          {t.sidebar.sectionOutput} / {t.sidebar.report} /{' '}
+          <b className="text-text font-medium">
+            {props.nav === 'report_archive'
+              ? t.sidebar.reportArchive
+              : props.nav === 'report_templates'
+                ? t.sidebar.reportTemplates
+                : t.sidebar.reportConfig}
+          </b>
+        </>
+      )
     if (props.nav === 'dim_enterprise_library')
       return (
         <>
@@ -2797,7 +2950,7 @@ function AppShell(props: {
       return (
         <>
           {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
-          <b className="text-text font-medium">{t.breadcrumb.dimInvoiceLink}</b>
+          <b className="text-text font-medium">{t.sidebar.dimInvoiceLink}</b>
         </>
       )
     if (props.nav === 'dim_org_manage')
@@ -2929,7 +3082,7 @@ function AppShell(props: {
           ) : props.nav === 'dim_enterprise_library' ? (
             <EnterpriseLibraryPage onNav={props.onNav} />
           ) : props.nav === 'dim_audit_related_library' ? (
-            <AuditRelatedEnterprisePage />
+            <AuditRelatedEnterprisePage onNav={props.onNav} />
           ) : props.nav === 'dim_level1_enterprise_year' ? (
             <Level1EnterpriseYearPage />
           ) : props.nav === 'dim_audited_registry' ? (
@@ -2960,6 +3113,42 @@ function AppShell(props: {
             <SubjectCategoryPage
               onNavigateToRebuild={() => navToDwdDimWithTask(props.onNav, SUBJECT_DIM_TASK.recompute)}
             />
+          ) : props.nav === 'overview_summary' ? (
+            <OverviewSummaryPage />
+          ) : props.nav === 'overview_trend' ? (
+            <OverviewTrendPage />
+          ) : props.nav === 'overview_tax' ? (
+            <OverviewTaxPage />
+          ) : props.nav === 'tax_in_out_deviation' ? (
+            <TaxInOutDeviationPage />
+          ) : props.nav === 'supplier_cr' ? (
+            <SupplierCrPage />
+          ) : props.nav === 'supplier_top' ? (
+            <SupplierTopPage />
+          ) : props.nav === 'supplier_new' ? (
+            <SupplierNewPage />
+          ) : props.nav === 'flags_list' ? (
+            <FlagsListPage />
+          ) : props.nav === 'flags_rules' ? (
+            <FlagsRulesPage />
+          ) : props.nav === 'flags_track' ? (
+            <FlagsTrackPage />
+          ) : props.nav === 'trade_relationships' ? (
+            <TradeRelationshipsPage />
+          ) : props.nav === 'related_pairs' ? (
+            <RelatedPairsPage />
+          ) : props.nav === 'related_shell' ? (
+            <RelatedShellPage />
+          ) : props.nav === 'compare_rank' ? (
+            <CompareRankPage />
+          ) : props.nav === 'compare_charts' ? (
+            <CompareChartsPage />
+          ) : props.nav === 'report_config' || props.nav === 'report_archive' ? (
+            <ReportConfigPage />
+          ) : props.nav === 'report_templates' ? (
+            <ReportTemplatesPage />
+          ) : props.nav === 'settings_thresholds' ? (
+            <SettingsThresholdsPage />
           ) : props.nav === 'tax_enterprise_structure' ? (
             <TaxCodeEnterpriseAnalysisPage />
           ) : (

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "template_id": "builtin_full",
+      "name": "完整审计报告",
+      "title_template": "{year}年度发票数据审计分析报告",
+      "description": "包含全部六章，适用于年度综合审计交付。",
+      "chapters": {
+        "overview": true,
+        "structure": true,
+        "supplier": true,
+        "audit_flags": true,
+        "related": true,
+        "compare": true
+      },
+      "is_builtin": true,
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "template_id": "builtin_flags",
+      "name": "疑点专项报告",
+      "title_template": "{year}年度发票审计疑点专项报告",
+      "description": "聚焦疑点清单与关联交易，适用于风险复核场景。",
+      "chapters": {
+        "overview": true,
+        "structure": false,
+        "supplier": false,
+        "audit_flags": true,
+        "related": true,
+        "compare": false
+      },
+      "is_builtin": true,
+      "updated_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "template_id": "builtin_compare",
+      "name": "子公司对比简报",
+      "title_template": "{year}年度子公司发票数据对比简报",
+      "description": "概览 + 供应商 + 子公司横向对比，适用于集团内部分析。",
+      "chapters": {
+        "overview": true,
+        "structure": false,
+        "supplier": true,
+        "audit_flags": false,
+        "related": false,
+        "compare": true
+      },
+      "is_builtin": true,
+      "updated_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}
