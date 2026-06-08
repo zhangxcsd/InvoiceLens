@@ -20,6 +20,8 @@ export default {
         'il-sidebar-grand': ['10px', { lineHeight: '1.2' }],
         'il-meta': ['11px', { lineHeight: '1.2' }],
         'il-soon': ['9px', { lineHeight: '1.2' }],
+        /** 图表 X 轴 / 柱形类别标签（10px），见 docs/frontend-typography.md §10 */
+        'il-chart-axis': ['10px', { lineHeight: '1.2' }],
       },
       colors: {
         accent: '#0072D1',

@@ -1,0 +1,26 @@
+---
+description: Chart and data-overview visual standards for InvoiceLens frontend
+globs: frontend/src/{dws,ads,components/charts}/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# 图表与数据概览视觉规范
+
+修改 `frontend/src/dws/`、`frontend/src/ads/` 或 `frontend/src/components/charts/` 时遵守。
+
+## 权威来源
+
+- 文档：`docs/frontend-typography.md` §10
+- 代码：`frontend/src/components/charts/chartStyles.ts`（常量与类名）、`ChartSvgFrame.tsx`（折线图容器）
+
+## 必须遵守
+
+1. **坐标轴文字**：禁止 SVG 内 `<text>` 或 `text-[Npx]`；用 `ChartSvgFrame` HTML overlay + `chartTypography.axisY` / `axisX`。
+2. **字号 token**：Y 轴 `text-il-label`；X 轴/柱形标签 `text-il-chart-axis`；说明/图例 `text-il-meta`；明细表 `text-il-page-desc` + 表头 `text-il-label`。
+3. **柱形图**：`barHeightPx()` + `CHART_BAR_MAX_PX`；容器 `CHART_BAR_STRIP_CLASS`。
+4. **新图表**：优先放入 `components/charts/` 并复用 `chartStyles`，勿在页面内复制常量。
+
+## 自检
+
+- `npm run build`（在 `frontend/`）
+- 同页折线、柱形、明细表轴标/标签字号视觉一致

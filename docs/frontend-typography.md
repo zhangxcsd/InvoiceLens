@@ -35,6 +35,7 @@
 | 按钮内文 | `text-il-btn` | 主按钮、次按钮、文字按钮 |
 | 输入框 / 下拉框内文字 | `text-il-input` | 紧凑控件内文（与原型一致偏小） |
 | 辅助说明、KPI 小标签、脚注 | `text-il-meta`（常配 `text-text-3`） | 元数据标签、表格区次要说明 |
+| 图表 X 轴 / 柱形类别标签 | `text-il-chart-axis`（常配 `text-text-3`） | 月份、税率档次等；见 §10 |
 | 「即将 / 演示」角标 | `text-il-soon` | 与 `PrototypePageHeader` 角标一致 |
 | 侧栏菜单 | `text-il-sidebar-parent` / `il-sidebar-child` / `il-sidebar-grand` | 仅侧栏层级菜单 |
 
@@ -72,9 +73,47 @@
 
 ## 5. 数据表格（ODS 预览、明细表等）
 
-- **表体主文**：在 `tailwind.config.ts` 中增加专用 token（建议名：`text-il-table` / `text-il-table-header`）后统一使用；在 token 落地前，存量页面可暂时保留一处表格字号，**新页面不得再扩散新的任意像素类**。
-- **列对齐**：文本列左对齐；金额、数量、税率等数字列 **右对齐**，便于扫读。
+- **表体主文**：`text-il-page-desc`（12px）；表头标签：`text-il-label`（9px）。数据概览页可引用 `frontend/src/components/charts/chartStyles.ts` 中的 `dataTableClasses` 常量，避免类名散落。
+- **列对齐**：文本列左对齐；金额、数量、税率等数字列 **右对齐**（`tabular-nums`），便于扫读。
 - **字段代码行**（如列对应的英文字段名）：`font-mono` + `text-il-meta` + `text-text-3`。
+
+---
+
+## 10. 图表与数据概览页（DWS / ADS 等）
+
+**实现来源**：`frontend/src/components/charts/`（`chartStyles.ts`、`ChartSvgFrame.tsx` 及具体图表组件）。
+
+### 10.1 字号层级（图表专用）
+
+| 语义 | Tailwind 类 | 典型用途 |
+|------|-------------|----------|
+| 折线 Y 轴刻度 | `text-il-label` + `text-text-3` + `tabular-nums` | 0、25、50、75、100 等 |
+| 折线 X 轴 / 柱形类别 | `text-il-chart-axis` + `text-text-3` | 月份、税率档次等 |
+| 图例、口径说明 | `text-il-meta` + `text-text-3` | 卡片下方 hint、系列图例 |
+| 同页明细表 | 见 §5 | 与图表配套，表体 12px、表头 9px |
+
+**禁止**：在 SVG 内使用 `<text>` 或 `text-[Npx]` 绘制坐标轴——`viewBox` 缩放会导致字号漂移。应使用 `ChartSvgFrame` 的 HTML overlay。
+
+### 10.2 布局与尺寸
+
+| 常量 | 值 | 说明 |
+|------|-----|------|
+| `CHART_BAR_MAX_PX` | 120 | 简易柱形图单柱最大高度 |
+| `CHART_BAR_STRIP_CLASS` | `h-40` | 柱形图容器高度 |
+| `CHART_TREND_LAYOUT` | 640×200 + pad | 折线图 viewBox，与 `ChartSvgFrame` 一致 |
+
+柱形高度计算使用 `barHeightPx(value, max)`，勿在各页面复制魔法数字。
+
+### 10.3 同页结构约定（数据概览）
+
+推荐顺序：**筛选 Card → 折线/趋势 Card → 柱形/分布 Card → 明细表 Card**。筛选胶囊按钮使用 `filterPillClasses`。
+
+### 10.4 Code Review 补充（图表）
+
+- [ ] 坐标轴文字是否通过 `chartTypography` / `ChartSvgFrame`，而非 SVG `<text>`？
+- [ ] 是否使用 `text-il-chart-axis` 而非 `text-[10px]`？
+- [ ] 柱形图是否使用 `barHeightPx` 与 `CHART_BAR_MAX_PX`？
+- [ ] 新增图表组件是否放在 `components/charts/` 并更新本文档？
 
 ---
 
@@ -100,6 +139,7 @@
 - [ ] 字色是否使用 `text-text` / `text-text-2` / `text-text-3` / `accent` / `danger` / `green`？
 - [ ] ID、路径、字段名是否使用 `font-mono`？
 - [ ] 表格数字列是否右对齐？
+- [ ] 图表页是否遵循 `docs/frontend-typography.md` §10 与 `components/charts/chartStyles.ts`？
 - [ ] 改动页面是否已对照 `invoicelens.html` 或产品截图做视觉核对（见 `.cursor/rules/ui-prototype-selfcheck.mdc`）？
 
 ---
