@@ -197,12 +197,13 @@ DDL_DIM = _load_ddl_file("dim.sql")
 DDL_DWD = _load_ddl_file("dwd.sql")
 DDL_DWS = _load_ddl_file("dws.sql")
 DDL_DM = _load_ddl_file("dm.sql")
+DDL_FINANCE = _load_ddl_file("finance.sql")
 DDL_AUTH = _load_ddl_file("auth.sql")
 DDL_ADS = _load_ddl_file("ads.sql")
 
 
 def get_all_ddl() -> str:
-    return "\n".join([DDL_ODS, DDL_DIM, DDL_DWD, DDL_DWS, DDL_DM, DDL_AUTH, DDL_ADS])
+    return "\n".join([DDL_ODS, DDL_DIM, DDL_DWD, DDL_DWS, DDL_DM, DDL_FINANCE, DDL_AUTH, DDL_ADS])
 
 
 def _table_exists(conn, name: str) -> bool:
@@ -475,16 +476,99 @@ def _refresh_audit_coverage_views_from_dim_ddl(conn) -> None:
             logger.warning("刷新视图 %s 失败: %s", view_name, exc)
 
 
+_ROSTER_COVERAGE_VIEW_NAMES = (
+    "vw_audit_invoice_coverage_soe_year",
+    "vw_audit_invoice_coverage_group_member",
+)
+
+
+def _drop_roster_coverage_views(conn) -> None:
+    """DuckDB 在有视图依赖时无法 ALTER 花名册表，补列前须先 DROP（按依赖顺序）。"""
+    for view_name in _ROSTER_COVERAGE_VIEW_NAMES:
+        try:
+            conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+        except Exception as exc:
+            logger.debug("DROP VIEW %s 跳过: %s", view_name, exc)
+
+
+def _backfill_enterprise_year_roster_source_flags(conn) -> None:
+    """旧库 data_source / registry_row_id 回填 in_registry、in_manual（幂等）。"""
+    tbl = "dim_enterprise_year_roster"
+    if not _column_exists(conn, tbl, "in_manual"):
+        return
+    try:
+        conn.execute(
+            """
+            UPDATE dim_enterprise_year_roster
+            SET in_registry = TRUE,
+                data_source = 'registry'
+            WHERE trim(COALESCE(data_source, '')) IN ('audited_enterprise_registry', 'registry')
+              AND COALESCE(in_manual, FALSE) = FALSE
+            """
+        )
+        conn.execute(
+            """
+            UPDATE dim_enterprise_year_roster
+            SET in_registry = TRUE,
+                in_manual = FALSE,
+                data_source = 'registry'
+            WHERE registry_row_id IS NOT NULL
+              AND trim(COALESCE(registry_row_id, '')) <> ''
+              AND COALESCE(in_registry, FALSE) = FALSE
+              AND COALESCE(in_manual, FALSE) = FALSE
+            """
+        )
+    except Exception as exc:
+        logger.warning("花名册来源字段回填失败: %s", exc)
+
+
 def migrate_dim_enterprise_year_roster_schema(conn) -> None:
     """企业年度花名册表 + 报送覆盖视图口径迁移。"""
+    tbl = "dim_enterprise_year_roster"
     patch = _DDL_ROOT / "patch_enterprise_year_roster.sql"
-    if patch.is_file():
-        try:
-            conn.execute(patch.read_text(encoding="utf-8"))
-            logger.info("已应用 patch_enterprise_year_roster.sql")
-        except Exception as exc:
-            logger.debug("花名册 patch 跳过: %s", exc)
+
+    if not _table_exists(conn, tbl):
+        if patch.is_file():
+            try:
+                conn.execute(patch.read_text(encoding="utf-8"))
+                logger.info("已应用 patch_enterprise_year_roster.sql（新建表）")
+            except Exception as exc:
+                logger.debug("花名册 patch 新建跳过: %s", exc)
+        _refresh_audit_coverage_views_from_dim_ddl(conn)
+        return
+
+    roster_cols = (
+        ("in_registry", "BOOLEAN DEFAULT FALSE"),
+        ("in_manual", "BOOLEAN DEFAULT FALSE"),
+        ("manual_updated_at", "TIMESTAMP"),
+        ("manual_note", "VARCHAR"),
+    )
+    missing = [col for col, _ in roster_cols if not _column_exists(conn, tbl, col)]
+    if missing:
+        _drop_roster_coverage_views(conn)
+        for col, ddl in roster_cols:
+            if _column_exists(conn, tbl, col):
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+                logger.info("已迁移：%s.%s", tbl, col)
+            except Exception as exc:
+                logger.warning("花名册补列失败：%s.%s (%s)", tbl, col, exc)
+        _backfill_enterprise_year_roster_source_flags(conn)
+
     _refresh_audit_coverage_views_from_dim_ddl(conn)
+
+
+def migrate_dm_audit_flag_columns(conn) -> None:
+    tbl = "dm_audit_flag"
+    if not _table_exists(conn, tbl):
+        return
+    if not _column_exists(conn, tbl, "detail_json"):
+        try:
+            conn.execute("ALTER TABLE dm_audit_flag ADD COLUMN detail_json VARCHAR")
+            logger.info("已迁移：%s.detail_json", tbl)
+        except Exception as exc:
+            logger.warning("dm_audit_flag 补列失败：detail_json (%s)", exc)
 
 
 def migrate_dim_enterprise_year_rel_columns(conn) -> None:
@@ -523,6 +607,27 @@ def migrate_dim_enterprise_year_rel_columns(conn) -> None:
             logger.debug("年度关系补列跳过：%s.%s (%s)", tbl, col, exc)
 
 
+def is_core_schema_ready(conn) -> bool:
+    """核心表已存在时，只读 meta/任务台账接口可跳过完整 DDL（避免 DuckDB attach 冲突）。"""
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'main'
+              AND table_type = 'BASE TABLE'
+              AND table_name IN ('dwd_inv_header', 'ads_etl_task_run_log', 'dim_enterprise_year_rel')
+            """
+        ).fetchone()
+        return int(row[0] or 0) >= 3
+    except Exception:
+        return False
+
+
+def _is_attach_conflict(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "unique file handle conflict" in msg or "already attached" in msg
+
+
 def ensure_audited_enterprise_registry_table(conn) -> None:
     """
     台账只读列表用：表已存在则跳过全量 init_all_tables（避免每次打开「管理与产权层级信息」承担 1～2s DDL）。
@@ -545,7 +650,19 @@ def init_all_tables(conn, *, force: bool = False) -> dict:
             return {"skipped": True, "reason": "already_initialized_global"}
         if not force and cid in _INIT_DONE_CONN_IDS:
             return {"skipped": True, "reason": "already_initialized"}
-        out = _init_all_tables_impl(conn)
+        try:
+            out = _init_all_tables_impl(conn)
+        except Exception as exc:
+            # DuckDB 1.5 直连 warehouse.duckdb 时库别名已是 warehouse；并发/重复 init 偶发 attach 冲突。
+            # 若核心表已在库中，视为可继续只读访问，避免 DWD 派生任务页整页报错。
+            if _is_attach_conflict(exc) and is_core_schema_ready(conn):
+                logger.warning(
+                    "init_all_tables: attach 冲突但核心表已就绪，跳过重复初始化: %s",
+                    exc,
+                )
+                out = {"skipped": True, "reason": "attach_conflict_schema_ready"}
+            else:
+                raise
         _GLOBAL_SCHEMA_INIT_DONE = True
         _INIT_DONE_CONN_IDS.add(cid)
         return out
@@ -558,6 +675,7 @@ def _init_all_tables_impl(conn) -> dict:
     migrate_dim_subject_governance_columns(conn)
     migrate_dim_subject_display_cache_columns(conn)
     migrate_dim_enterprise_year_rel_columns(conn)
+    migrate_dm_audit_flag_columns(conn)
     migrate_dim_enterprise_year_roster_schema(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]

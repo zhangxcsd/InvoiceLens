@@ -1,0 +1,34 @@
+name: dim-dict-smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/dim_dict_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'scripts/test_dim_dict_api_smoke.py'
+      - 'scripts/test_dim_dict_consumption_smoke.py'
+      - 'data/config/dim_dict.json'
+  pull_request:
+    paths:
+      - 'src/local_api/dim_dict_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'scripts/test_dim_dict_api_smoke.py'
+      - 'scripts/test_dim_dict_consumption_smoke.py'
+      - 'data/config/dim_dict.json'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run dim_dict API smoke
+        run: |
+          python scripts/test_dim_dict_api_smoke.py
+          python scripts/test_dim_dict_consumption_smoke.py

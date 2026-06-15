@@ -8,6 +8,7 @@ import {
   type SettingsThresholdItem,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { useWriteGate, WriteGateButton } from '../users/useWriteGate'
 
 function formatValue(item: SettingsThresholdItem, v: number): string {
   if (item.type === 'float' && item.max === 1) {
@@ -21,6 +22,7 @@ function formatValue(item: SettingsThresholdItem, v: number): string {
 
 export function SettingsThresholdsPage() {
   const ui = t.settingsThresholdsUi
+  const writeGate = useWriteGate()
   const [items, setItems] = useState<SettingsThresholdItem[]>([])
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [hint, setHint] = useState<string | null>(null)
@@ -164,6 +166,9 @@ export function SettingsThresholdsPage() {
         ) : (
           <>
             {hint ? <p className="mb-4 text-sm text-text-2">{hint}</p> : null}
+            {items.some((it) => it.key === 'min_analysis_subject_invoice_count') ? (
+              <p className="mb-4 text-sm text-text-2">{ui.analysisSubjectPoolHint}</p>
+            ) : null}
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px] text-left text-sm">
                 <thead>
@@ -222,15 +227,17 @@ export function SettingsThresholdsPage() {
                 </tbody>
               </table>
             </div>
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                className="rounded-md bg-primary px-4 py-2 text-sm text-white disabled:opacity-50"
+            <div className="mt-4 flex flex-col gap-2">
+              {!writeGate.canWrite ? (
+                <p className="text-il-meta text-text-3">{writeGate.writeDisabledHint}</p>
+              ) : null}
+              <WriteGateButton
+                className="w-fit rounded-md bg-primary px-4 py-2 text-sm text-white disabled:opacity-50"
                 disabled={saving || !dirty}
                 onClick={() => void onSave()}
               >
                 {saving ? ui.saveBusy : ui.saveBtn}
-              </button>
+              </WriteGateButton>
             </div>
           </>
         )}

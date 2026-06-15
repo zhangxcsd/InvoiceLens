@@ -11,9 +11,22 @@ export const SUBJECT_DIM_TASK = {
   pipeline: 'subject_library_pipeline',
 } as const
 
-export type SubjectDimTaskCode = (typeof SUBJECT_DIM_TASK)[keyof typeof SUBJECT_DIM_TASK]
+/** 票面企业维等非主体库任务，同样通过 focus key 跳转 DWD→DIM 加工中心 */
+export const DWD_DIM_EXTRA_FOCUS_TASKS = {
+  enterpriseMappingCheck: 'enterprise_mapping_check',
+} as const
 
-const VALID_FOCUS = new Set<string>(Object.values(SUBJECT_DIM_TASK))
+export type SubjectDimTaskCode = (typeof SUBJECT_DIM_TASK)[keyof typeof SUBJECT_DIM_TASK]
+export type DwdDimExtraFocusTaskCode = (typeof DWD_DIM_EXTRA_FOCUS_TASKS)[keyof typeof DWD_DIM_EXTRA_FOCUS_TASKS]
+
+const VALID_FOCUS = new Set<string>([
+  ...Object.values(SUBJECT_DIM_TASK),
+  ...Object.values(DWD_DIM_EXTRA_FOCUS_TASKS),
+])
+
+export function isDwdDimFocusTask(taskCode: string): boolean {
+  return VALID_FOCUS.has(taskCode)
+}
 
 export function readDwdDimFocusTask(): string | null {
   try {
@@ -33,7 +46,7 @@ export function clearDwdDimFocusTask(): void {
   }
 }
 
-export function navToDwdDimWithTask(onNav: (k: NavKey) => void, taskCode: SubjectDimTaskCode) {
+export function navToDwdDimWithTask(onNav: (k: NavKey) => void, taskCode: SubjectDimTaskCode | DwdDimExtraFocusTaskCode) {
   try {
     sessionStorage.setItem(DWD_DIM_FOCUS_TASK_KEY, taskCode)
   } catch {

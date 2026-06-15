@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+import json
 from typing import Any
 
 
@@ -34,3 +36,19 @@ def entity_filter(entity_id: str | None, *, xfs_col: str = "h.xfsbh", gfs_col: s
 def year_params(stat_year: int, entity_id: str | None) -> tuple[list[Any], str]:
     ef, ep = entity_filter(entity_id)
     return [stat_year] + ep, ef
+
+
+def month_date_bounds(stat_year: int, stat_month: int) -> tuple[str, str]:
+    """stat_month 为 1–12，返回该月起止 ISO 日期。"""
+    y = int(stat_year)
+    m = int(stat_month)
+    if m < 1 or m > 12:
+        return f"{y}-01-01", f"{y}-12-31"
+    last = calendar.monthrange(y, m)[1]
+    return f"{y}-{m:02d}-01", f"{y}-{m:02d}-{last:02d}"
+
+
+def flag_detail_json(**fields: Any) -> str:
+    """疑点 detail_json（供前端深链，跳过 None）。"""
+    payload = {k: v for k, v in fields.items() if v is not None}
+    return json.dumps(payload, ensure_ascii=False)

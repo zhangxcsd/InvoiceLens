@@ -5,14 +5,22 @@
       "template_id": "builtin_full",
       "name": "完整审计报告",
       "title_template": "{year}年度发票数据审计分析报告",
-      "description": "包含全部六章，适用于年度综合审计交付。",
+      "description": "包含全部六章及已确认疑点附录，适用于年度综合审计交付。",
       "chapters": {
         "overview": true,
         "structure": true,
         "supplier": true,
         "audit_flags": true,
+        "flags_track": true,
         "related": true,
-        "compare": true
+        "compare": true,
+        "supplier_new": false,
+        "trade_relationships": false,
+        "tax_in_out_deviation": false,
+        "finance_reconcile": true,
+        "data_quality_summary": true,
+        "tax_code_analysis": true,
+        "tax_risk_exposure": true
       },
       "is_builtin": true,
       "updated_at": "2026-01-01T00:00:00Z"
@@ -21,14 +29,19 @@
       "template_id": "builtin_flags",
       "name": "疑点专项报告",
       "title_template": "{year}年度发票审计疑点专项报告",
-      "description": "聚焦疑点清单与关联交易，适用于风险复核场景。",
+      "description": "聚焦疑点清单、已确认摘要与关联交易，适用于风险复核场景。",
       "chapters": {
         "overview": true,
         "structure": false,
         "supplier": false,
         "audit_flags": true,
+        "flags_track": true,
         "related": true,
-        "compare": false
+        "compare": false,
+        "supplier_new": false,
+        "trade_relationships": false,
+        "tax_in_out_deviation": false,
+        "finance_reconcile": false
       },
       "is_builtin": true,
       "updated_at": "2026-01-01T00:00:00Z"
@@ -43,11 +56,40 @@
         "structure": false,
         "supplier": true,
         "audit_flags": false,
+        "flags_track": false,
         "related": false,
-        "compare": true
+        "compare": true,
+        "supplier_new": false,
+        "trade_relationships": false,
+        "tax_in_out_deviation": false,
+        "finance_reconcile": false
       },
       "is_builtin": true,
       "updated_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "template_id": "builtin_analysis",
+      "name": "分析扩展报告",
+      "title_template": "{year}年度发票分析扩展报告",
+      "description": "含新增供应商、往来关系与进销偏离等分析专题章节。",
+      "chapters": {
+        "overview": true,
+        "structure": true,
+        "supplier": true,
+        "audit_flags": true,
+        "flags_track": true,
+        "related": false,
+        "compare": false,
+        "supplier_new": true,
+        "trade_relationships": true,
+        "tax_in_out_deviation": true,
+        "tax_risk_exposure": true,
+        "finance_reconcile": true,
+        "data_quality_summary": false,
+        "tax_code_analysis": false
+      },
+      "is_builtin": true,
+      "updated_at": "2026-06-08T00:00:00Z"
     }
   ]
 }

@@ -1,0 +1,28 @@
+﻿name: DWD Build Log Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/dwd_build.py'
+      - 'src/local_api/dwd_build_log.py'
+      - 'scripts/test_dwd_build_log_smoke.py'
+      - '.github/workflows/dwd-build-log-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/dwd_build.py'
+      - 'src/local_api/dwd_build_log.py'
+      - 'scripts/test_dwd_build_log_smoke.py'
+      - '.github/workflows/dwd-build-log-smoke.yml'
+
+jobs:
+  dwd-build-log-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run DWD build log smoke tests
+        run: python scripts/test_dwd_build_log_smoke.py

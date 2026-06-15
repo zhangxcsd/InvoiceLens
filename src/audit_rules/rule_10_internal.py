@@ -12,7 +12,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, norm_tax
+from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, flag_detail_json, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -117,6 +117,15 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议对照内部关联交易台账、合并抵消分录及Transfer Pricing政策。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    stat_year=stat_year,
+                    entity_id=buyer_id,
+                    buyer_tax_no=buyer_id,
+                    seller_tax_no=seller_id,
+                    counterparty_id=seller_id,
+                    counterparty_tax_no=seller_id,
+                    invoice_count=int(cnt or 0),
+                ),
             }
         )
     return flags

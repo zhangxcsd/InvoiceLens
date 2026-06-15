@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
 import {
@@ -10,13 +11,18 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { formatDwsAmount } from '../dws/useDwsFilters'
+import { navigateToFlagsList, navigateToHealthScore, navigateToTaxRiskExposure, navigateWithQuery } from '../utils/navHelpers'
+import { scorecardRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { useDimDictDomain } from '../dim/useDimDict'
+import { useLicense } from '../settings/useLicense'
+import type { NavKey } from '../types'
 
-type RiskTab = 'all' | '正常' | '关注' | '重点关注'
+type Props = { onNav?: (key: NavKey) => void }
+
+type RiskTab = 'all' | string
 
 function levelBadgeClass(level: string): string {
-  if (level === '重点关注') return 'bg-danger/10 text-danger'
-  if (level === '关注') return 'bg-warn/10 text-warn'
-  return 'bg-green/10 text-green'
+  return scorecardRiskLevelBadgeClass(level)
 }
 
 function fmtPct(v: number | null | undefined): string {
@@ -24,9 +30,13 @@ function fmtPct(v: number | null | undefined): string {
   return `${(v * 100).toFixed(2)}%`
 }
 
-export function CompareRankPage() {
+export function CompareRankPage({ onNav }: Props) {
   const ui = t.compareRankUi
   const pagUi = t.dimDataTableUi
+  const license = useLicense()
+  const crossGroupAllowed = license.crossGroupAllowed
+  const crossGroupHint = license.crossGroupHint
+  const scorecardRiskDict = useDimDictDomain('scorecard_risk_level')
   const [statYears, setStatYears] = useState<string[]>([])
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [metaHint, setMetaHint] = useState<string | null>(null)
@@ -49,6 +59,7 @@ export function CompareRankPage() {
   }, [statYear, statYears])
 
   const loadMeta = useCallback(async (signal?: AbortSignal) => {
+    if (!crossGroupAllowed) return
     const res = await fetchCompareMeta(signal)
     if (signal?.aborted || res.aborted) return
     if (!res.ok) {
@@ -62,10 +73,10 @@ export function CompareRankPage() {
       setStatYear((prev) => (years.includes(prev) ? prev : years.includes(cy) ? cy : years[0]))
     }
     setMetaHint(res.hint ?? null)
-  }, [ui.loadFailed])
+  }, [ui.loadFailed, crossGroupAllowed])
 
   const loadList = useCallback(async (signal?: AbortSignal) => {
-    if (!effectiveYear) return
+    if (!crossGroupAllowed || !effectiveYear) return
     setLoading(true)
     setErr(null)
     try {
@@ -91,7 +102,7 @@ export function CompareRankPage() {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, riskTab, keyword, page, pageSize, ui.loadFailed])
+  }, [effectiveYear, riskTab, keyword, page, pageSize, ui.loadFailed, crossGroupAllowed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -110,6 +121,7 @@ export function CompareRankPage() {
   }, [effectiveYear, riskTab, keyword])
 
   const onRebuild = async () => {
+    if (!crossGroupAllowed) return
     setRebuildBusy(true)
     setRebuildMsg(null)
     try {
@@ -127,18 +139,32 @@ export function CompareRankPage() {
     }
   }
 
-  const riskTabs: { id: RiskTab; label: string }[] = [
-    { id: 'all', label: ui.riskAll },
-    { id: '重点关注', label: ui.summaryCritical.replace(' {n}', '') },
-    { id: '关注', label: ui.summaryWatch.replace(' {n}', '') },
-    { id: '正常', label: ui.summaryNormal.replace(' {n}', '') },
-  ]
+  const riskTabs: { id: RiskTab; label: string }[] = useMemo(
+    () => [
+      { id: 'all', label: ui.riskAll },
+      ...scorecardRiskDict.options.map((o) => ({ id: o.code, label: o.label })),
+    ],
+    [scorecardRiskDict.options, ui.riskAll],
+  )
+
+  const entityCapHint = useMemo(() => {
+    if (!crossGroupAllowed || license.maxEntities == null || license.maxEntities <= 0) return null
+    return `对比分析按授权最多展示 ${license.maxEntities} 个主体，超出部分已截断。`
+  }, [crossGroupAllowed, license.maxEntities])
 
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      <LicenseGateBanner hint={crossGroupHint} />
+      <LicenseGateBanner hint={entityCapHint} />
       {metaHint ? <p className="text-sm text-warn">{metaHint}</p> : null}
 
+      {!crossGroupAllowed ? (
+        <Card title={ui.filterTitle}>
+          <p className="text-sm text-text-2">{ui.lockedHint}</p>
+        </Card>
+      ) : (
+        <>
       <Card title={ui.filterTitle}>
         <div className="flex flex-wrap items-end gap-4">
           <label className="flex flex-col gap-1 text-sm">
@@ -167,7 +193,7 @@ export function CompareRankPage() {
           <button
             type="button"
             className="rounded bg-primary px-4 py-1.5 text-sm text-white disabled:opacity-50"
-            disabled={rebuildBusy || !effectiveYear}
+            disabled={rebuildBusy || !effectiveYear || !crossGroupAllowed}
             onClick={() => void onRebuild()}
           >
             {rebuildBusy ? ui.rebuildBusy : ui.rebuildBtn}
@@ -221,6 +247,7 @@ export function CompareRankPage() {
                   <th className="py-2 pr-3 font-medium text-right">{ui.colCancel}</th>
                   <th className="py-2 pr-3 font-medium text-right">{ui.colScore}</th>
                   <th className="py-2 font-medium">{ui.colLevel}</th>
+                  {onNav ? <th className="py-2 font-medium">{ui.colAction}</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -241,9 +268,63 @@ export function CompareRankPage() {
                     <td className="py-2 pr-3 text-right tabular-nums font-medium">{r.risk_score.toFixed(0)}</td>
                     <td className="py-2">
                       <span className={`rounded px-2 py-0.5 text-xs ${levelBadgeClass(r.risk_level)}`}>
-                        {r.risk_level}
+                        {scorecardRiskDict.getLabel(r.risk_level)}
                       </span>
                     </td>
+                    {onNav ? (
+                      <td className="py-2">
+                        <div className="flex flex-col gap-1 text-xs">
+                          <button
+                            type="button"
+                            className="text-left text-accent hover:underline"
+                            onClick={() =>
+                              navigateToHealthScore(onNav, {
+                                statYear: String(r.stat_year),
+                                entityId: r.entity_id,
+                              })
+                            }
+                          >
+                            {ui.actionHealthScore}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left text-accent hover:underline"
+                            onClick={() =>
+                              navigateToTaxRiskExposure(onNav, {
+                                statYear: String(r.stat_year),
+                                entityId: r.entity_id,
+                              })
+                            }
+                          >
+                            {ui.actionTaxRiskExposure}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left text-accent hover:underline"
+                            onClick={() =>
+                              navigateWithQuery(onNav, 'supplier_top', {
+                                stat_year: String(r.stat_year),
+                                entity_id: r.entity_id,
+                              })
+                            }
+                          >
+                            {ui.actionSupplierTop}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-left text-accent hover:underline"
+                            onClick={() =>
+                              navigateToFlagsList(onNav, {
+                                statYear: String(r.stat_year),
+                                entityId: r.entity_id,
+                              })
+                            }
+                          >
+                            {ui.actionFlagsList}
+                          </button>
+                        </div>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -259,6 +340,8 @@ export function CompareRankPage() {
           ui={pagUi}
         />
       </Card>
+        </>
+      )}
     </div>
   )
 }

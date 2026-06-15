@@ -153,7 +153,12 @@ export function ReportTemplatesPage() {
               </thead>
               <tbody>
                 {templates.map((tpl) => {
-                  const enabled = Object.values(tpl.chapters).filter(Boolean).length
+                  const enabledIds = Object.entries(tpl.chapters)
+                    .filter(([, v]) => v)
+                    .map(([k]) => k)
+                  const enabledLabels = enabledIds
+                    .map((id) => chapterDefs.find((c) => c.id === id)?.label ?? id)
+                    .join('、')
                   return (
                     <tr key={tpl.template_id} className="border-b border-border/60">
                       <td className="py-2 pr-3">
@@ -163,7 +168,12 @@ export function ReportTemplatesPage() {
                         ) : null}
                       </td>
                       <td className="py-2 pr-3 text-text-2">{tpl.title_template}</td>
-                      <td className="py-2 pr-3 tabular-nums">{enabled}</td>
+                      <td className="py-2 pr-3">
+                        <div className="tabular-nums">{enabledIds.length}</div>
+                        <div className="mt-0.5 max-w-[280px] text-xs leading-snug text-text-3" title={enabledLabels}>
+                          {enabledLabels || '—'}
+                        </div>
+                      </td>
                       <td className="py-2 pr-3">
                         {tpl.is_builtin ? (
                           <span className="rounded bg-surface-2 px-2 py-0.5 text-xs">{ui.builtinTag}</span>

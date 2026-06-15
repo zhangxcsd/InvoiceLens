@@ -1,229 +1,194 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
+import { DimTablePagination } from './DimTablePagination'
+import {
+  fetchTaxCodeEnterpriseSummary,
+  postTaxCodeSyncFlags,
+  type TaxCodeEnterpriseRow,
+} from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-
-type EnterpriseRow = {
-  enterpriseName: string
-  taxpayerId: string
-  topCategory: string
-  topCategoryRatio: string
-  highRiskRatio: string
-  fluctuationIndex: string
-}
-
-type MockScenario = 'manufacturing' | 'trade' | 'service'
-
-type ScenarioPack = {
-  kpis: {
-    enterpriseCoverage: string
-    highRiskEnterpriseCount: string
-    topCategoryConcentration: string
-    monthlyMutationRate: string
-  }
-  rows: EnterpriseRow[]
-}
-
-const SCENARIO_DATA: Record<MockScenario, ScenarioPack> = {
-  manufacturing: {
-    kpis: {
-      enterpriseCoverage: '88.1%',
-      highRiskEnterpriseCount: '14',
-      topCategoryConcentration: '52.3%',
-      monthlyMutationRate: '11.2%',
-    },
-    rows: [
-      {
-        enterpriseName: '华东精密机械股份有限公司',
-        taxpayerId: '91310100MA1A111111',
-        topCategory: '机械设备',
-        topCategoryRatio: '46.2%',
-        highRiskRatio: '7.8%',
-        fluctuationIndex: '1.31',
-      },
-      {
-        enterpriseName: '天诚设备制造有限公司',
-        taxpayerId: '91320100MA21XXXXXX',
-        topCategory: '金属制品',
-        topCategoryRatio: '38.4%',
-        highRiskRatio: '9.2%',
-        fluctuationIndex: '1.48',
-      },
-      {
-        enterpriseName: '新航科技发展有限公司',
-        taxpayerId: '91440300MA5GXXXXXX',
-        topCategory: '修理修配劳务',
-        topCategoryRatio: '29.1%',
-        highRiskRatio: '12.4%',
-        fluctuationIndex: '1.67',
-      },
-    ],
-  },
-  trade: {
-    kpis: {
-      enterpriseCoverage: '76.4%',
-      highRiskEnterpriseCount: '41',
-      topCategoryConcentration: '36.0%',
-      monthlyMutationRate: '6.3%',
-    },
-    rows: [
-      {
-        enterpriseName: '瑞华供应链管理有限公司',
-        taxpayerId: '91310115MA1K222222',
-        topCategory: '批发业',
-        topCategoryRatio: '44.8%',
-        highRiskRatio: '5.2%',
-        fluctuationIndex: '1.09',
-      },
-      {
-        enterpriseName: '跨境通商贸（上海）有限公司',
-        taxpayerId: '91310000MA1B333333',
-        topCategory: '零售业',
-        topCategoryRatio: '39.1%',
-        highRiskRatio: '8.6%',
-        fluctuationIndex: '1.24',
-      },
-      {
-        enterpriseName: '恒达进出口贸易有限公司',
-        taxpayerId: '91440101MA5C444444',
-        topCategory: '贸易经纪与代理',
-        topCategoryRatio: '33.5%',
-        highRiskRatio: '11.0%',
-        fluctuationIndex: '1.41',
-      },
-    ],
-  },
-  service: {
-    kpis: {
-      enterpriseCoverage: '82.7%',
-      highRiskEnterpriseCount: '33',
-      topCategoryConcentration: '28.4%',
-      monthlyMutationRate: '14.6%',
-    },
-    rows: [
-      {
-        enterpriseName: '云启信息技术服务有限公司',
-        taxpayerId: '91110108MA5D555555',
-        topCategory: '信息技术服务',
-        topCategoryRatio: '41.2%',
-        highRiskRatio: '10.5%',
-        fluctuationIndex: '1.72',
-      },
-      {
-        enterpriseName: '和悦商务咨询有限公司',
-        taxpayerId: '91310110MA5E666666',
-        topCategory: '现代服务',
-        topCategoryRatio: '35.6%',
-        highRiskRatio: '14.2%',
-        fluctuationIndex: '1.58',
-      },
-      {
-        enterpriseName: '康居物业管理有限公司',
-        taxpayerId: '91440300MA5F777777',
-        topCategory: '生活服务',
-        topCategoryRatio: '27.3%',
-        highRiskRatio: '6.9%',
-        fluctuationIndex: '1.19',
-      },
-    ],
-  },
-}
+import { formatDwsPct, useDwsFilters } from '../dws/useDwsFilters'
+import { readNavQueryParams } from '../utils/navHelpers'
 
 export function TaxCodeEnterpriseAnalysisPage() {
   const ui = t.taxCodeEnterpriseUi
-  const [mockScenario, setMockScenario] = useState<MockScenario>('manufacturing')
-  const [statYear, setStatYear] = useState('2026')
-  const [enterpriseKeyword, setEnterpriseKeyword] = useState('')
+  const pagUi = t.dimDataTableUi
+  const dash = t.dwsDashboardUi
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const f = useDwsFilters(false, { entityPool: 'analysis', initFromUrl: true })
+  const [enterpriseKeyword, setEnterpriseKeyword] = useState(urlQuery.keyword ?? urlQuery.goods_name ?? '')
   const [industry, setIndustry] = useState('all')
+  const [rows, setRows] = useState<TaxCodeEnterpriseRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([])
+  const [kpis, setKpis] = useState({
+    enterprise_coverage: 0,
+    high_risk_enterprise_count: 0,
+    top_category_concentration: 0,
+    monthly_mutation_rate: null as number | null,
+  })
+  const [hint, setHint] = useState<string | null>(null)
+  const [fluctuationHint, setFluctuationHint] = useState<string | null>(null)
+  const [caliberHint, setCaliberHint] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
-  const pack = SCENARIO_DATA[mockScenario]
+  const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
+  const poolCaliberHint = dash.analysisSubjectCaliberHint.replace('{n}', String(effectiveN))
 
-  const industryOptions = useMemo(() => {
-    const set = new Set<string>()
-    for (const r of pack.rows) {
-      if (r.topCategory) set.add(r.topCategory)
-    }
-    return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN'))
-  }, [pack.rows])
+  const yearOptions = useMemo(() => {
+    const merged = new Set<string>(f.yearOptions)
+    return [...merged].sort((a, b) => Number(b) - Number(a))
+  }, [f.yearOptions])
 
-  const rows = useMemo(() => {
-    const kw = enterpriseKeyword.trim().toLowerCase()
-    return pack.rows.filter((row) => {
-      const hitKw =
-        !kw ||
-        row.enterpriseName.toLowerCase().includes(kw) ||
-        row.taxpayerId.toLowerCase().includes(kw) ||
-        row.topCategory.toLowerCase().includes(kw)
-      const hitIndustry = industry === 'all' || row.topCategory === industry
-      return hitKw && hitIndustry
-    })
-  }, [pack.rows, enterpriseKeyword, industry])
+  const deepGoodsName = urlQuery.goods_name?.trim() || undefined
+  const deepSlvNum = urlQuery.slv_num?.trim() || undefined
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!f.effectiveYear) return
+      setLoading(true)
+      setErr(null)
+      try {
+        const res = await fetchTaxCodeEnterpriseSummary(
+          {
+            statYear: f.effectiveYear,
+            entityId: f.entityId.trim() || urlQuery.entity_id?.trim() || undefined,
+            keyword: enterpriseKeyword.trim() || undefined,
+            topCategory: industry === 'all' ? undefined : industry,
+            goodsName: deepGoodsName,
+            slvNum: deepSlvNum,
+            page,
+            pageSize,
+            minInvoiceCount: effectiveN,
+          },
+          signal,
+        )
+        if (signal?.aborted || res.aborted) return
+        if (!res.ok) {
+          setErr(res.error?.message ?? ui.loadFailed)
+          setRows([])
+          setTotal(0)
+          return
+        }
+        const data = res.data
+        setRows(data?.rows ?? [])
+        setTotal(data?.total ?? 0)
+        setCategoryOptions(data?.category_options ?? [])
+        setKpis({
+          enterprise_coverage: data?.kpis?.enterprise_coverage ?? 0,
+          high_risk_enterprise_count: data?.kpis?.high_risk_enterprise_count ?? 0,
+          top_category_concentration: data?.kpis?.top_category_concentration ?? 0,
+          monthly_mutation_rate: data?.kpis?.monthly_mutation_rate ?? null,
+        })
+        setHint(data?.hint ?? null)
+        setFluctuationHint(data?.fluctuation_hint ?? null)
+        setCaliberHint(data?.caliber_hint ?? null)
+        if (data?.stat_years?.length && !data.stat_years.includes(f.effectiveYear)) {
+          f.setStatYear(data.stat_years[0] ?? f.effectiveYear)
+        }
+      } finally {
+        setLoading(false)
+      }
+    },
+    [deepGoodsName, deepSlvNum, effectiveN, enterpriseKeyword, f.effectiveYear, f.entityId, f.setStatYear, industry, page, pageSize, ui.loadFailed, urlQuery.entity_id],
+  )
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void load(ac.signal)
+    return () => ac.abort()
+  }, [load])
+
+  useEffect(() => {
+    setPage(1)
+  }, [f.effectiveYear, enterpriseKeyword, industry, pageSize, effectiveN])
+
+  const flagContextHint = useMemo(() => {
+    const goods = urlQuery.goods_name?.trim()
+    const slv = urlQuery.slv_num?.trim()
+    if (!goods) return null
+    const rate = slv ? `${(parseFloat(slv) * 100).toFixed(1)}%` : '—'
+    return dash.flagContextGoodsHint.replace('{goods}', goods).replace('{rate}', rate)
+  }, [dash, urlQuery.goods_name, urlQuery.slv_num])
 
   const kpiItems = useMemo(
     () => [
-      { label: ui.kpiEnterpriseCoverage, value: pack.kpis.enterpriseCoverage, cls: 'text-accent' as const },
-      { label: ui.kpiHighRiskEnterpriseCount, value: pack.kpis.highRiskEnterpriseCount, cls: 'text-danger' as const },
-      { label: ui.kpiTopCategoryConcentration, value: pack.kpis.topCategoryConcentration, cls: 'text-warn' as const },
-      { label: ui.kpiMonthlyMutationRate, value: pack.kpis.monthlyMutationRate, cls: 'text-text' as const },
+      {
+        label: ui.kpiEnterpriseCoverage,
+        value: formatDwsPct(kpis.enterprise_coverage),
+        cls: 'text-accent' as const,
+      },
+      {
+        label: ui.kpiHighRiskEnterpriseCount,
+        value: String(kpis.high_risk_enterprise_count),
+        cls: 'text-danger' as const,
+      },
+      {
+        label: ui.kpiTopCategoryConcentration,
+        value: formatDwsPct(kpis.top_category_concentration),
+        cls: 'text-warn' as const,
+      },
+      {
+        label: ui.kpiMonthlyMutationRate,
+        value:
+          kpis.monthly_mutation_rate != null
+            ? formatDwsPct(kpis.monthly_mutation_rate)
+            : ui.kpiMonthlyMutationPending,
+        cls: 'text-text' as const,
+      },
     ],
-    [pack.kpis, ui],
+    [kpis, ui],
   )
 
-  const scenarioFocus = useMemo(() => {
-    if (mockScenario === 'manufacturing') return ui.scenarioFocusManufacturing
-    if (mockScenario === 'trade') return ui.scenarioFocusTrade
-    return ui.scenarioFocusService
-  }, [mockScenario, ui])
-
-  const scenarioBtn = (key: MockScenario, label: string) => {
-    const active = mockScenario === key
-    return (
-      <button
-        key={key}
-        type="button"
-        onClick={() => {
-          setMockScenario(key)
-          setIndustry('all')
-        }}
-        className={[
-          'rounded-sm border px-3 py-1.5 text-il-page-desc font-semibold transition',
-          active ? 'border-accent bg-[#f0f7ff] text-accent' : 'border-border bg-white text-text-2 hover:border-accent hover:text-accent',
-        ].join(' ')}
-      >
-        {label}
-      </button>
+  const syncFlags = async () => {
+    if (!f.effectiveYear) return
+    setSyncing(true)
+    setSyncMsg(null)
+    const res = await postTaxCodeSyncFlags({
+      statYear: f.effectiveYear,
+      minLineCount: effectiveN,
+    })
+    setSyncing(false)
+    if (!res.ok) {
+      setErr(res.error?.message ?? ui.syncFlagsFailed)
+      return
+    }
+    setSyncMsg(
+      ui.syncFlagsOk
+        .replace('{inserted}', String(res.inserted ?? 0))
+        .replace('{updated}', String(res.updated ?? 0))
+        .replace('{skipped}', String(res.skipped_confirmed ?? 0)),
     )
   }
 
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
-            {ui.prototypeBadge}
-          </span>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.prototypeNote}</p>
-      </div>
-
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <span className="text-il-label font-medium text-text-2">{ui.mockScenarioLabel}</span>
-        {scenarioBtn('manufacturing', ui.mockScenarioManufacturing)}
-        {scenarioBtn('trade', ui.mockScenarioTrade)}
-        {scenarioBtn('service', ui.mockScenarioService)}
-      </div>
-      <p className="mb-5 text-il-meta text-text-3">{ui.mockScenarioHint}</p>
-
-      <Card title={ui.scenarioFocusTitle} compact>
-        <p className="text-il-page-desc leading-relaxed text-text-2">{scenarioFocus}</p>
-      </Card>
+      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
+      {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
+      {hint ? <p className="mb-2 text-il-meta text-amber-800">{hint}</p> : null}
+      {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {kpiItems.map((item) => (
           <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
             <div className="text-il-label text-text-3">{item.label}</div>
-            <div className={['mt-1 text-[20px] font-bold tabular-nums', item.cls].join(' ')}>{item.value}</div>
+            <div
+              className={[
+                'mt-1 text-[20px] font-bold tabular-nums',
+                item.cls,
+                loading ? 'opacity-50' : '',
+              ].join(' ')}
+            >
+              {loading ? pagUi.tableLoading : item.value}
+            </div>
           </div>
         ))}
       </div>
@@ -234,12 +199,15 @@ export function TaxCodeEnterpriseAnalysisPage() {
             <label className="mb-1 block text-il-label font-medium text-text-2">{ui.statYearLabel}</label>
             <select
               className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-              value={statYear}
-              onChange={(e) => setStatYear(e.target.value)}
+              value={f.effectiveYear}
+              onChange={(e) => f.setStatYear(e.target.value)}
+              disabled={f.loadingMeta}
             >
-              <option value="2026">2026</option>
-              <option value="2025">2025</option>
-              <option value="2024">2024</option>
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
             </select>
           </div>
           <div>
@@ -259,7 +227,7 @@ export function TaxCodeEnterpriseAnalysisPage() {
               onChange={(e) => setIndustry(e.target.value)}
             >
               <option value="all">{ui.industryAll}</option>
-              {industryOptions.map((opt) => (
+              {categoryOptions.map((opt) => (
                 <option key={opt} value={opt}>
                   {opt}
                 </option>
@@ -268,10 +236,32 @@ export function TaxCodeEnterpriseAnalysisPage() {
           </div>
         </div>
         <p className="mt-2 text-il-meta text-text-3">{ui.scopeHint}</p>
+        <p className="mt-1 text-il-meta text-text-3">{poolCaliberHint}</p>
+        {caliberHint ? (
+          <p className="mt-1 text-il-meta text-text-3">
+            {ui.caliberHintLabel}：{caliberHint}
+          </p>
+        ) : null}
+        {fluctuationHint ? <p className="mt-1 text-il-meta text-text-3">{fluctuationHint}</p> : null}
+      </Card>
+
+      <Card title={ui.syncFlagsBtn}>
+        <p className="mb-3 text-il-meta text-text-3">{ui.syncFlagsHint}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={syncing || !f.effectiveYear}
+            className="rounded-sm border border-accent bg-accent px-3 py-1.5 text-il-btn text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void syncFlags()}
+          >
+            {syncing ? ui.syncFlagsBusy : ui.syncFlagsBtn}
+          </button>
+          {syncMsg ? <span className="text-il-meta text-text-2">{syncMsg}</span> : null}
+        </div>
       </Card>
 
       <Card title={ui.enterpriseTableTitle}>
-        <div className="mb-1 text-il-meta text-text-3">{ui.enterpriseTableHint.replace('{count}', String(rows.length))}</div>
+        <div className="mb-1 text-il-meta text-text-3">{ui.enterpriseTableHint.replace('{count}', String(total))}</div>
         <div className="mb-2 text-il-meta text-text-3">{ui.topCategoryRuleHint}</div>
         <div className="overflow-x-auto rounded-sm border border-border-light">
           <table className="w-full min-w-[920px] border-collapse text-il-page-desc">
@@ -286,19 +276,44 @@ export function TaxCodeEnterpriseAnalysisPage() {
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {rows.map((row) => (
-                <tr key={`${mockScenario}-${row.taxpayerId}`} className="border-b border-border-light last:border-b-0">
-                  <td className="px-3 py-2.5 text-text">{row.enterpriseName}</td>
-                  <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.taxpayerId}</td>
-                  <td className="px-3 py-2.5">{row.topCategory}</td>
-                  <td className="px-3 py-2.5">{row.topCategoryRatio}</td>
-                  <td className="px-3 py-2.5 text-danger">{row.highRiskRatio}</td>
-                  <td className="px-3 py-2.5">{row.fluctuationIndex}</td>
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-il-meta text-text-3">
+                    {pagUi.tableLoading}
+                  </td>
                 </tr>
-              ))}
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-il-meta text-text-3">
+                    {ui.emptyEnterprises}
+                  </td>
+                </tr>
+              ) : (
+                rows.map((row) => (
+                  <tr key={row.taxpayer_id} className="border-b border-border-light last:border-b-0">
+                    <td className="px-3 py-2.5 text-text">{row.entity_name}</td>
+                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.taxpayer_id}</td>
+                    <td className="px-3 py-2.5">{row.top_category}</td>
+                    <td className="px-3 py-2.5">{formatDwsPct(row.top_category_ratio)}</td>
+                    <td className="px-3 py-2.5 text-danger">{formatDwsPct(row.high_risk_ratio)}</td>
+                    <td className="px-3 py-2.5">
+                      {row.fluctuation_index != null ? row.fluctuation_index.toFixed(2) : ui.fluctuationPending}
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
+        <DimTablePagination
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          loading={loading}
+          ui={pagUi}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
       </Card>
     </div>
   )

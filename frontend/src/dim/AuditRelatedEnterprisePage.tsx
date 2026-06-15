@@ -3,13 +3,20 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
+  fetchInvoiceCoverageMappingStatus,
   fetchInvoiceCoverageMembers,
   fetchInvoiceCoverageMeta,
   fetchInvoiceCoverageSoeOptions,
   fetchInvoiceCoverageSummary,
+  type InvoiceCoverageMappingStatusRow,
   type InvoiceCoverageMemberRow,
   type InvoiceCoverageSoeOption,
 } from '../config/localApi'
+import type { NavKey } from '../types'
+import { navToSubjectLibrary } from './subjectLibraryNav'
+import { DWD_DIM_EXTRA_FOCUS_TASKS, navToDwdDimWithTask } from '../dwd/dwdDimNav'
+
+type ListView = 'unreported' | 'reported' | 'all' | 'unmapped' | 'mapping_pending'
 
 /** 统计年度：下一年（预编）+ 当前年往回 11 年，并与 API 返回年度合并。 */
 function buildYearOptions(apiYears: string[]): string[] {
@@ -28,11 +35,12 @@ function defaultPracticeStatYear(yearOptions: string[], apiDefault?: string | nu
   return yearOptions[0] ?? cy
 }
 
-export function AuditRelatedEnterprisePage() {
+export function AuditRelatedEnterprisePage(props: { onNav?: (k: NavKey) => void }) {
   const ui = t.auditRelatedEnterpriseUi
   const [statYears, setStatYears] = useState<string[]>([])
-  const [groupMemberYears, setGroupMemberYears] = useState<string[]>([])
+  const [rosterYears, setRosterYears] = useState<string[]>([])
   const [level1Years, setLevel1Years] = useState<string[]>([])
+  const [mappingStatusReady, setMappingStatusReady] = useState(false)
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [viewsReady, setViewsReady] = useState<boolean | null>(null)
   const [metaHint, setMetaHint] = useState<string | undefined>(undefined)
@@ -40,7 +48,7 @@ export function AuditRelatedEnterprisePage() {
   const [soeSelectId, setSoeSelectId] = useState('')
   const [soeKw, setSoeKw] = useState('')
   const [enterpriseKeyword, setEnterpriseKeyword] = useState('')
-  const [listView, setListView] = useState<'unreported' | 'reported' | 'all'>('unreported')
+  const [listView, setListView] = useState<ListView>('unreported')
   const [soeOptions, setSoeOptions] = useState<InvoiceCoverageSoeOption[]>([])
   const [loading, setLoading] = useState(true)
   const [loadErr, setLoadErr] = useState<string | null>(null)
@@ -52,13 +60,15 @@ export function AuditRelatedEnterprisePage() {
     coverage_ratio: number | null
   } | null>(null)
   const [listRows, setListRows] = useState<InvoiceCoverageMemberRow[]>([])
+  const [mappingRows, setMappingRows] = useState<InvoiceCoverageMappingStatusRow[]>([])
+  const [mappingHint, setMappingHint] = useState<string | null>(null)
   const [listTotal, setListTotal] = useState(0)
   const [listLimit, setListLimit] = useState(2000)
 
   const yearOptions = useMemo(() => buildYearOptions(statYears), [statYears])
   const effectiveStatYear = useMemo(() => {
-    const t = statYear.trim()
-    if (t && yearOptions.includes(t)) return t
+    const y = statYear.trim()
+    if (y && yearOptions.includes(y)) return y
     return yearOptions[0] ?? ''
   }, [statYear, yearOptions])
 
@@ -86,9 +96,10 @@ export function AuditRelatedEnterprisePage() {
       }
       setViewsReady(Boolean(m.views_ready))
       setMetaHint(m.hint)
+      setMappingStatusReady(Boolean(m.mapping_status_ready))
       const ys = m.stat_years ?? []
       setStatYears(ys)
-      setGroupMemberYears(m.group_member_stat_years ?? [])
+      setRosterYears(m.roster_stat_years ?? m.group_member_stat_years ?? [])
       setLevel1Years(m.level1_stat_years ?? [])
       const merged = buildYearOptions(ys)
       const def = defaultPracticeStatYear(merged, m.default_stat_year)
@@ -123,17 +134,16 @@ export function AuditRelatedEnterprisePage() {
       if (!y) {
         setSummary(null)
         setListRows([])
+        setMappingRows([])
         setListTotal(0)
         setLoading(false)
         return
       }
       setLoading(true)
       setLoadErr(null)
+      setMappingHint(null)
       try {
-        const [su, mem] = await Promise.all([
-          fetchInvoiceCoverageSummary(fetchParams, signal),
-          fetchInvoiceCoverageMembers({ ...fetchParams, listView, limit: 2000 }, signal),
-        ])
+        const su = await fetchInvoiceCoverageSummary(fetchParams, signal)
         if (signal?.aborted) return
         if (!su.ok) {
           if (!su.aborted) {
@@ -150,16 +160,49 @@ export function AuditRelatedEnterprisePage() {
             coverage_ratio: su.coverage_ratio ?? null,
           })
         }
-        if (!mem.ok) {
-          if (!mem.aborted) {
-            setLoadErr(mem.error?.message ?? '列表失败')
+
+        if (listView === 'mapping_pending') {
+          const map = await fetchInvoiceCoverageMappingStatus(
+            {
+              statYear: y,
+              enterpriseKw: fetchParams.enterpriseKw,
+              matchStatus: 'pending',
+              limit: 2000,
+            },
+            signal,
+          )
+          if (signal?.aborted) return
+          if (!map.ok) {
+            if (!map.aborted) {
+              setLoadErr(map.error?.message ?? '映射质检列表失败')
+              setMappingRows([])
+              setListTotal(0)
+            }
+          } else {
+            setMappingRows(map.rows ?? [])
+            setListTotal(map.total ?? 0)
+            setListLimit(map.limit ?? 2000)
+            setMappingHint(map.hint ?? null)
             setListRows([])
-            setListTotal(0)
           }
         } else {
-          setListRows(mem.rows ?? [])
-          setListTotal(mem.total ?? 0)
-          setListLimit(mem.limit ?? 2000)
+          const mem = await fetchInvoiceCoverageMembers(
+            { ...fetchParams, listView, limit: 2000 },
+            signal,
+          )
+          if (signal?.aborted) return
+          if (!mem.ok) {
+            if (!mem.aborted) {
+              setLoadErr(mem.error?.message ?? '列表失败')
+              setListRows([])
+              setListTotal(0)
+            }
+          } else {
+            setListRows(mem.rows ?? [])
+            setListTotal(mem.total ?? 0)
+            setListLimit(mem.limit ?? 2000)
+            setMappingRows([])
+          }
         }
       } finally {
         setLoading(false)
@@ -204,26 +247,52 @@ export function AuditRelatedEnterprisePage() {
       ? ui.reportedTitle
       : listView === 'all'
         ? ui.allListTitle
-        : ui.unreportedTitle
+        : listView === 'unmapped'
+          ? ui.unmappedTitle
+          : listView === 'mapping_pending'
+            ? ui.mappingPendingTitle
+            : ui.unreportedTitle
+
   const currentListHint =
     listView === 'reported'
       ? ui.reportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
       : listView === 'all'
         ? ui.allListHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
-        : ui.unreportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
+        : listView === 'unmapped'
+          ? ui.unmappedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
+          : listView === 'mapping_pending'
+            ? ui.mappingPendingHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
+            : ui.unreportedHint.replace('{year}', effectiveStatYear || '—').replace('{count}', String(listTotal))
 
-  const hasGroupMembersForYear = groupMemberYears.includes(effectiveStatYear)
-  const hasLevel1OnlyForYear =
-    !hasGroupMembersForYear && level1Years.includes(effectiveStatYear)
+  const hasRosterForYear = rosterYears.includes(effectiveStatYear)
+  const hasLevel1OnlyForYear = !hasRosterForYear && level1Years.includes(effectiveStatYear)
   const emptyListMessage =
     viewsReady === false || viewsReady === null
       ? ui.emptyByData
-      : viewsReady && hasLevel1OnlyForYear
-        ? ui.emptyLevel1WithoutGroup
-        : viewsReady && groupMemberYears.length === 0
-          ? ui.emptyNoGroupYear
-          : ui.emptyByFilter
+      : listView === 'mapping_pending'
+        ? mappingHint || ui.mappingPendingEmpty
+        : viewsReady && hasLevel1OnlyForYear
+          ? ui.emptyLevel1WithoutGroup
+          : viewsReady && rosterYears.length === 0
+            ? ui.emptyNoGroupYear
+            : ui.emptyByFilter
   const showBadge = String(ui.prototypeBadge ?? '').trim().length > 0
+
+  const goSubjectLibrary = (keyword: string) => {
+    if (props.onNav) navToSubjectLibrary(props.onNav, keyword)
+  }
+
+  const goMappingTask = () => {
+    if (props.onNav) navToDwdDimWithTask(props.onNav, DWD_DIM_EXTRA_FOCUS_TASKS.enterpriseMappingCheck)
+  }
+
+  const listTabs: { key: ListView; label: string }[] = [
+    { key: 'unreported', label: ui.listViewUnreported },
+    { key: 'reported', label: ui.listViewReported },
+    { key: 'all', label: ui.listViewAll },
+    { key: 'unmapped', label: ui.listViewUnmapped },
+    { key: 'mapping_pending', label: ui.listViewMappingPending },
+  ]
 
   return (
     <div className="w-full px-5 py-6">
@@ -303,34 +372,75 @@ export function AuditRelatedEnterprisePage() {
         </div>
         <div className="rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2.5">
           <div className="mb-2 text-il-label text-text-3">{ui.coreMetricsTitle}</div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             {[
               { label: ui.auditKpiAll, value: summary ? String(summary.member_row_count) : '—' },
               { label: ui.auditKpiRelated, value: summary ? String(summary.reported_both_members) : '—' },
               { label: ui.auditKpiUnreported, value: summary ? String(pendingInDenominator) : '—' },
+              {
+                label: ui.listViewUnmapped,
+                value: summary ? String(summary.unmapped_member_rows) : '—',
+                onClick: summary && summary.unmapped_member_rows > 0 ? () => setListView('unmapped') : undefined,
+              },
               { label: ui.compareCoverageLabel, value: coverageRateStr },
             ].map((item) => (
               <div key={item.label}>
                 <div className="text-il-label text-text-3">{item.label}</div>
-                <div className="mt-1 text-[16px] font-semibold tabular-nums text-text">{item.value}</div>
+                {item.onClick ? (
+                  <button
+                    type="button"
+                    className="mt-1 text-[16px] font-semibold tabular-nums text-amber-900 underline decoration-dotted underline-offset-2 hover:text-amber-700"
+                    onClick={item.onClick}
+                  >
+                    {item.value}
+                  </button>
+                ) : (
+                  <div className="mt-1 text-[16px] font-semibold tabular-nums text-text">{item.value}</div>
+                )}
               </div>
             ))}
           </div>
           {summary && summary.unmapped_member_rows > 0 ? (
-            <div className="mt-2 text-il-meta text-amber-900">
-              {ui.unmappedMembersHint.replace('{count}', String(summary.unmapped_member_rows))}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-il-meta text-amber-900">
+              <span>{ui.unmappedMembersHint.replace('{count}', String(summary.unmapped_member_rows))}</span>
+              <button
+                type="button"
+                className="rounded-sm border border-amber-300 bg-amber-50 px-2 py-0.5 text-il-label text-amber-900 hover:bg-amber-100"
+                onClick={() => setListView('unmapped')}
+              >
+                {ui.unmappedMembersAction}
+              </button>
+              {props.onNav ? (
+                <button
+                  type="button"
+                  className="rounded-sm border border-amber-300 bg-white px-2 py-0.5 text-il-label text-amber-900 hover:bg-amber-50"
+                  onClick={() => goSubjectLibrary('')}
+                >
+                  {ui.unmappedMembersGoSubject}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {!mappingStatusReady && listView === 'mapping_pending' ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-il-meta text-text-3">
+              <span>{ui.mappingPendingEmpty}</span>
+              {props.onNav ? (
+                <button
+                  type="button"
+                  className="rounded-sm border border-border bg-white px-2 py-0.5 text-il-label text-accent hover:border-accent"
+                  onClick={goMappingTask}
+                >
+                  {ui.mappingPendingRunTask}
+                </button>
+              ) : null}
             </div>
           ) : null}
         </div>
       </Card>
 
       <Card title={currentListTitle}>
-        <div className="mb-3 flex items-center gap-2">
-          {[
-            { key: 'unreported' as const, label: ui.listViewUnreported },
-            { key: 'reported' as const, label: ui.listViewReported },
-            { key: 'all' as const, label: ui.listViewAll },
-          ].map((item) => (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {listTabs.map((item) => (
             <button
               key={item.key}
               type="button"
@@ -343,6 +453,9 @@ export function AuditRelatedEnterprisePage() {
               onClick={() => setListView(item.key)}
             >
               {item.label}
+              {item.key === 'unmapped' && summary && summary.unmapped_member_rows > 0
+                ? ` (${summary.unmapped_member_rows})`
+                : ''}
             </button>
           ))}
         </div>
@@ -352,44 +465,121 @@ export function AuditRelatedEnterprisePage() {
             当前仅展示前 {listLimit} 条，共命中 {listTotal} 条，请缩小筛选条件。
           </div>
         ) : null}
-        <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1320px] border-collapse text-il-page-desc">
-            <thead>
-              <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
-                <th className="px-3 py-2 font-medium">{ui.colEnterpriseName}</th>
-                <th className="px-3 py-2 font-medium">{ui.colTaxpayerId}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColStateInvestor}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColMgmtLevel}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColMgmtParent}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColPropertyLevel}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColPropertyParent}</th>
-                <th className="px-3 py-2 font-medium">{ui.unreportedColLastBatch}</th>
-              </tr>
-            </thead>
-            <tbody className="text-text-2">
-              {listRows.length > 0 ? (
-                listRows.map((row) => (
-                  <tr key={`${row.enterprise_id}_${row.soe_anchor_enterprise_id}`} className="border-b border-border-light last:border-b-0">
-                    <td className="px-3 py-2.5 font-medium text-text">{row.enterprise_name || '—'}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.enterprise_id || '—'}</td>
-                    <td className="px-3 py-2.5">{row.soe_anchor_enterprise_name || row.soe_anchor_enterprise_id || '—'}</td>
-                    <td className="px-3 py-2.5 text-text-3">—</td>
-                    <td className="px-3 py-2.5">{row.mgmt_parent_enterprise_name || '—'}</td>
-                    <td className="px-3 py-2.5">{row.equity_level != null ? row.equity_level : '—'}</td>
-                    <td className="px-3 py-2.5">{row.equity_parent_enterprise_name || '—'}</td>
-                    <td className="px-3 py-2.5">{row.year_last_seen_batch_id || '—'}</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td className="px-3 py-6 text-center text-text-3" colSpan={8}>
-                    {emptyListMessage}
-                  </td>
+        {listView === 'mapping_pending' ? (
+          <div className="overflow-x-auto rounded-sm border border-border-light">
+            <table className="w-full min-w-[1080px] border-collapse text-il-page-desc">
+              <thead>
+                <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
+                  <th className="px-3 py-2 font-medium">{ui.colEnterpriseName}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colTaxpayerId}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colMapStatus}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colPendingReason}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colMatchKey}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colLinkedEnterprise}</th>
+                  {props.onNav ? <th className="px-3 py-2 font-medium">{ui.colActions}</th> : null}
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="text-text-2">
+                {mappingRows.length > 0 ? (
+                  mappingRows.map((row) => (
+                    <tr key={`${row.taxpayer_id}_${row.enterprise_name_std}`} className="border-b border-border-light last:border-b-0">
+                      <td className="px-3 py-2.5 font-medium text-text">{row.enterprise_name_raw || '—'}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.taxpayer_id || '—'}</td>
+                      <td className="px-3 py-2.5">{row.match_status_label || row.match_status || '—'}</td>
+                      <td className="px-3 py-2.5">{row.pending_reason_label || row.pending_reason || '—'}</td>
+                      <td className="px-3 py-2.5 text-text-3">{row.match_key || '—'}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px]">{row.linked_enterprise_id || '—'}</td>
+                      {props.onNav ? (
+                        <td className="px-3 py-2.5">
+                          <button
+                            type="button"
+                            className="text-il-label text-accent hover:underline"
+                            onClick={goMappingTask}
+                          >
+                            {ui.mappingPendingRunTask}
+                          </button>
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td className="px-3 py-6 text-center text-text-3" colSpan={props.onNav ? 7 : 6}>
+                      {emptyListMessage}
+                      {props.onNav && !mappingStatusReady ? (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            className="rounded-sm border border-border bg-white px-2.5 py-1 text-il-label text-accent hover:border-accent"
+                            onClick={goMappingTask}
+                          >
+                            {ui.mappingPendingRunTask}
+                          </button>
+                        </div>
+                      ) : null}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-sm border border-border-light">
+            <table className="w-full min-w-[1320px] border-collapse text-il-page-desc">
+              <thead>
+                <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
+                  <th className="px-3 py-2 font-medium">{ui.colEnterpriseName}</th>
+                  <th className="px-3 py-2 font-medium">{ui.colTaxpayerId}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColStateInvestor}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColMgmtLevel}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColMgmtParent}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColPropertyLevel}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColPropertyParent}</th>
+                  <th className="px-3 py-2 font-medium">{ui.unreportedColLastBatch}</th>
+                  {listView === 'unmapped' && props.onNav ? (
+                    <th className="px-3 py-2 font-medium">{ui.colActions}</th>
+                  ) : null}
+                </tr>
+              </thead>
+              <tbody className="text-text-2">
+                {listRows.length > 0 ? (
+                  listRows.map((row) => (
+                    <tr key={`${row.enterprise_id}_${row.soe_anchor_enterprise_id}`} className="border-b border-border-light last:border-b-0">
+                      <td className="px-3 py-2.5 font-medium text-text">{row.enterprise_name || '—'}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.enterprise_id || '—'}</td>
+                      <td className="px-3 py-2.5">{row.soe_anchor_enterprise_name || row.soe_anchor_enterprise_id || '—'}</td>
+                      <td className="px-3 py-2.5 text-text-3">—</td>
+                      <td className="px-3 py-2.5">{row.mgmt_parent_enterprise_name || '—'}</td>
+                      <td className="px-3 py-2.5">{row.equity_level != null ? row.equity_level : '—'}</td>
+                      <td className="px-3 py-2.5">{row.equity_parent_enterprise_name || '—'}</td>
+                      <td className="px-3 py-2.5">{row.year_last_seen_batch_id || '—'}</td>
+                      {listView === 'unmapped' && props.onNav ? (
+                        <td className="px-3 py-2.5">
+                          <button
+                            type="button"
+                            className="text-il-label text-accent hover:underline"
+                            onClick={() => goSubjectLibrary(row.enterprise_id || row.enterprise_name)}
+                          >
+                            {ui.unmappedMembersGoSubject}
+                          </button>
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td
+                      className="px-3 py-6 text-center text-text-3"
+                      colSpan={listView === 'unmapped' && props.onNav ? 9 : 8}
+                    >
+                      {emptyListMessage}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
     </div>
   )

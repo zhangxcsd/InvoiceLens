@@ -31,6 +31,12 @@ export type ImportEvent =
         total_files: number
         target_sheet_keys: string[]
         fail_policy: ImportFailPolicy
+        import_session_id?: string
+        field_mapping_template?: {
+          template_id: string
+          template_name: string
+          template_updated_at?: string
+        }
       }
     })
   | (ImportEventBase & {
@@ -81,6 +87,13 @@ export type ImportEvent =
         success_files: number
         failed_files: number
         skipped_files: number
+        batch_date?: string
+        import_session_id?: string
+        field_mapping_template?: {
+          template_id: string
+          template_name: string
+          template_updated_at?: string
+        }
       }
     })
   | (ImportEventBase & {

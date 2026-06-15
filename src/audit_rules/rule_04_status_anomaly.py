@@ -14,7 +14,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import IS_CANCEL, entity_filter, norm_tax
+from src.audit_rules._sql_common import IS_CANCEL, entity_filter, flag_detail_json, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -81,6 +81,11 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议排查作废原因分类（误开、退货、违规冲销），并核对作废票是否仍被用于入账。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    void_rate=rate,
+                    void_count=int(void_cnt or 0),
+                    total_count=int(total_cnt or 0),
+                ),
             }
         )
 
@@ -133,6 +138,12 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议重点核查该供应商交易真实性及作废票的会计处理。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    void_rate=rate,
+                    void_count=int(void_cnt or 0),
+                    total_count=int(total_cnt or 0),
+                ),
             }
         )
 

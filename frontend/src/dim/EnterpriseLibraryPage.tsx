@@ -4,6 +4,8 @@ import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
 import { navToDwdDimWithTask, SUBJECT_DIM_TASK } from '../dwd/dwdDimNav'
+import { clearSubjectLibraryPrefill, readSubjectLibraryPrefill } from './subjectLibraryNav'
+import { useDimDict } from './useDimDict'
 import {
   fetchSubjectLibraryInvoiceHeaders,
   fetchSubjectLibraryOrgCategoryOptions,
@@ -67,6 +69,7 @@ function normalizeSubjectSourceType(api: string | undefined): 'platform' | 'exte
 
 export function EnterpriseLibraryPage(props: { onNav?: (k: NavKey) => void }) {
   const ui = t.enterpriseLibraryUi
+  const dimDict = useDimDict()
   const [rows, setRows] = useState<EnterpriseRow[]>([])
   const [summary, setSummary] = useState({
     total: 0,
@@ -133,6 +136,15 @@ export function EnterpriseLibraryPage(props: { onNav?: (k: NavKey) => void }) {
     [batchId, categoryReview, keyword, renameSignal, reloadSeq, sourceType, subjectCategory, subjectType, pageSize],
   )
   const prevFilterListKeyRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const prefill = readSubjectLibraryPrefill()
+    if (prefill) {
+      setKeyword(prefill)
+      setPage(1)
+      clearSubjectLibraryPrefill()
+    }
+  }, [])
 
   const orgCategoryCodeSet = useMemo(
     () => new Set(orgCategoryOptions.map((o) => o.category_code)),
@@ -912,7 +924,11 @@ export function EnterpriseLibraryPage(props: { onNav?: (k: NavKey) => void }) {
                           <td className="max-w-[160px] truncate px-3 py-2.5 text-il-meta text-text-3" title={row.categoryStatusNote}>
                             {row.categoryStatusNote || '—'}
                           </td>
-                          <td className="px-3 py-2.5 text-il-meta">{row.qualityStatus}</td>
+                          <td className="px-3 py-2.5 text-il-meta">
+                            {row.qualityStatus
+                              ? dimDict.getLabel('quality_status', row.qualityStatus)
+                              : '—'}
+                          </td>
                         </>
                       ) : null}
                     </tr>
@@ -1051,8 +1067,11 @@ export function EnterpriseLibraryPage(props: { onNav?: (k: NavKey) => void }) {
                 onChange={(e) => setRepairSubjectCategoryApi(e.target.value as 'org' | 'person')}
                 disabled={repairBusy}
               >
-                <option value="org">{ui.subjectTypeEnterprise}（org）</option>
-                <option value="person">{ui.subjectTypePerson}（person）</option>
+                {dimDict.getOptions('subject_category_domain').map((o) => (
+                  <option key={o.code} value={o.code}>
+                    {o.label}（{o.code}）
+                  </option>
+                ))}
               </select>
             </label>
             <label className="mb-3 block text-il-label text-text-2">

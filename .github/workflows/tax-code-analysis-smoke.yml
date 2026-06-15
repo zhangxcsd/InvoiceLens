@@ -1,0 +1,31 @@
+name: Tax Code Analysis Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/tax_code_analysis_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_tax_code_analysis_api_smoke.py'
+      - '.github/workflows/tax-code-analysis-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/tax_code_analysis_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_tax_code_analysis_api_smoke.py'
+      - '.github/workflows/tax-code-analysis-smoke.yml'
+
+jobs:
+  tax-code-analysis-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Run tax code analysis API smoke tests
+        run: python scripts/test_tax_code_analysis_api_smoke.py

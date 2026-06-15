@@ -20,6 +20,7 @@ class AuditFlagRow(TypedDict, total=False):
     description: str
     suggestion: str
     analysis_batch: str
+    detail_json: str | None
 
 
 RuleContext = dict[str, Any]

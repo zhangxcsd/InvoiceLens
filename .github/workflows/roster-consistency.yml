@@ -1,0 +1,40 @@
+name: Roster Consistency
+
+on:
+  push:
+    paths:
+      - 'config/ddl/**'
+      - 'scripts/check_enterprise_year_roster_consistency.sql'
+      - 'scripts/test_roster_consistency_repair.py'
+      - 'scripts/test_enterprise_year_roster_manual.py'
+      - 'src/local_api/enterprise_year_roster_*.py'
+      - 'src/local_api/enterprise_year_roster_api.py'
+      - '.github/workflows/roster-consistency.yml'
+  pull_request:
+    paths:
+      - 'config/ddl/**'
+      - 'scripts/check_enterprise_year_roster_consistency.sql'
+      - 'scripts/test_roster_consistency_repair.py'
+      - 'scripts/test_enterprise_year_roster_manual.py'
+      - 'src/local_api/enterprise_year_roster_*.py'
+      - 'src/local_api/enterprise_year_roster_api.py'
+      - '.github/workflows/roster-consistency.yml'
+
+jobs:
+  roster-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Validate consistency SQL structure and repair logic
+        run: python scripts/test_roster_consistency_repair.py
+
+      - name: Smoke test roster manual sync
+        run: python scripts/test_enterprise_year_roster_manual.py

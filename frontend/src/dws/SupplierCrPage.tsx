@@ -1,14 +1,30 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsSupplierCr } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
-import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { formatDwsAmount, formatDwsPct, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
+
+function normTaxId(v: string): string {
+  return v.replace(/[\s-]+/g, '').toUpperCase()
+}
 
 export function SupplierCrPage() {
   const ui = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true })
+  const deepLink = useDwsUrlDeepLinkFilter()
+  const highlightSupplierId = useMemo(() => {
+    const raw = deepLink.urlQuery.seller_tax_no?.trim()
+    return raw ? normTaxId(raw) : ''
+  }, [deepLink.urlQuery.seller_tax_no])
+  const supplierContextHint = useMemo(() => {
+    if (!highlightSupplierId) return null
+    return ui.flagContextSupplierHint.replace(
+      '{id}',
+      deepLink.urlQuery.seller_tax_no?.trim() || highlightSupplierId,
+    )
+  }, [highlightSupplierId, deepLink.urlQuery.seller_tax_no, ui])
+  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [cr, setCr] = useState<{
@@ -28,7 +44,11 @@ export function SupplierCrPage() {
     setErr(null)
     try {
       const res = await fetchDwsSupplierCr(
-        { statYear: f.effectiveYear, entityId: f.entityId.trim() },
+        {
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim(),
+          ...deepLink.timeFilterParams,
+        },
         signal,
       )
       if (signal?.aborted || res.aborted) return
@@ -47,7 +67,7 @@ export function SupplierCrPage() {
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, deepLink.timeFilterParams, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -59,6 +79,10 @@ export function SupplierCrPage() {
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.supplierCrTitle} note={ui.supplierCrDesc} noteTone="plain" />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {deepLink.flagContextHint ? (
+        <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
+      ) : null}
+      {supplierContextHint ? <p className="mb-2 text-il-meta text-amber-800">{supplierContextHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 

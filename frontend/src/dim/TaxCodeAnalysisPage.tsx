@@ -1,53 +1,204 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { PrototypePageHeader } from '../components/PrototypePageHeader'
+import { DimTablePagination } from './DimTablePagination'
+import {
+  fetchTaxCodeAnalysisOverview,
+  fetchTaxCodeAnalysisUnmatched,
+  postTaxCodeSyncFlags,
+  type TaxCodeAnalysisOverview,
+  type TaxCodeUnmatchedRow,
+} from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-
-type UnmatchedRow = {
-  ssflbm: string
-  lineCount: number
-  amountSum: string
-  sampleInvoices: string
-}
-
-const unmatchedSeed: UnmatchedRow[] = [
-  { ssflbm: '9999999999999999999', lineCount: 12, amountSum: '128,430.00', sampleInvoices: '3 张发票' },
-  { ssflbm: '（空）', lineCount: 4, amountSum: '0.00', sampleInvoices: '2 张发票' },
-]
+import { formatDwsAmount, formatDwsPct, useDwsFilters } from '../dws/useDwsFilters'
+import { readNavQueryParams } from '../utils/navHelpers'
 
 export function TaxCodeAnalysisPage() {
   const ui = t.taxCodeAnalysisUi
-  const [statYear, setStatYear] = useState('2026')
+  const pagUi = t.dimDataTableUi
+  const dash = t.dwsDashboardUi
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const f = useDwsFilters(false, { initFromUrl: true })
   const [batchKeyword, setBatchKeyword] = useState('')
+  const [overview, setOverview] = useState<TaxCodeAnalysisOverview | null>(null)
+  const [rows, setRows] = useState<TaxCodeUnmatchedRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [loadingOverview, setLoadingOverview] = useState(false)
+  const [loadingTable, setLoadingTable] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
-  const filteredUnmatched = useMemo(() => {
-    const kw = batchKeyword.trim().toLowerCase()
-    if (!kw) return unmatchedSeed
-    return unmatchedSeed.filter((r) => r.ssflbm.toLowerCase().includes(kw))
-  }, [batchKeyword])
+  const deepGoodsName = urlQuery.goods_name?.trim() || undefined
+  const deepSlvNum = urlQuery.slv_num?.trim() || undefined
+  const flagContextHint = useMemo(() => {
+    if (!deepGoodsName) return null
+    const rate = deepSlvNum ? `${(parseFloat(deepSlvNum) * 100).toFixed(1)}%` : '—'
+    return dash.flagContextGoodsHint.replace('{goods}', deepGoodsName).replace('{rate}', rate)
+  }, [dash, deepGoodsName, deepSlvNum])
+
+  const yearOptions = useMemo(() => {
+    const fromApi = overview?.stat_years ?? []
+    const merged = new Set<string>([...f.yearOptions, ...fromApi])
+    return [...merged].sort((a, b) => Number(b) - Number(a))
+  }, [f.yearOptions, overview?.stat_years])
+
+  const loadOverview = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!f.effectiveYear) return
+      setLoadingOverview(true)
+      try {
+        const res = await fetchTaxCodeAnalysisOverview(
+          {
+            statYear: f.effectiveYear,
+            entityId: f.entityId.trim() || undefined,
+            goodsName: deepGoodsName,
+            slvNum: deepSlvNum,
+          },
+          signal,
+        )
+        if (signal?.aborted || res.aborted) return
+        if (!res.ok) {
+          setErr(res.error?.message ?? ui.loadFailed)
+          setOverview(null)
+          return
+        }
+        setOverview(res.data ?? null)
+        if (res.data?.stat_years?.length) {
+          const ys = res.data.stat_years
+          if (!ys.includes(f.effectiveYear)) {
+            f.setStatYear(ys[0] ?? f.effectiveYear)
+          }
+        }
+      } finally {
+        setLoadingOverview(false)
+      }
+    },
+    [deepGoodsName, deepSlvNum, f.effectiveYear, f.entityId, f.setStatYear, ui.loadFailed],
+  )
+
+  const loadUnmatched = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!f.effectiveYear) return
+      setLoadingTable(true)
+      try {
+        const res = await fetchTaxCodeAnalysisUnmatched(
+          {
+            statYear: f.effectiveYear,
+            entityId: f.entityId.trim() || undefined,
+            keyword: batchKeyword.trim() || undefined,
+            goodsName: deepGoodsName,
+            slvNum: deepSlvNum,
+            page,
+            pageSize,
+          },
+          signal,
+        )
+        if (signal?.aborted || res.aborted) return
+        if (!res.ok) {
+          setErr(res.error?.message ?? ui.loadFailed)
+          setRows([])
+          setTotal(0)
+          return
+        }
+        setErr(null)
+        setRows(res.rows ?? [])
+        setTotal(res.total ?? 0)
+      } finally {
+        setLoadingTable(false)
+      }
+    },
+    [batchKeyword, deepGoodsName, deepSlvNum, f.effectiveYear, f.entityId, page, pageSize, ui.loadFailed],
+  )
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void loadOverview(ac.signal)
+    return () => ac.abort()
+  }, [loadOverview])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void loadUnmatched(ac.signal)
+    return () => ac.abort()
+  }, [loadUnmatched])
+
+  useEffect(() => {
+    setPage(1)
+  }, [f.effectiveYear, batchKeyword, pageSize])
+
+  const hint = overview?.hint ?? null
+  const caliberHint = overview?.caliber_hint ?? null
+
+  const syncFlags = async () => {
+    if (!f.effectiveYear) return
+    setSyncing(true)
+    setSyncMsg(null)
+    const res = await postTaxCodeSyncFlags({ statYear: f.effectiveYear })
+    setSyncing(false)
+    if (!res.ok) {
+      setErr(res.error?.message ?? ui.syncFlagsFailed)
+      return
+    }
+    setSyncMsg(
+      ui.syncFlagsOk
+        .replace('{inserted}', String(res.inserted ?? 0))
+        .replace('{updated}', String(res.updated ?? 0))
+        .replace('{skipped}', String(res.skipped_confirmed ?? 0)),
+    )
+  }
+
+  const kpiItems = useMemo(
+    () => [
+      {
+        label: ui.kpiMatchRate,
+        value: formatDwsPct(overview?.match_rate),
+        cls: 'text-accent' as const,
+      },
+      {
+        label: ui.kpiUnmatchedLines,
+        value: String(overview?.unmatched_line_count ?? '—'),
+        cls: 'text-warn' as const,
+      },
+      {
+        label: ui.kpiHighRiskAmountShare,
+        value: formatDwsPct(overview?.high_risk_amount_share),
+        cls: 'text-danger' as const,
+      },
+      {
+        label: ui.kpiTopCategoryShare,
+        value: overview?.top_category_name
+          ? `${formatDwsPct(overview.top_category_share)} · ${overview.top_category_name}`
+          : formatDwsPct(overview?.top_category_share),
+        cls: 'text-text' as const,
+      },
+    ],
+    [overview, ui],
+  )
 
   return (
     <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <div className="flex items-center gap-2">
-          <h1 className="text-il-page-title font-semibold text-text">{ui.pageTitle}</h1>
-          <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-2 py-0.5 text-il-soon font-semibold text-accent">
-            {ui.prototypeBadge}
-          </span>
-        </div>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{ui.pageDesc}</p>
-        <p className="mt-2 text-il-meta text-text-3">{ui.prototypeNote}</p>
-      </div>
+      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
+      {hint ? <p className="mb-2 text-il-meta text-amber-800">{hint}</p> : null}
+      {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          { label: ui.kpiMatchRate, value: '98.42%', cls: 'text-accent' },
-          { label: ui.kpiUnmatchedLines, value: String(filteredUnmatched.reduce((s, r) => s + r.lineCount, 0)), cls: 'text-warn' },
-          { label: ui.kpiHighRiskAmountShare, value: '6.8%', cls: 'text-danger' },
-          { label: ui.kpiTopCategoryShare, value: '12.1%', cls: 'text-text' },
-        ].map((item) => (
+        {kpiItems.map((item) => (
           <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
             <div className="text-il-label text-text-3">{item.label}</div>
-            <div className={['mt-1 text-[20px] font-bold tabular-nums', item.cls].join(' ')}>{item.value}</div>
+            <div
+              className={[
+                'mt-1 text-[20px] font-bold tabular-nums',
+                item.cls,
+                loadingOverview ? 'opacity-50' : '',
+              ].join(' ')}
+            >
+              {loadingOverview ? pagUi.tableLoading : item.value}
+            </div>
           </div>
         ))}
       </div>
@@ -58,12 +209,15 @@ export function TaxCodeAnalysisPage() {
             <label className="mb-1 block text-il-label font-medium text-text-2">{ui.statYearLabel}</label>
             <select
               className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-              value={statYear}
-              onChange={(e) => setStatYear(e.target.value)}
+              value={f.effectiveYear}
+              onChange={(e) => f.setStatYear(e.target.value)}
+              disabled={f.loadingMeta}
             >
-              <option value="2026">2026</option>
-              <option value="2025">2025</option>
-              <option value="2024">2024</option>
+              {yearOptions.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
             </select>
           </div>
           <div>
@@ -77,6 +231,26 @@ export function TaxCodeAnalysisPage() {
           </div>
         </div>
         <p className="mt-2 text-il-meta text-text-3">{ui.scopeHint}</p>
+        {caliberHint ? (
+          <p className="mt-1 text-il-meta text-text-3">
+            {ui.caliberHintLabel}：{caliberHint}
+          </p>
+        ) : null}
+      </Card>
+
+      <Card title={ui.syncFlagsBtn}>
+        <p className="mb-3 text-il-meta text-text-3">{ui.syncFlagsHint}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={syncing || !f.effectiveYear}
+            className="rounded-sm border border-accent bg-accent px-3 py-1.5 text-il-btn text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => void syncFlags()}
+          >
+            {syncing ? ui.syncFlagsBusy : ui.syncFlagsBtn}
+          </button>
+          {syncMsg ? <span className="text-il-meta text-text-2">{syncMsg}</span> : null}
+        </div>
       </Card>
 
       <Card title={ui.unmatchedTableTitle}>
@@ -92,25 +266,42 @@ export function TaxCodeAnalysisPage() {
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {filteredUnmatched.map((row) => (
-                <tr key={row.ssflbm} className="border-b border-border-light last:border-b-0">
-                  <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.ssflbm}</td>
-                  <td className="px-3 py-2.5">{row.lineCount}</td>
-                  <td className="px-3 py-2.5">{row.amountSum}</td>
-                  <td className="px-3 py-2.5">{row.sampleInvoices}</td>
+              {loadingTable ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-6 text-center text-il-meta text-text-3">
+                    {pagUi.tableLoading}
+                  </td>
                 </tr>
-              ))}
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-3 py-6 text-center text-il-meta text-text-3">
+                    {ui.emptyUnmatched}
+                  </td>
+                </tr>
+              ) : (
+                rows.map((row) => (
+                  <tr key={row.ssflbm} className="border-b border-border-light last:border-b-0">
+                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.ssflbm}</td>
+                    <td className="px-3 py-2.5">{row.line_count}</td>
+                    <td className="px-3 py-2.5">{formatDwsAmount(row.amount_sum)}</td>
+                    <td className="px-3 py-2.5">
+                      {row.sample_invoice_count} {ui.sampleInvoicesUnit}
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
-      </Card>
-
-      <Card title={ui.nextCardTitle}>
-        <ul className="list-inside list-disc space-y-1 text-il-page-desc text-text-2">
-          {ui.nextBullets.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
+        <DimTablePagination
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          loading={loadingTable}
+          ui={pagUi}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+        />
       </Card>
     </div>
   )

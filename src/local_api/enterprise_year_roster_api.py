@@ -1,5 +1,5 @@
 """
-企业年度花名册（dim_enterprise_year_roster）只读查询 API。
+企业年度花名册（dim_enterprise_year_roster）查询与维护 API。
 """
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ import logging
 import re
 from datetime import date
 from typing import Any
+
+from src.local_api.enterprise_year_roster_build import ensure_enterprise_year_roster_schema
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,7 @@ def _build_list_where(
     state_investor: str = "",
     state_investor_code: str = "",
     quality_status: str = "",
+    data_source: str = "",
 ) -> tuple[str, list[Any]]:
     clauses = ["stat_year = ?"]
     params: list[Any] = [year_i]
@@ -128,6 +131,10 @@ def _build_list_where(
     if qs in ("ok", "conflict"):
         clauses.append("lower(COALESCE(quality_status, '')) = ?")
         params.append(qs)
+    ds = (data_source or "").strip().lower()
+    if ds in ("registry", "manual", "registry+manual"):
+        clauses.append("lower(COALESCE(data_source, '')) = ?")
+        params.append(ds)
 
     return " AND ".join(clauses), params
 
@@ -160,6 +167,7 @@ def api_enterprise_year_roster_kpi(
     stat_year: str | None,
 ) -> dict[str, Any]:
     """年度 KPI 汇总（单次聚合，供顶栏卡片使用；比按国家出资企业 GROUP BY 更轻）。"""
+    ensure_enterprise_year_roster_schema(conn)
     year_i = _safe_int_year(stat_year)
     try:
         kpi = _roster_kpi_for_year(conn, year_i)
@@ -197,6 +205,10 @@ def _roster_list_page(
             quality_issue,
             source_record_id,
             updated_at,
+            COALESCE(in_registry, FALSE),
+            COALESCE(in_manual, FALSE),
+            data_source,
+            manual_note,
             COUNT(*) OVER()::BIGINT AS _total
         FROM dim_enterprise_year_roster
         WHERE {where_sql}
@@ -205,7 +217,7 @@ def _roster_list_page(
         """,
         [*params, lim, off],
     )
-    total = int(rows[0][9] or 0) if rows else 0
+    total = int(rows[0][13] or 0) if rows else 0
     return rows, total
 
 
@@ -223,6 +235,10 @@ def _rows_to_members(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
                 "quality_issue": str(r[6] or "") if r[6] else "",
                 "source_record_id": str(r[7] or "") if r[7] else "",
                 "updated_at": str(r[8] or "") if r[8] is not None else "",
+                "in_registry": bool(r[9]),
+                "in_manual": bool(r[10]),
+                "data_source": str(r[11] or "") if r[11] else "",
+                "manual_note": str(r[12] or "") if r[12] else "",
             }
         )
     return members
@@ -238,6 +254,7 @@ def api_enterprise_year_roster_bootstrap(
     offset: int = 0,
 ) -> dict[str, Any]:
     """首屏一次返回 meta + KPI + 列表（最少 SQL 往返）。"""
+    ensure_enterprise_year_roster_schema(conn)
     data_years = _roster_years(conn)
     options = _practice_year_options(data_years)
     year_i = _safe_int_year(stat_year or _default_practice_stat_year(options))
@@ -279,6 +296,7 @@ def api_enterprise_year_roster_bootstrap(
 
 
 def api_enterprise_year_roster_meta(conn: Any) -> dict[str, Any]:
+    ensure_enterprise_year_roster_schema(conn)
     data_years = _roster_years(conn)
     options = _practice_year_options(data_years)
     return {
@@ -296,6 +314,7 @@ def api_enterprise_year_roster_summary(
     stat_year: str | None,
     state_investor_kw: str = "",
 ) -> dict[str, Any]:
+    ensure_enterprise_year_roster_schema(conn)
     year_i = _safe_int_year(stat_year)
     kw = (state_investor_kw or "").strip().lower()
     clauses = ["CAST(stat_year AS INTEGER) = ?"]
@@ -357,9 +376,11 @@ def api_enterprise_year_roster_list(
     state_investor_kw: str = "",
     enterprise_kw: str = "",
     quality_status: str = "",
+    data_source: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
+    ensure_enterprise_year_roster_schema(conn)
     year_i = _safe_int_year(stat_year)
     lim = max(1, min(int(limit or 50), 500))
     off = max(0, int(offset or 0))
@@ -370,6 +391,7 @@ def api_enterprise_year_roster_list(
         state_investor=state_investor,
         state_investor_code=state_investor_code,
         quality_status=quality_status,
+        data_source=data_source,
     )
     try:
         page_rows, total = _roster_list_page(
@@ -391,4 +413,66 @@ def api_enterprise_year_roster_list(
         "total": total,
         "limit": lim,
         "offset": off,
+    }
+
+
+_INFO_CHECK_IDS = frozenset({"roster_row_count", "roster_quality_conflict"})
+
+
+def api_enterprise_year_roster_consistency(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    repair: bool = False,
+) -> dict[str, Any]:
+    """运行花名册一致性核对 SQL；可选 repair 修复 data_source 派生字段。"""
+    ensure_enterprise_year_roster_schema(conn)
+    year_i = _safe_int_year(stat_year)
+    from src.local_api.enterprise_year_roster_store import repair_roster_data_source
+
+    # 始终按 in_registry/in_manual 重算 data_source（幂等；修复 demo/迁移遗留，不影响正常数据）
+    repaired = repair_roster_data_source(conn, stat_year=year_i)
+    _ = repair  # 保留参数以兼容 ?repair=true 显式调用
+
+    from pathlib import Path
+
+    sql_path = Path(__file__).resolve().parents[2] / "scripts" / "check_enterprise_year_roster_consistency.sql"
+    try:
+        raw_sql = sql_path.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": {"message": f"读取核对脚本失败：{exc}"}}
+
+    sql = raw_sql.replace("CAST(2024 AS SMALLINT)", f"CAST({year_i} AS SMALLINT)", 1)
+    try:
+        rows = conn.execute(sql).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("roster consistency check failed")
+        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+    checks: list[dict[str, Any]] = []
+    hard_fail = 0
+    for r in rows or []:
+        check_id = str(r[0] or "")
+        description = str(r[1] or "")
+        violation_cnt = int(r[2] or 0)
+        is_info = check_id in _INFO_CHECK_IDS
+        failed = (not is_info) and violation_cnt > 0
+        if failed:
+            hard_fail += 1
+        checks.append(
+            {
+                "check_id": check_id,
+                "description": description,
+                "violation_cnt": violation_cnt,
+                "is_info": is_info,
+                "passed": not failed,
+            }
+        )
+    return {
+        "ok": hard_fail == 0,
+        "stat_year": str(year_i),
+        "checks": checks,
+        "hard_fail_count": hard_fail,
+        "repaired_rows": repaired,
+        "message": "核对通过" if hard_fail == 0 else f"发现 {hard_fail} 项硬违规",
     }

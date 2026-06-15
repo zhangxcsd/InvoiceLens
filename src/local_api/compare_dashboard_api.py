@@ -44,22 +44,45 @@ def _distinct_scorecard_years(conn: Any) -> list[str]:
 
 def api_compare_meta(conn: Any) -> dict[str, Any]:
     try:
+        from src.local_api.license_gate import check_cross_group_allowed, get_license_config
+
+        denied = check_cross_group_allowed()
+        if denied:
+            return denied
+
         years = _distinct_scorecard_years(conn)
         cy = str(_calendar_year())
         default_y = cy if cy in years else years[0]
         cnt = 0
+        entity_cnt = 0
         try:
             cnt = int(conn.execute("SELECT COUNT(*)::BIGINT FROM ads_scorecard").fetchone()[0] or 0)
         except Exception:
             pass
+        try:
+            entity_cnt = int(
+                conn.execute("SELECT COUNT(DISTINCT entity_id)::BIGINT FROM ads_scorecard").fetchone()[0] or 0
+            )
+        except Exception:
+            pass
+        lic = get_license_config()
+        max_ent = lic.get("max_entities")
+        hints: list[str] = []
+        if cnt <= 0:
+            hints.append("评分卡尚无数据。请先完成 DWS 聚合与审计疑点扫描，再点击「刷新评分卡」。")
+        if isinstance(max_ent, int) and max_ent > 0 and entity_cnt > max_ent:
+            hints.append(
+                f"当前评分卡含 {entity_cnt} 个主体，超过试用版上限 {max_ent}。"
+                "对比分析结果可能不完整，升级授权后可解除限制。"
+            )
         return {
             "ok": True,
             "stat_years": years,
             "default_stat_year": default_y,
             "scorecard_ready": cnt > 0,
-            "hint": None
-            if cnt > 0
-            else "评分卡尚无数据。请先完成 DWS 聚合与审计疑点扫描，再点击「刷新评分卡」。",
+            "entity_count": entity_cnt,
+            "max_entities": max_ent,
+            "hint": " ".join(hints) if hints else None,
         }
     except Exception as exc:
         return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
@@ -75,10 +98,33 @@ def api_compare_rank_list(
     offset: int = 0,
 ) -> dict[str, Any]:
     try:
+        from src.local_api.license_gate import check_cross_group_allowed, compare_entity_cap
+
+        denied = check_cross_group_allowed()
+        if denied:
+            return {**denied, "rows": [], "total": 0, "summary": {}}
+
         y = _safe_int_year(stat_year)
         from src.audit.config_loader import group_id_for_year
 
         gid = group_id_for_year(y)
+        entity_cap = compare_entity_cap()
+        entity_cap_clause = ""
+        cap_params: list[Any] = []
+        if entity_cap is not None:
+            entity_cap_clause = """
+            AND entity_id IN (
+                SELECT entity_id FROM (
+                    SELECT entity_id
+                    FROM ads_scorecard
+                    WHERE group_id = ? AND stat_year = ?
+                    GROUP BY entity_id
+                    ORDER BY MIN(risk_score) ASC NULLS LAST, entity_id
+                    LIMIT ?
+                ) capped
+            )
+            """
+            cap_params = [gid, y, entity_cap]
         clauses = ["group_id = ?", "stat_year = ?"]
         params: list[Any] = [gid, y]
         rl = (risk_level or "").strip()
@@ -90,12 +136,12 @@ def api_compare_rank_list(
             clauses.append("(entity_name ILIKE ? OR entity_id ILIKE ?)")
             like = f"%{kw}%"
             params.extend([like, like])
-        where = " AND ".join(clauses)
+        where = " AND ".join(clauses) + entity_cap_clause
         lim = max(1, min(int(limit or 500), 2000))
         off = max(0, int(offset or 0))
-
+        count_params = [*params, *cap_params]
         total = int(
-            conn.execute(f"SELECT COUNT(*)::BIGINT FROM ads_scorecard WHERE {where}", params).fetchone()[0]
+            conn.execute(f"SELECT COUNT(*)::BIGINT FROM ads_scorecard WHERE {where}", count_params).fetchone()[0]
             or 0
         )
         rows = conn.execute(
@@ -111,9 +157,10 @@ def api_compare_rank_list(
             ORDER BY risk_score ASC, flag_high DESC, total_amount DESC NULLS LAST, entity_id
             LIMIT ? OFFSET ?
             """,
-            [*params, lim, off],
+            [*count_params, lim, off],
         ).fetchall()
 
+        summary_where = "group_id = ? AND stat_year = ?" + entity_cap_clause
         summary_row = conn.execute(
             f"""
             SELECT
@@ -122,9 +169,9 @@ def api_compare_rank_list(
                 count(*) FILTER (WHERE risk_level = '关注')::BIGINT,
                 count(*) FILTER (WHERE risk_level = '重点关注')::BIGINT
             FROM ads_scorecard
-            WHERE group_id = ? AND stat_year = ?
+            WHERE {summary_where}
             """,
-            [gid, y],
+            count_params,
         ).fetchone()
         summary = {
             "total": int(summary_row[0] or 0) if summary_row else 0,
@@ -163,6 +210,8 @@ def api_compare_rank_list(
             "total": total,
             "summary": summary,
             "rows": out_rows,
+            "entity_cap": entity_cap,
+            "entity_cap_applied": entity_cap is not None,
         }
     except Exception as exc:
         logger.exception("compare_rank_list")
@@ -187,6 +236,12 @@ def api_compare_charts_series(
 ) -> dict[str, Any]:
     """返回子公司横向对比图表序列（Top N，基于 ads_scorecard）。"""
     try:
+        from src.local_api.license_gate import check_cross_group_allowed, compare_entity_cap
+
+        denied = check_cross_group_allowed()
+        if denied:
+            return {**denied, "series": []}
+
         y = _safe_int_year(stat_year)
         from src.audit.config_loader import group_id_for_year
 
@@ -196,6 +251,8 @@ def api_compare_charts_series(
             mkey = "amount"
         order_sql, value_col = _COMPARE_CHART_METRICS[mkey]
         lim = max(3, min(int(limit or 15), 30))
+        entity_cap = compare_entity_cap()
+        chart_cap = min(lim, entity_cap) if entity_cap is not None else lim
 
         out_rows_raw = conn.execute(
             f"""
@@ -207,7 +264,7 @@ def api_compare_charts_series(
             ORDER BY {order_sql}, entity_id
             LIMIT ?
             """,
-            [gid, y, lim],
+            [gid, y, chart_cap],
         ).fetchall()
 
         col_idx = {
@@ -273,6 +330,12 @@ def api_compare_charts_series(
 
 def api_compare_rebuild(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
     try:
+        from src.local_api.license_gate import check_cross_group_allowed
+
+        denied = check_cross_group_allowed()
+        if denied:
+            return denied
+
         from src.etl.ads_scorecard_build import refresh_ads_scorecard_years
 
         raw_years = body.get("stat_years")

@@ -1,0 +1,26 @@
+name: Audit Flag Confirm Smoke
+
+on:
+  push:
+    paths:
+      - 'scripts/test_audit_flag_confirm_smoke.py'
+      - 'src/local_api/audit_flag_api.py'
+      - '.github/workflows/audit-flag-confirm-smoke.yml'
+  pull_request:
+    paths:
+      - 'scripts/test_audit_flag_confirm_smoke.py'
+      - 'src/local_api/audit_flag_api.py'
+      - '.github/workflows/audit-flag-confirm-smoke.yml'
+
+jobs:
+  audit-flag-confirm-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install duckdb
+      - name: Run smoke
+        run: python scripts/test_audit_flag_confirm_smoke.py

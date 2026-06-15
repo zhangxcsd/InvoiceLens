@@ -20,6 +20,25 @@ DB_PATH = Path(os.getenv("INVOICELENS_DB_PATH") or _DEFAULT_DB_PATH)
 _tls = threading.local()
 
 
+def _is_conn_alive(conn: duckdb.DuckDBPyConnection) -> bool:
+    try:
+        conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _is_transient_db_open_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "file is already open" in msg
+        or "another process" in msg
+        or "进程无法访问" in msg
+        or "unique file handle conflict" in msg
+        or "already attached" in msg
+    )
+
+
 def get_db_mode() -> str:
     """
     数据库运行模式开关（避免“开发期自动清库”误入定版/生产）：
@@ -37,6 +56,13 @@ def get_conn() -> duckdb.DuckDBPyConnection:
     首次调用时自动创建 data/database/ 目录和数据库文件。
     """
     conn = getattr(_tls, "conn", None)
+    if conn is not None and not _is_conn_alive(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _tls.conn = None
+        conn = None
     if conn is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         # Windows 上若有其它进程（例如 DB GUI / 另一份服务）占用 duckdb 文件，会报
@@ -49,8 +75,7 @@ def get_conn() -> duckdb.DuckDBPyConnection:
                 break
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                msg = str(exc)
-                if "File is already open" in msg or "another process" in msg or "进程无法访问" in msg:
+                if _is_transient_db_open_error(exc):
                     time.sleep(0.15 * (i + 1))
                     continue
                 raise

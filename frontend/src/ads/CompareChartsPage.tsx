@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
   fetchCompareChartsSeries,
@@ -8,14 +9,28 @@ import {
   type CompareChartsMetric,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import {
+  navigateToOverviewSummary,
+  navigateToTaxRiskExposure,
+  navigateWithQuery,
+} from '../utils/navHelpers'
 import { formatDwsAmount } from '../dws/useDwsFilters'
+import { scorecardRiskLevelBarClass } from '../dim/dimDictHelpers'
+import { useDimDictDomain } from '../dim/useDimDict'
+import { useLicense } from '../settings/useLicense'
+
+import type { NavKey } from '../types'
 
 const METRICS: CompareChartsMetric[] = ['amount', 'flags', 'score', 'cr1', 'cancel']
 
+const SCORECARD_DIST_KEY: Record<string, keyof { normal: number; watch: number; critical: number }> = {
+  正常: 'normal',
+  关注: 'watch',
+  重点关注: 'critical',
+}
+
 function levelBarClass(level: string): string {
-  if (level === '重点关注') return 'bg-danger'
-  if (level === '关注') return 'bg-warn'
-  return 'bg-green'
+  return scorecardRiskLevelBarClass(level)
 }
 
 function fmtMetricValue(metric: CompareChartsMetric, v: number): string {
@@ -25,8 +40,12 @@ function fmtMetricValue(metric: CompareChartsMetric, v: number): string {
   return String(Math.round(v))
 }
 
-export function CompareChartsPage() {
+export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) {
   const ui = t.compareChartsUi
+  const license = useLicense()
+  const crossGroupAllowed = license.crossGroupAllowed
+  const crossGroupHint = license.crossGroupHint
+  const scorecardRiskDict = useDimDictDomain('scorecard_risk_level')
   const [statYears, setStatYears] = useState<string[]>([])
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [metaHint, setMetaHint] = useState<string | null>(null)
@@ -44,6 +63,7 @@ export function CompareChartsPage() {
   }, [statYear, statYears])
 
   const loadMeta = useCallback(async (signal?: AbortSignal) => {
+    if (!crossGroupAllowed) return
     const res = await fetchCompareMeta(signal)
     if (signal?.aborted || res.aborted) return
     if (!res.ok) {
@@ -57,10 +77,10 @@ export function CompareChartsPage() {
       setStatYear((prev) => (years.includes(prev) ? prev : years.includes(cy) ? cy : years[0]))
     }
     setMetaHint(res.hint ?? null)
-  }, [ui.loadFailed])
+  }, [ui.loadFailed, crossGroupAllowed])
 
   const loadSeries = useCallback(async (signal?: AbortSignal) => {
-    if (!effectiveYear) return
+    if (!crossGroupAllowed || !effectiveYear) return
     setLoading(true)
     setErr(null)
     try {
@@ -79,7 +99,7 @@ export function CompareChartsPage() {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, metric, topN, ui.loadFailed])
+  }, [effectiveYear, metric, topN, ui.loadFailed, crossGroupAllowed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -96,6 +116,21 @@ export function CompareChartsPage() {
   const maxVal = useMemo(() => Math.max(...series.map((s) => Math.abs(s.value)), 1), [series])
   const distTotal = riskDist.total || 1
 
+  const distItems = useMemo(
+    () =>
+      scorecardRiskDict.options.map((o) => {
+        const distKey = SCORECARD_DIST_KEY[o.code]
+        const count = distKey ? riskDist[distKey] : 0
+        return {
+          code: o.code,
+          label: o.label,
+          count,
+          cls: scorecardRiskLevelBarClass(o.code),
+        }
+      }),
+    [riskDist, scorecardRiskDict.options],
+  )
+
   const metricLabel = (m: CompareChartsMetric) => {
     const map: Record<CompareChartsMetric, string> = {
       amount: ui.metricAmount,
@@ -109,10 +144,17 @@ export function CompareChartsPage() {
 
   return (
     <div className="flex flex-col gap-4 p-4 md:p-6">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      <LicenseGateBanner hint={crossGroupHint} />
       {metaHint ? <p className="text-sm text-warn">{metaHint}</p> : null}
       {err ? <p className="text-sm text-danger">{err}</p> : null}
 
+      {!crossGroupAllowed ? (
+        <Card title={ui.filterTitle}>
+          <p className="text-sm text-text-2">{ui.lockedHint}</p>
+        </Card>
+      ) : (
+        <>
       <Card title={ui.filterTitle}>
         <div className="flex flex-wrap items-end gap-4">
           <label className="flex flex-col gap-1 text-sm">
@@ -171,18 +213,71 @@ export function CompareChartsPage() {
               {series.map((row) => {
                 const pct = Math.max(2, Math.round((Math.abs(row.value) / maxVal) * 100))
                 return (
-                  <div key={row.entity_id} className="grid grid-cols-[minmax(0,8rem)_1fr_minmax(0,4.5rem)] items-center gap-2 text-sm">
-                    <div className="truncate text-text-2" title={row.entity_name || row.entity_id}>
-                      {row.entity_name || row.entity_id}
+                  <div key={row.entity_id} className="flex flex-col gap-1 border-b border-border-light/60 pb-2 last:border-0">
+                    <div className="grid grid-cols-[minmax(0,8rem)_1fr_minmax(0,4.5rem)] items-center gap-2 text-sm">
+                      <button
+                        type="button"
+                        className="truncate text-left text-text-2 hover:text-accent hover:underline"
+                        title={row.entity_name || row.entity_id}
+                        onClick={() => {
+                          if (!onNav) return
+                          navigateWithQuery(onNav, 'compare_rank', {
+                            stat_year: effectiveYear,
+                            entity_id: row.entity_id,
+                          })
+                        }}
+                      >
+                        {row.entity_name || row.entity_id}
+                      </button>
+                      <div className="h-5 rounded bg-surface-2">
+                        <div
+                          className={`h-full rounded ${levelBarClass(row.risk_level)}`}
+                          style={{ width: `${pct}%` }}
+                          title={fmtMetricValue(metric, row.value)}
+                        />
+                      </div>
+                      <div className="text-right tabular-nums text-text">{fmtMetricValue(metric, row.value)}</div>
                     </div>
-                    <div className="h-5 rounded bg-surface-2">
-                      <div
-                        className={`h-full rounded ${levelBarClass(row.risk_level)}`}
-                        style={{ width: `${pct}%` }}
-                        title={fmtMetricValue(metric, row.value)}
-                      />
-                    </div>
-                    <div className="text-right tabular-nums text-text">{fmtMetricValue(metric, row.value)}</div>
+                    {onNav ? (
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 pl-[calc(8rem+0.5rem)] text-xs">
+                        <button
+                          type="button"
+                          className="text-accent hover:underline"
+                          onClick={() =>
+                            navigateToOverviewSummary(onNav, {
+                              statYear: effectiveYear,
+                              entityId: row.entity_id,
+                            })
+                          }
+                        >
+                          {ui.actionOverviewSummary}
+                        </button>
+                        <button
+                          type="button"
+                          className="text-accent hover:underline"
+                          onClick={() =>
+                            navigateToTaxRiskExposure(onNav, {
+                              statYear: effectiveYear,
+                              entityId: row.entity_id,
+                            })
+                          }
+                        >
+                          {ui.actionTaxRiskExposure}
+                        </button>
+                        <button
+                          type="button"
+                          className="text-accent hover:underline"
+                          onClick={() =>
+                            navigateWithQuery(onNav, 'supplier_top', {
+                              stat_year: effectiveYear,
+                              entity_id: row.entity_id,
+                            })
+                          }
+                        >
+                          {ui.actionSupplierTop}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 )
               })}
@@ -195,12 +290,8 @@ export function CompareChartsPage() {
             <p className="text-sm text-text-2">{ui.loading}</p>
           ) : (
             <div className="flex flex-col gap-3">
-              {[
-                { key: 'normal', label: ui.distNormal, count: riskDist.normal, cls: 'bg-green' },
-                { key: 'watch', label: ui.distWatch, count: riskDist.watch, cls: 'bg-warn' },
-                { key: 'critical', label: ui.distCritical, count: riskDist.critical, cls: 'bg-danger' },
-              ].map((d) => (
-                <div key={d.key}>
+              {distItems.map((d) => (
+                <div key={d.code}>
                   <div className="mb-1 flex justify-between text-sm">
                     <span>{d.label}</span>
                     <span className="tabular-nums text-text-2">
@@ -220,6 +311,8 @@ export function CompareChartsPage() {
           )}
         </Card>
       </div>
+        </>
+      )}
     </div>
   )
 }

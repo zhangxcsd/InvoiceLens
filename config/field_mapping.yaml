@@ -1,4 +1,3 @@
-# ODS Parquet 列名：开票日期统一为 kprq（与 DWD 票面原串列一致；解析后的 DATE 仅在 DWD 的 invoice_date）。
 default:
   invoice_no:
     label_zh: 发票号码

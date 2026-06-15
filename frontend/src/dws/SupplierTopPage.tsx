@@ -1,14 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsSupplierTop, type DwsSupplierTopRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
-import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { formatDwsAmount, formatDwsPct, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
+
+function normTaxId(v: string): string {
+  return v.replace(/[\s-]+/g, '').toUpperCase()
+}
 
 export function SupplierTopPage() {
   const ui = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const deepLink = useDwsUrlDeepLinkFilter()
+  const highlightSupplierId = useMemo(() => {
+    const raw = urlQuery.seller_tax_no?.trim()
+    return raw ? normTaxId(raw) : ''
+  }, [urlQuery.seller_tax_no])
+  const flagContextHint = useMemo(() => {
+    if (highlightSupplierId) {
+      return ui.flagContextSupplierHint.replace('{id}', urlQuery.seller_tax_no?.trim() || highlightSupplierId)
+    }
+    return deepLink.flagContextHint
+  }, [highlightSupplierId, urlQuery.seller_tax_no, deepLink.flagContextHint, ui])
+  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const [rows, setRows] = useState<DwsSupplierTopRow[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -24,7 +42,15 @@ export function SupplierTopPage() {
     setErr(null)
     try {
       const res = await fetchDwsSupplierTop(
-        { statYear: f.effectiveYear, entityId: f.entityId.trim(), limit: 20 },
+        {
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim(),
+          limit: 20,
+          statMonth: deepLink.apiStatMonth,
+          dateFrom: deepLink.apiDateFrom,
+          dateTo: deepLink.apiDateTo,
+          quarter: deepLink.apiQuarter,
+        },
         signal,
       )
       if (signal?.aborted || res.aborted) return
@@ -39,7 +65,7 @@ export function SupplierTopPage() {
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, deepLink.apiStatMonth, deepLink.apiDateFrom, deepLink.apiDateTo, deepLink.apiQuarter, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -47,10 +73,19 @@ export function SupplierTopPage() {
     return () => ac.abort()
   }, [load])
 
+  useEffect(() => {
+    if (!highlightSupplierId || rows.length === 0) return
+    const match = rows.find((r) => normTaxId(r.supplier_id) === highlightSupplierId)
+    if (!match) return
+    const el = rowRefs.current.get(match.supplier_id)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [rows, highlightSupplierId])
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.supplierTopTitle} note={ui.supplierTopDesc} noteTone="plain" />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
@@ -98,9 +133,16 @@ export function SupplierTopPage() {
                   rows.map((r) => (
                     <tr
                       key={r.supplier_id}
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(r.supplier_id, el)
+                        else rowRefs.current.delete(r.supplier_id)
+                      }}
                       className={[
                         'border-b border-border-light last:border-b-0',
-                        r.is_new_supplier ? 'bg-[#fff8ef]' : '',
+                        normTaxId(r.supplier_id) === highlightSupplierId ? 'bg-[#fff8ef]' : '',
+                        r.is_new_supplier && normTaxId(r.supplier_id) !== highlightSupplierId
+                          ? 'bg-[#fff8ef]'
+                          : '',
                       ].join(' ')}
                     >
                       <td className="px-3 py-2 tabular-nums">{r.amount_rank}</td>

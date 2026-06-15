@@ -104,6 +104,14 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核查对应合同、物流/验收记录及付款审批时间链。",
                 "analysis_batch": batch,
+                "detail_json": json.dumps(
+                    {
+                        "invoice_date": str(inv_date),
+                        "date_from": str(inv_date),
+                        "date_to": str(inv_date),
+                    },
+                    ensure_ascii=False,
+                ),
             }
         )
 
@@ -163,6 +171,13 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议比对全年采购计划、入库验收与跨期费用归属。",
                 "analysis_batch": batch,
+                "detail_json": json.dumps(
+                    {
+                        "date_from": f"{stat_year}-11-01",
+                        "date_to": f"{stat_year}-12-31",
+                    },
+                    ensure_ascii=False,
+                ),
             }
         )
 
@@ -206,6 +221,14 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                     ),
                     "suggestion": "建议回溯源 Excel 与税控导出时间戳，确认是否为导入错误或伪造票。",
                     "analysis_batch": batch,
+                    "detail_json": json.dumps(
+                        {
+                            "invoice_date": str(inv_date),
+                            "date_from": str(inv_date),
+                            "date_to": str(inv_date),
+                        },
+                        ensure_ascii=False,
+                    ),
                 }
             )
 
@@ -253,6 +276,14 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                     ),
                     "suggestion": "建议核实是否为真实业务发生，排除虚假贸易可能。",
                     "analysis_batch": batch,
+                    "detail_json": json.dumps(
+                        {
+                            "invoice_date": str(inv_date),
+                            "date_from": str(inv_date),
+                            "date_to": str(inv_date),
+                        },
+                        ensure_ascii=False,
+                    ),
                 }
             )
 

@@ -10,8 +10,10 @@ import {
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsOverviewTrend, type DwsTrendRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
+import { useDimDictDomain } from '../dim/useDimDict'
 
 type TrendWideRow = {
   stat_month: number
@@ -47,7 +49,7 @@ function pivotTrendWideRows(rows: DwsTrendRow[]): TrendWideRow[] {
 }
 
 function trendChartMeta(
-  roleType: 'all' | '销项' | '进项',
+  roleType: 'all' | string,
   ui: (typeof t)['dwsDashboardUi'],
 ): { title: string; hint: string } {
   if (roleType === '销项') {
@@ -61,8 +63,32 @@ function trendChartMeta(
 
 export function OverviewTrendPage() {
   const ui = t.dwsDashboardUi
-  const f = useDwsFilters(false)
-  const [roleType, setRoleType] = useState<'all' | '销项' | '进项'>('all')
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const apiStatMonth = urlQuery.stat_month?.trim() || undefined
+  const apiDateFrom = urlQuery.date_from?.trim() || undefined
+  const apiDateTo = urlQuery.date_to?.trim() || undefined
+  const highlightMonth = useMemo(() => {
+    const raw = urlQuery.stat_month?.trim()
+    if (!raw) return null
+    const m = parseInt(raw, 10)
+    return m >= 1 && m <= 12 ? m : null
+  }, [urlQuery.stat_month])
+  const flagContextHint = useMemo(() => {
+    if (highlightMonth != null) {
+      return ui.flagContextMonthHint.replace('{month}', String(highlightMonth))
+    }
+    const from = urlQuery.date_from?.trim()
+    const to = urlQuery.date_to?.trim()
+    if (from && to) {
+      return ui.flagContextDateHint.replace('{from}', from).replace('{to}', to)
+    }
+    return null
+  }, [highlightMonth, urlQuery.date_from, urlQuery.date_to, ui])
+  const hasTimeFilter = Boolean(apiStatMonth || apiDateFrom || apiDateTo)
+  const caliberHint = hasTimeFilter ? ui.monthGranularityHint : null
+  const f = useDwsFilters(false, { initFromUrl: true })
+  const roleTypeDict = useDimDictDomain('finance_role_type')
+  const [roleType, setRoleType] = useState<'all' | string>('all')
   const [rows, setRows] = useState<DwsTrendRow[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -77,6 +103,9 @@ export function OverviewTrendPage() {
           statYear: f.effectiveYear,
           entityId: f.entityId.trim() || undefined,
           roleType,
+          statMonth: apiStatMonth,
+          dateFrom: apiDateFrom,
+          dateTo: apiDateTo,
         },
         signal,
       )
@@ -90,7 +119,7 @@ export function OverviewTrendPage() {
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, roleType, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, roleType, apiStatMonth, apiDateFrom, apiDateTo, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -103,11 +132,36 @@ export function OverviewTrendPage() {
     for (const r of rows) {
       byMonth.set(r.stat_month, (byMonth.get(r.stat_month) ?? 0) + r.net_jshj)
     }
-    return Array.from({ length: 12 }, (_, i) => {
-      const m = i + 1
-      return { month: m, net_jshj: byMonth.get(m) ?? 0 }
-    })
-  }, [rows])
+
+    const parseMonth = (iso: string): number | null => {
+      const m = parseInt(iso.slice(5, 7), 10)
+      return m >= 1 && m <= 12 ? m : null
+    }
+
+    let months: number[]
+    if (highlightMonth != null) {
+      months = [highlightMonth]
+    } else if (apiStatMonth) {
+      const m = parseInt(apiStatMonth, 10)
+      months = m >= 1 && m <= 12 ? [m] : []
+    } else if (apiDateFrom || apiDateTo) {
+      const mFrom = apiDateFrom ? parseMonth(apiDateFrom) : 1
+      const mTo = apiDateTo ? parseMonth(apiDateTo) : 12
+      if (mFrom != null && mTo != null && mFrom <= mTo) {
+        months = Array.from({ length: mTo - mFrom + 1 }, (_, i) => mFrom + i)
+      } else {
+        months = Array.from(byMonth.keys()).sort((a, b) => a - b)
+      }
+    } else {
+      months = Array.from({ length: 12 }, (_, i) => i + 1)
+    }
+
+    if (months.length === 0) {
+      months = Array.from({ length: 12 }, (_, i) => i + 1)
+    }
+
+    return months.map((m) => ({ month: m, net_jshj: byMonth.get(m) ?? 0 }))
+  }, [rows, highlightMonth, apiStatMonth, apiDateFrom, apiDateTo])
 
   const maxNet = useMemo(() => Math.max(...chartRows.map((x) => Math.abs(x.net_jshj)), 1), [chartRows])
 
@@ -120,10 +174,20 @@ export function OverviewTrendPage() {
   const chartMeta = useMemo(() => trendChartMeta(roleType, ui), [roleType, ui])
   const hasChartData = useMemo(() => chartRows.some((x) => x.net_jshj !== 0), [chartRows])
 
+  const rolePills = useMemo(
+    () => [
+      { id: 'all', label: ui.roleAll },
+      ...roleTypeDict.options.map((o) => ({ id: o.code, label: o.label })),
+    ],
+    [roleTypeDict.options, ui.roleAll],
+  )
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.overviewTrendTitle} note={ui.overviewTrendDesc} noteTone="plain" />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
+      {caliberHint ? <p className="mb-2 text-il-meta text-amber-800">{caliberHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
@@ -136,17 +200,17 @@ export function OverviewTrendPage() {
           entityOptions={f.entityOptions}
         />
         <div className="mb-2 flex gap-2">
-          {(['all', '销项', '进项'] as const).map((rt) => (
+          {rolePills.map((rt) => (
             <button
-              key={rt}
+              key={rt.id}
               type="button"
               className={[
                 filterPillClasses.base,
-                roleType === rt ? filterPillClasses.active : filterPillClasses.inactive,
+                roleType === rt.id ? filterPillClasses.active : filterPillClasses.inactive,
               ].join(' ')}
-              onClick={() => setRoleType(rt)}
+              onClick={() => setRoleType(rt.id)}
             >
-              {rt === 'all' ? ui.roleAll : rt}
+              {rt.label}
             </button>
           ))}
         </div>
@@ -160,12 +224,14 @@ export function OverviewTrendPage() {
           <div className={`flex ${CHART_BAR_STRIP_CLASS} gap-1 border-b border-border-light pb-1`}>
             {chartRows.map((p) => {
               const barPx = barHeightPx(p.net_jshj, maxNet)
+              const focused = highlightMonth === p.month
               return (
                 <div key={p.month} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1">
                   <div
                     className={[
                       'w-full max-w-[2rem] rounded-t-sm',
                       p.net_jshj >= 0 ? 'bg-[#5b9bd5]' : 'bg-[#e07a5f]',
+                      focused ? 'ring-2 ring-amber-500 ring-offset-1' : '',
                     ].join(' ')}
                     style={{ height: `${barPx}px` }}
                     title={`${p.month}月: ${formatDwsAmount(p.net_jshj)}`}
@@ -206,7 +272,13 @@ export function OverviewTrendPage() {
               {isWideTable ? (
                 wideRows.length > 0 ? (
                   wideRows.map((r) => (
-                    <tr key={r.stat_month} className={dataTableClasses.row}>
+                    <tr
+                      key={r.stat_month}
+                      className={[
+                        dataTableClasses.row,
+                        highlightMonth === r.stat_month ? 'bg-[#fff8ef]' : '',
+                      ].join(' ')}
+                    >
                       <td className={dataTableClasses.cell}>{r.stat_month}</td>
                       <td className={`${dataTableClasses.cell} tabular-nums`}>
                         {r.input_net_jshj === null ? ui.trendEmptyCell : formatDwsAmount(r.input_net_jshj)}
@@ -231,7 +303,13 @@ export function OverviewTrendPage() {
                 )
               ) : rows.length > 0 ? (
                 rows.map((r) => (
-                  <tr key={`${r.stat_month}_${r.role_type}`} className={dataTableClasses.row}>
+                  <tr
+                    key={`${r.stat_month}_${r.role_type}`}
+                    className={[
+                      dataTableClasses.row,
+                      highlightMonth === r.stat_month ? 'bg-[#fff8ef]' : '',
+                    ].join(' ')}
+                  >
                     <td className={dataTableClasses.cell}>{r.stat_month}</td>
                     <td className={dataTableClasses.cell}>{r.role_type}</td>
                     <td className={`${dataTableClasses.cell} tabular-nums`}>{formatDwsAmount(r.net_jshj)}</td>

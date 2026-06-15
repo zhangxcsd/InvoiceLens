@@ -1,0 +1,51 @@
+name: Task Chain Observability Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/dim_task_chain.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'frontend/src/dwd/TaskChainPanel.tsx'
+      - 'frontend/src/dwd/ProcessingDerivedDimTasksPage.tsx'
+      - 'frontend/src/dwd/DwdToDimCenterPage.tsx'
+      - 'frontend/src/config/localApi.ts'
+      - 'frontend/src/copy/zh-CN.ts'
+      - 'scripts/test_task_chain_observability_smoke.py'
+      - '.github/workflows/task-chain-observability-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/dim_task_chain.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'frontend/src/dwd/TaskChainPanel.tsx'
+      - 'frontend/src/dwd/ProcessingDerivedDimTasksPage.tsx'
+      - 'frontend/src/dwd/DwdToDimCenterPage.tsx'
+      - 'frontend/src/config/localApi.ts'
+      - 'frontend/src/copy/zh-CN.ts'
+      - 'scripts/test_task_chain_observability_smoke.py'
+      - '.github/workflows/task-chain-observability-smoke.yml'
+
+jobs:
+  task-chain-observability-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: pip install duckdb pyyaml pandas openpyxl
+
+      - name: Run task chain observability smoke tests
+        run: python scripts/test_task_chain_observability_smoke.py
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

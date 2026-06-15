@@ -20,7 +20,8 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
-import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
+import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
+import { useDimDictDomain } from '../dim/useDimDict'
 
 const BUCKET_ORDER = ['13%', '9%', '6%', '3%', '免税/零税率', '其他'] as const
 
@@ -79,7 +80,7 @@ function pivotTaxWideRows(inputRows: DwsTaxBucketRow[], outputRows: DwsTaxBucket
 }
 
 function taxChartMeta(
-  roleType: 'all' | '销项' | '进项',
+  roleType: 'all' | string,
   ui: (typeof t)['overviewTaxUi'],
 ): { title: string; hint: string } {
   if (roleType === '销项') {
@@ -92,7 +93,7 @@ function taxChartMeta(
 }
 
 function taxTrendChartMeta(
-  roleType: 'all' | '销项' | '进项',
+  roleType: 'all' | string,
   ui: (typeof t)['overviewTaxUi'],
 ): { title: string; hint: string } {
   if (roleType === '销项') {
@@ -184,7 +185,7 @@ function formatRatio(ratio: number | null, empty: string): string {
 }
 
 type BucketDataCtx = {
-  roleType: 'all' | '销项' | '进项'
+  roleType: 'all' | string
   rows: DwsTaxBucketRow[]
   inputRows: DwsTaxBucketRow[]
   outputRows: DwsTaxBucketRow[]
@@ -286,8 +287,10 @@ function matchesBucketFilter(bucket: string, selected: ReadonlySet<string>): boo
 
 export function OverviewTaxPage() {
   const ui = t.overviewTaxUi
-  const f = useDwsFilters(false)
-  const [roleType, setRoleType] = useState<'all' | '销项' | '进项'>('all')
+  const deepLink = useDwsUrlDeepLinkFilter()
+  const f = useDwsFilters(false, { initFromUrl: true })
+  const roleTypeDict = useDimDictDomain('finance_role_type')
+  const [roleType, setRoleType] = useState<'all' | string>('all')
   const [rows, setRows] = useState<DwsTaxBucketRow[]>([])
   const [inputRows, setInputRows] = useState<DwsTaxBucketRow[]>([])
   const [outputRows, setOutputRows] = useState<DwsTaxBucketRow[]>([])
@@ -328,22 +331,43 @@ export function OverviewTaxPage() {
     setLoading(true)
     setErr(null)
     try {
+      const timeParams = deepLink.timeFilterParams
       if (roleType === 'all') {
         const [inRes, outRes, inMonRes, outMonRes] = await Promise.all([
           fetchDwsOverviewTax(
-            { statYear: f.effectiveYear, entityId: f.entityId.trim() || undefined, roleType: '进项' },
+            {
+              statYear: f.effectiveYear,
+              entityId: f.entityId.trim() || undefined,
+              roleType: '进项',
+              ...timeParams,
+            },
             signal,
           ),
           fetchDwsOverviewTax(
-            { statYear: f.effectiveYear, entityId: f.entityId.trim() || undefined, roleType: '销项' },
+            {
+              statYear: f.effectiveYear,
+              entityId: f.entityId.trim() || undefined,
+              roleType: '销项',
+              ...timeParams,
+            },
             signal,
           ),
           fetchDwsOverviewTaxMonthly(
-            { statYear: f.effectiveYear, entityId: f.entityId.trim() || undefined, roleType: '进项' },
+            {
+              statYear: f.effectiveYear,
+              entityId: f.entityId.trim() || undefined,
+              roleType: '进项',
+              ...timeParams,
+            },
             signal,
           ),
           fetchDwsOverviewTaxMonthly(
-            { statYear: f.effectiveYear, entityId: f.entityId.trim() || undefined, roleType: '销项' },
+            {
+              statYear: f.effectiveYear,
+              entityId: f.entityId.trim() || undefined,
+              roleType: '销项',
+              ...timeParams,
+            },
             signal,
           ),
         ])
@@ -380,6 +404,7 @@ export function OverviewTaxPage() {
               statYear: f.effectiveYear,
               entityId: f.entityId.trim() || undefined,
               roleType,
+              ...timeParams,
             },
             signal,
           ),
@@ -388,6 +413,7 @@ export function OverviewTaxPage() {
               statYear: f.effectiveYear,
               entityId: f.entityId.trim() || undefined,
               roleType,
+              ...timeParams,
             },
             signal,
           ),
@@ -416,7 +442,7 @@ export function OverviewTaxPage() {
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, roleType, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, roleType, deepLink.timeFilterParams, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -526,10 +552,21 @@ export function OverviewTaxPage() {
     return ui.totalHint.replace('{year}', f.effectiveYear).replace('{amount}', formatDwsAmount(totalAmount))
   }, [roleType, ui, f.effectiveYear, inputTotalAmount, outputTotalAmount, totalAmount])
 
+  const rolePills = useMemo(
+    () => [
+      { id: 'all', label: ui.roleAll },
+      ...roleTypeDict.options.map((o) => ({ id: o.code, label: o.label })),
+    ],
+    [roleTypeDict.options, ui.roleAll],
+  )
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {deepLink.flagContextHint ? (
+        <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
+      ) : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
@@ -542,17 +579,17 @@ export function OverviewTaxPage() {
           entityOptions={f.entityOptions}
         />
         <div className="mb-2 flex gap-2">
-          {(['all', '销项', '进项'] as const).map((rt) => (
+          {rolePills.map((rt) => (
             <button
-              key={rt}
+              key={rt.id}
               type="button"
               className={[
                 filterPillClasses.base,
-                roleType === rt ? filterPillClasses.active : filterPillClasses.inactive,
+                roleType === rt.id ? filterPillClasses.active : filterPillClasses.inactive,
               ].join(' ')}
-              onClick={() => setRoleType(rt)}
+              onClick={() => setRoleType(rt.id)}
             >
-              {rt === 'all' ? ui.roleAll : rt}
+              {rt.label}
             </button>
           ))}
         </div>

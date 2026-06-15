@@ -1,0 +1,30 @@
+name: stage5-license-users-smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/users_api.py'
+      - 'scripts/test_stage5_license_users_smoke.py'
+      - 'scripts/test_p2_license_graph_smoke.py'
+  pull_request:
+    paths:
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/users_api.py'
+      - 'scripts/test_stage5_license_users_smoke.py'
+      - 'scripts/test_p2_license_graph_smoke.py'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run P2 license/graph smoke
+        run: python scripts/test_p2_license_graph_smoke.py
+      - name: Run Stage 5 license/users smoke
+        run: python scripts/test_stage5_license_users_smoke.py

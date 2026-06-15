@@ -1,0 +1,42 @@
+name: Audit Rules Smoke
+
+on:
+  push:
+    paths:
+      - 'src/audit_rules/**'
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/invoice_export_api.py'
+      - 'src/local_api/report_api.py'
+      - 'scripts/test_audit_rules_smoke.py'
+      - 'scripts/test_p2_license_graph_smoke.py'
+      - '.github/workflows/audit-rules-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/audit_rules/**'
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/invoice_export_api.py'
+      - 'src/local_api/report_api.py'
+      - 'scripts/test_audit_rules_smoke.py'
+      - 'scripts/test_p2_license_graph_smoke.py'
+      - '.github/workflows/audit-rules-smoke.yml'
+
+jobs:
+  audit-rules-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb pyyaml
+
+      - name: Run audit rules smoke tests
+        run: python scripts/test_audit_rules_smoke.py
+
+      - name: Run P2 license/graph smoke tests
+        run: python scripts/test_p2_license_graph_smoke.py

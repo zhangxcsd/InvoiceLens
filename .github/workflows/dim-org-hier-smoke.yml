@@ -1,0 +1,33 @@
+name: Dim Org Hier Smoke
+
+on:
+  push:
+    paths:
+      - 'config/ddl/dim.sql'
+      - 'config/dim_task_catalog.json'
+      - 'scripts/test_dim_org_hier_smoke.py'
+      - 'src/local_api/dim_org_hier_*.py'
+      - '.github/workflows/dim-org-hier-smoke.yml'
+  pull_request:
+    paths:
+      - 'config/ddl/dim.sql'
+      - 'config/dim_task_catalog.json'
+      - 'scripts/test_dim_org_hier_smoke.py'
+      - 'src/local_api/dim_org_hier_*.py'
+      - '.github/workflows/dim-org-hier-smoke.yml'
+
+jobs:
+  dim-org-hier-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb pandas openpyxl
+
+      - name: Smoke test dim_org_hier import and APIs
+        run: python scripts/test_dim_org_hier_smoke.py

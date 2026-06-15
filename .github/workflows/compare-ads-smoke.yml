@@ -1,0 +1,35 @@
+name: Compare ADS Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/compare_dashboard_api.py'
+      - 'src/local_api/license_gate.py'
+      - 'scripts/test_compare_ads_smoke.py'
+      - 'scripts/test_license_gate_smoke.py'
+      - '.github/workflows/compare-ads-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/compare_dashboard_api.py'
+      - 'src/local_api/license_gate.py'
+      - 'scripts/test_compare_ads_smoke.py'
+      - 'scripts/test_license_gate_smoke.py'
+      - '.github/workflows/compare-ads-smoke.yml'
+
+jobs:
+  compare-ads-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Run compare ADS smoke tests
+        run: |
+          python scripts/test_license_gate_smoke.py
+          python scripts/test_compare_ads_smoke.py

@@ -8,3 +8,4 @@ openpyxl
 xlrd
 PyYAML
 pypinyin>=0.51.0
+cryptography>=42.0.0

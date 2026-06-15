@@ -125,27 +125,47 @@ export function registryRowsToRelationRows(rows: AuditedEnterpriseRegistryRow[])
 }
 
 export async function fetchAllAuditedEnterpriseRegistryRows(
-  fetchRegistry: (params: { snapshotYear: string }) => Promise<{
+  fetchRegistry: (params: {
+    snapshotYear: string
+    limit?: number
+    offset?: number
+    includeYears?: boolean
+  }) => Promise<{
     ok: boolean
     snapshot_years?: string[]
     selected_year?: string
     rows?: AuditedEnterpriseRegistryRow[]
+    total?: number
     error?: { message?: string }
   }>,
 ): Promise<{ ok: boolean; rows: AuditedEnterpriseRegistryRow[]; error?: { message?: string } }> {
-  const first = await fetchRegistry({ snapshotYear: '2026' })
+  const first = await fetchRegistry({ snapshotYear: '2026', limit: 500, offset: 0, includeYears: true })
   if (!first.ok) {
     return { ok: false, rows: [], error: first.error }
   }
   const years = first.snapshot_years?.length ? first.snapshot_years : [first.selected_year ?? '2026']
   const merged: AuditedEnterpriseRegistryRow[] = []
+
+  const fetchYearAll = async (year: string, seed?: typeof first) => {
+    const initial = seed ?? (await fetchRegistry({ snapshotYear: year, limit: 500, offset: 0, includeYears: false }))
+    if (!initial.ok) return initial
+    const total = initial.total ?? initial.rows?.length ?? 0
+    const rows = [...(initial.rows ?? [])]
+    for (let offset = rows.length; offset < total; offset += 500) {
+      const part = await fetchRegistry({ snapshotYear: year, limit: 500, offset, includeYears: false })
+      if (!part.ok) return part
+      rows.push(...(part.rows ?? []))
+    }
+    merged.push(...rows)
+    return { ok: true as const }
+  }
+
   const anchorYear = first.selected_year ?? years[0]
   for (const year of years) {
-    const res = year === anchorYear ? first : await fetchRegistry({ snapshotYear: year })
+    const res = year === anchorYear ? await fetchYearAll(year, first) : await fetchYearAll(year)
     if (!res.ok) {
-      return { ok: false, rows: [], error: res.error }
+      return { ok: false, rows: [], error: 'error' in res ? res.error : undefined }
     }
-    merged.push(...(res.rows ?? []))
   }
   return { ok: true, rows: merged }
 }

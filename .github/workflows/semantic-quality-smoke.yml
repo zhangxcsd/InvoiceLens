@@ -1,0 +1,31 @@
+name: Semantic Quality Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/data_quality.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_semantic_quality_smoke.py'
+      - '.github/workflows/semantic-quality-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/data_quality.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_semantic_quality_smoke.py'
+      - '.github/workflows/semantic-quality-smoke.yml'
+
+jobs:
+  semantic-quality-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Run semantic quality smoke tests
+        run: python scripts/test_semantic_quality_smoke.py

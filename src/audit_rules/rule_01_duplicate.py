@@ -14,7 +14,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, norm_tax
+from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, flag_detail_json, month_date_bounds, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -101,6 +101,10 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核对合同、验收单与入账凭证，确认是否存在重复报销或重复确认成本费用。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    amount=float(amt or 0),
+                ),
             }
         )
 
@@ -135,6 +139,8 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
         key = f"split|{buyer_id}|{seller_id}|{month}"
         digest = hashlib.md5(key.encode()).hexdigest()[:10]
         uuids = list(dict.fromkeys(inv_uuids or []))[:50]
+        month_i = int(month or 0)
+        date_from, date_to = month_date_bounds(stat_year, month_i) if month_i else (None, None)
         flags.append(
             {
                 "flag_id": f"FP-{stat_year}-01S-{digest}",
@@ -156,6 +162,13 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议合并核查该月全部发票对应的业务合同、付款申请与审批权限。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    stat_year=stat_year,
+                    stat_month=month_i or None,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_id,
+                ),
             }
         )
 

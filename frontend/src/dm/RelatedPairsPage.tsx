@@ -3,25 +3,38 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
 import {
-  fetchAuditMeta,
   fetchAuditRelatedCircular,
   postAuditRun,
   type CircularInvRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { navigateToFlagsList, navigateWithQuery, readNavQueryParams } from '../utils/navHelpers'
+import { DwsFilterBar } from '../dws/DwsFilterBar'
+import { useDwsFilters } from '../dws/useDwsFilters'
+import type { NavKey } from '../types'
+import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { useDimDictDomain } from '../dim/useDimDict'
 
 function riskBadgeClass(level: string): string {
-  if (level === '高风险') return 'bg-danger/10 text-danger'
-  if (level === '中风险') return 'bg-warn/10 text-warn'
-  return 'bg-text-3/10 text-text-2'
+  return auditRiskLevelBadgeClass(level)
 }
 
-export function RelatedPairsPage() {
+function normTaxId(v: string): string {
+  return v.replace(/[\s-]+/g, '').toUpperCase()
+}
+
+type Props = { onNav?: (key: NavKey) => void }
+
+export function RelatedPairsPage({ onNav }: Props) {
   const ui = t.relatedPairsUi
+  const dash = t.dwsDashboardUi
   const pagUi = t.dimDataTableUi
-  const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
-  const [keyword, setKeyword] = useState('')
+  const riskLevelDict = useDimDictDomain('audit_risk_level')
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const f = useDwsFilters(false, { entityPool: 'analysis', initFromUrl: true })
+  const [keyword, setKeyword] = useState(
+    urlQuery.keyword ?? urlQuery.party_b_tax ?? urlQuery.party_a_tax ?? '',
+  )
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [rows, setRows] = useState<CircularInvRow[]>([])
@@ -31,32 +44,39 @@ export function RelatedPairsPage() {
   const [scanBusy, setScanBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
 
-  const effectiveYear = useMemo(() => {
-    const y = statYear.trim()
-    if (y && statYears.includes(y)) return y
-    return statYears[0] ?? y
-  }, [statYear, statYears])
+  const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
+  const caliberHint = dash.analysisSubjectCaliberHint.replace('{n}', String(effectiveN))
+  const highlightPartyA = urlQuery.party_a_tax?.trim() ? normTaxId(urlQuery.party_a_tax) : ''
+  const highlightPartyB = urlQuery.party_b_tax?.trim() ? normTaxId(urlQuery.party_b_tax) : ''
+  const flagContextHint = useMemo(() => {
+    if (!highlightPartyA && !highlightPartyB) return null
+    return dash.flagContextPartyHint
+      .replace('{partyA}', urlQuery.party_a_tax?.trim() || highlightPartyA)
+      .replace('{partyB}', urlQuery.party_b_tax?.trim() || highlightPartyB)
+  }, [dash, highlightPartyA, highlightPartyB, urlQuery.party_a_tax, urlQuery.party_b_tax])
 
-  useEffect(() => {
-    const ac = new AbortController()
-    void fetchAuditMeta(ac.signal).then((res) => {
-      if (res.ok && res.stat_years?.length) {
-        setStatYears(res.stat_years)
-        const cy = String(new Date().getFullYear())
-        setStatYear((prev) => (res.stat_years!.includes(prev) ? prev : res.stat_years!.includes(cy) ? cy : res.stat_years![0]))
-      }
-    })
-    return () => ac.abort()
-  }, [])
+  const rowMatchesHighlight = (row: CircularInvRow) => {
+    if (!highlightPartyA && !highlightPartyB) return false
+    const a = normTaxId(row.party_a_tax)
+    const b = normTaxId(row.party_b_tax)
+    if (highlightPartyA && highlightPartyB) {
+      return (
+        (a === highlightPartyA && b === highlightPartyB) ||
+        (a === highlightPartyB && b === highlightPartyA)
+      )
+    }
+    const target = highlightPartyB || highlightPartyA
+    return a === target || b === target
+  }
 
   const load = useCallback(async (signal?: AbortSignal) => {
-    if (!effectiveYear) return
+    if (!f.effectiveYear) return
     setLoading(true)
     setErr(null)
     try {
       const res = await fetchAuditRelatedCircular(
         {
-          statYear: effectiveYear,
+          statYear: f.effectiveYear,
           keyword: keyword.trim() || undefined,
           limit: pageSize,
           offset: (page - 1) * pageSize,
@@ -77,7 +97,7 @@ export function RelatedPairsPage() {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, keyword, page, pageSize, ui.loadFailed, ui.emptyHint])
+  }, [f.effectiveYear, keyword, page, pageSize, ui.loadFailed, ui.emptyHint])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -87,12 +107,12 @@ export function RelatedPairsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [effectiveYear, keyword, pageSize])
+  }, [f.effectiveYear, keyword, pageSize])
 
   const onScan = async () => {
     setScanBusy(true)
     try {
-      await postAuditRun({ statYear: effectiveYear, ruleIds: ['RULE-09'] })
+      await postAuditRun({ statYear: f.effectiveYear, ruleIds: ['RULE-09'] })
       await load()
     } finally {
       setScanBusy(false)
@@ -100,35 +120,39 @@ export function RelatedPairsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+    <div className="space-y-4 px-5 py-6">
+      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" />
+      {flagContextHint ? (
+        <div className="mb-2 rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">
+          {flagContextHint}
+        </div>
+      ) : null}
       {hint ? <div className="rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">{hint}</div> : null}
 
       <Card title={ui.filterTitle}>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-il-meta text-text-2">
-            <span>{ui.statYearLabel}</span>
-            <select
-              className="h-9 min-w-[120px] rounded-sm border border-border-light bg-white px-2"
-              value={effectiveYear}
-              onChange={(e) => setStatYear(e.target.value)}
-            >
-              {statYears.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-il-meta text-text-2">
-            <span>{ui.keywordLabel}</span>
-            <input
-              className="h-9 min-w-[200px] rounded-sm border border-border-light bg-white px-2"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder={ui.keywordPlaceholder}
-            />
-          </label>
+        <DwsFilterBar
+          effectiveYear={f.effectiveYear}
+          yearOptions={f.yearOptions}
+          onYearChange={f.setStatYear}
+          entityId=""
+          onEntityChange={() => {}}
+          entityOptions={[]}
+          showEntity={false}
+          showMinInvoiceCount
+          minInvoiceCount={effectiveN}
+          onMinInvoiceCountChange={f.setMinInvoiceCount}
+        />
+        <label className="mt-3 flex flex-col gap-1 text-il-meta text-text-2">
+          <span>{ui.keywordLabel}</span>
+          <input
+            className="h-9 max-w-md rounded-sm border border-border-light bg-white px-2"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder={ui.keywordPlaceholder}
+          />
+        </label>
+        <p className="mt-2 text-il-meta text-text-3">{caliberHint}</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
             className="h-9 rounded-sm bg-accent px-4 text-il-meta font-medium text-white disabled:opacity-50"
@@ -137,6 +161,24 @@ export function RelatedPairsPage() {
           >
             {scanBusy ? ui.scanBusy : ui.scanBtn}
           </button>
+          {onNav ? (
+            <>
+              <button
+                type="button"
+                className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
+                onClick={() => navigateWithQuery(onNav, 'flags_rules', { stat_year: f.effectiveYear })}
+              >
+                {ui.rulesLink}
+              </button>
+              <button
+                type="button"
+                className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
+                onClick={() => navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-09' })}
+              >
+                {ui.flagsLink}
+              </button>
+            </>
+          ) : null}
         </div>
       </Card>
 
@@ -157,14 +199,22 @@ export function RelatedPairsPage() {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.circ_id} className="border-b border-border-light/70 text-text">
+                <tr
+                  key={row.circ_id}
+                  className={[
+                    'border-b border-border-light/70 text-text',
+                    rowMatchesHighlight(row) ? 'bg-[#fff8ef]' : '',
+                  ].join(' ')}
+                >
                   <td className="py-2 pr-2">{row.party_a_name ?? row.party_a_tax}</td>
                   <td className="py-2 pr-2">{row.party_b_name ?? row.party_b_tax}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_a_to_b.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_b_to_a.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{(row.circular_ratio * 100).toFixed(1)}%</td>
                   <td className="py-2">
-                    <span className={`rounded px-1.5 py-0.5 ${riskBadgeClass(row.risk_level)}`}>{row.risk_level}</span>
+                    <span className={`rounded px-1.5 py-0.5 ${riskBadgeClass(row.risk_level)}`}>
+                      {riskLevelDict.getLabel(row.risk_level)}
+                    </span>
                   </td>
                 </tr>
               ))}

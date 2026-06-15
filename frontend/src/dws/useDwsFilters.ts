@@ -6,11 +6,77 @@ import {
   fetchDwsMeta,
   type DwsEntityOption,
 } from '../config/localApi'
+import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
+
+export type DwsTimeFilterParams = {
+  statMonth?: string
+  dateFrom?: string
+  dateTo?: string
+  quarter?: string
+}
+
+export function useDwsUrlDeepLinkFilter() {
+  const ui = t.dwsDashboardUi
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const apiStatMonth = urlQuery.stat_month?.trim() || undefined
+  const apiDateFrom = urlQuery.date_from?.trim() || undefined
+  const apiDateTo = urlQuery.date_to?.trim() || undefined
+  const apiQuarter = urlQuery.quarter?.trim() || undefined
+  const highlightMonth = useMemo(() => {
+    const raw = urlQuery.stat_month?.trim()
+    if (!raw) return null
+    const m = parseInt(raw, 10)
+    return m >= 1 && m <= 12 ? m : null
+  }, [urlQuery.stat_month])
+  const highlightQuarter = useMemo(() => {
+    const raw = urlQuery.quarter?.trim()
+    if (!raw) return null
+    const q = parseInt(raw.replace(/^Q/i, ''), 10)
+    return q >= 1 && q <= 4 ? q : null
+  }, [urlQuery.quarter])
+  const flagContextHint = useMemo(() => {
+    if (highlightMonth != null) {
+      return ui.flagContextMonthHint.replace('{month}', String(highlightMonth))
+    }
+    if (highlightQuarter != null) {
+      return ui.flagContextQuarterHint.replace('{quarter}', String(highlightQuarter))
+    }
+    const from = urlQuery.date_from?.trim()
+    const to = urlQuery.date_to?.trim()
+    if (from && to) {
+      return ui.flagContextDateHint.replace('{from}', from).replace('{to}', to)
+    }
+    return null
+  }, [highlightMonth, highlightQuarter, urlQuery.date_from, urlQuery.date_to, ui])
+  const timeFilterParams: DwsTimeFilterParams = useMemo(
+    () => ({
+      statMonth: apiStatMonth,
+      dateFrom: apiDateFrom,
+      dateTo: apiDateTo,
+      quarter: apiQuarter,
+    }),
+    [apiStatMonth, apiDateFrom, apiDateTo, apiQuarter],
+  )
+  return {
+    urlQuery,
+    apiStatMonth,
+    apiDateFrom,
+    apiDateTo,
+    apiQuarter,
+    highlightMonth,
+    highlightQuarter,
+    flagContextHint,
+    timeFilterParams,
+  }
+}
 
 export type DwsFilterPoolOptions = {
   entityPool?: 'dws_trend' | 'analysis'
   requireBuyer?: boolean
   requireBothRoles?: boolean
+  /** 从 URL ?stat_year=&entity_id= 初始化筛选（深链恢复） */
+  initFromUrl?: boolean
 }
 
 export function formatDwsAmount(v: number | null | undefined): string {
@@ -27,9 +93,11 @@ export function useDwsFilters(requireEntity = false, poolOptions: DwsFilterPoolO
   const entityPool = poolOptions.entityPool ?? 'dws_trend'
   const requireBuyer = Boolean(poolOptions.requireBuyer)
   const requireBothRoles = Boolean(poolOptions.requireBothRoles)
+  const initFromUrl = Boolean(poolOptions.initFromUrl)
+  const urlQuery = useMemo(() => (initFromUrl ? readNavQueryParams() : {}), [initFromUrl])
   const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
-  const [entityId, setEntityId] = useState('')
+  const [statYear, setStatYear] = useState(() => urlQuery.stat_year ?? String(new Date().getFullYear()))
+  const [entityId, setEntityId] = useState(() => urlQuery.entity_id ?? '')
   const [entityOptions, setEntityOptions] = useState<DwsEntityOption[]>([])
   const [dwsReady, setDwsReady] = useState(false)
   const [metaHint, setMetaHint] = useState<string | null>(null)

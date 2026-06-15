@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
+import { useDimDictDomain } from './useDimDict'
 import {
   fetchAuditedEnterpriseRegistry,
   fetchAuditedEnterpriseRegistryMeta,
   postAuditedEnterpriseRegistryBootstrapDemo,
+  postAuditedEnterpriseRegistryImportExcel,
   postAuditedEnterpriseRegistryRow,
   type AuditedEnterpriseRegistryRow,
   type AuditedEnterpriseRegistrySummary,
@@ -83,14 +85,19 @@ function buildLedgerTableSegments(
   return segments
 }
 
-function renderLedgerRow(row: AuditedEnterpriseRegistryRow, seqNo: number, ui: (typeof t)['auditedEnterpriseLedgerUi']) {
+function renderLedgerRow(
+  row: AuditedEnterpriseRegistryRow,
+  seqNo: number,
+  ui: (typeof t)['auditedEnterpriseLedgerUi'],
+  domesticLabel: (code: string) => string,
+) {
   return (
     <tr key={`${row.code}-${row.snapshotYear}-${seqNo}`} className="border-b border-border-light last:border-b-0">
       <td className="px-3 py-2.5 tabular-nums text-text-3">{seqNo}</td>
       <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
       <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
       <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
-      <td className="px-3 py-2.5">{row.domesticOverseas}</td>
+      <td className="px-3 py-2.5">{domesticLabel(row.domesticOverseas)}</td>
       <td className="px-3 py-2.5 max-w-[220px]">{row.detailAddress}</td>
       <td className="px-3 py-2.5">{row.currency}</td>
       <td className="px-3 py-2.5 tabular-nums">{row.registeredCapital}</td>
@@ -113,6 +120,8 @@ function renderLedgerRow(row: AuditedEnterpriseRegistryRow, seqNo: number, ui: (
 
 export function AuditedEnterpriseLedgerPage() {
   const ui = t.auditedEnterpriseLedgerUi
+  const domesticOverseasDict = useDimDictDomain('domestic_overseas')
+  const defaultDomesticOverseas = domesticOverseasDict.options[0]?.code ?? '境内'
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [stateCapitalStatus, setStateCapitalStatus] = useState<StateCapitalStatus>('state_owned')
@@ -123,7 +132,7 @@ export function AuditedEnterpriseLedgerPage() {
   const [createSnapshotYear, setCreateSnapshotYear] = useState('2026')
   const [createCode, setCreateCode] = useState('')
   const [createName, setCreateName] = useState('')
-  const [createDomesticOverseas, setCreateDomesticOverseas] = useState('境内')
+  const [createDomesticOverseas, setCreateDomesticOverseas] = useState(defaultDomesticOverseas)
   const [createDetailAddress, setCreateDetailAddress] = useState('')
   const [createCurrency, setCreateCurrency] = useState('')
   const [createRegisteredCapital, setCreateRegisteredCapital] = useState('')
@@ -162,6 +171,7 @@ export function AuditedEnterpriseLedgerPage() {
   const [saveError, setSaveError] = useState('')
   const [importBanner, setImportBanner] = useState('')
   const [importBusy, setImportBusy] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -256,7 +266,7 @@ export function AuditedEnterpriseLedgerPage() {
     setCreateSnapshotYear(selectedYear)
     setCreateCode('')
     setCreateName('')
-    setCreateDomesticOverseas('境内')
+    setCreateDomesticOverseas(defaultDomesticOverseas)
     setCreateDetailAddress('')
     setCreateCurrency('')
     setCreateRegisteredCapital('')
@@ -325,6 +335,41 @@ export function AuditedEnterpriseLedgerPage() {
     }
     setImportBanner(ui.bootstrapDemoOk)
     await load()
+  }
+
+  const runExcelImport = async (file: File) => {
+    setImportBusy(true)
+    setImportBanner('')
+    const res = await postAuditedEnterpriseRegistryImportExcel(file)
+    setImportBusy(false)
+    if (!res.ok) {
+      setImportBanner(
+        (res.file_blocking ? ui.importFileBlocking : ui.importFailed) +
+          (res.error?.message ? `：${res.error.message}` : ''),
+      )
+      return
+    }
+    const rejected = res.rejected ?? 0
+    setImportBanner(
+      ui.importSuccess
+        .replace('{imported}', String(res.imported ?? 0))
+        .replace('{rejected}', String(rejected)),
+    )
+    if (rejected > 0 && res.reject_row_samples?.length) {
+      const sample = res.reject_row_samples[0]
+      setImportBanner(
+        (prev) =>
+          `${prev} ${ui.importRejectSample.replace('{seq}', String(sample.seq_no ?? '')).replace('{reason}', String(sample.reason ?? ''))}`,
+      )
+    }
+    await load()
+  }
+
+  const onPickImportFile = () => importFileRef.current?.click()
+  const onImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) void runExcelImport(file)
   }
 
   return (
@@ -467,7 +512,7 @@ export function AuditedEnterpriseLedgerPage() {
                       </tr>
                     )
                   }
-                  return renderLedgerRow(segment.row, segment.seqNo, ui)
+                  return renderLedgerRow(segment.row, segment.seqNo, ui, domesticOverseasDict.getLabel)
                 })
               )}
             </tbody>
@@ -563,12 +608,15 @@ export function AuditedEnterpriseLedgerPage() {
                 </label>
                 <label className="text-il-label text-text-2">
                   {ui.colDomesticOverseas}
-                  <input
-                    className="mt-1 w-full rounded-sm border border-border px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
+                  <select
+                    className="mt-1 w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
                     value={createDomesticOverseas}
                     onChange={(e) => setCreateDomesticOverseas(e.target.value)}
-                    placeholder={ui.domesticOverseasInputPlaceholder}
-                  />
+                  >
+                    {domesticOverseasDict.options.map((o) => (
+                      <option key={o.code} value={o.code}>{o.label}</option>
+                    ))}
+                  </select>
                 </label>
                 <label className="text-il-label text-text-2">
                   {ui.colCurrency}
@@ -764,10 +812,22 @@ export function AuditedEnterpriseLedgerPage() {
               </button>
             </div>
             <div className="rounded-sm border border-dashed border-[#9fc5f5] bg-[#f8fbff] px-4 py-6 text-center">
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={onImportFileChange}
+              />
               <div className="text-il-page-desc font-medium text-text">{ui.importDropTitle}</div>
               <div className="mt-1 text-il-meta text-text-3">{ui.importDropHint}</div>
-              <button type="button" className="mt-3 rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent">
-                {ui.importPickFile}
+              <button
+                type="button"
+                disabled={importBusy}
+                className="mt-3 rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                onClick={onPickImportFile}
+              >
+                {importBusy ? '…' : ui.importPickFile}
               </button>
               <div className="mt-4">
                 <button

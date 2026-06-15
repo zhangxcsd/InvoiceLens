@@ -20,8 +20,12 @@ SETTINGS = {
     "cr1_warn": 0.30,
     "cr1_high": 0.50,
     "min_graph_amount": 10000.0,
+    # 关联图谱 SVG 节点上限，超出则 API 返回 truncated 且不渲染全图
+    "max_graph_nodes": 50,
     # L1 分析主体池：当年发票张数下限（含等于，见 analysis_subject_pool）
     "min_analysis_subject_invoice_count": 10,
+    # 进销偏离：单档税率占比差（百分点，0~100）超过该阈值时告警并写入疑点
+    "tax_in_out_deviation_threshold_pct": 10.0,
 }
 
 IMPORT_SETTINGS = {

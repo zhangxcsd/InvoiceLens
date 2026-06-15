@@ -14,8 +14,16 @@ DEFAULT_CHAPTERS: dict[str, bool] = {
     "structure": True,
     "supplier": True,
     "audit_flags": True,
+    "flags_track": True,
     "related": True,
     "compare": True,
+    "supplier_new": False,
+    "trade_relationships": False,
+    "tax_in_out_deviation": False,
+    "finance_reconcile": False,
+    "data_quality_summary": False,
+    "tax_code_analysis": False,
+    "tax_risk_exposure": False,
 }
 
 
@@ -119,6 +127,169 @@ def _query_top_suppliers(conn: Any, stat_year: int, limit: int = 10) -> list[tup
     ]
 
 
+def _query_confirmed_flags(conn: Any, stat_year: int, limit: int = 50) -> list[tuple[str, str, str, str, str, str]]:
+    from src.audit.config_loader import group_id_for_year
+
+    gid = group_id_for_year(stat_year)
+    rows = conn.execute(
+        """
+        SELECT rule_id, risk_level, entity_name, seller_name, description, coalesce(confirm_note, '')
+        FROM dm_audit_flag
+        WHERE group_id = ? AND COALESCE(is_confirmed, FALSE) = TRUE
+        ORDER BY
+            CASE risk_level WHEN '高风险' THEN 1 WHEN '中风险' THEN 2 ELSE 3 END,
+            amount DESC NULLS LAST
+        LIMIT ?
+        """,
+        [gid, limit],
+    ).fetchall()
+    return [
+        (str(r[0] or ""), str(r[1] or ""), str(r[2] or ""), str(r[3] or ""), str(r[4] or ""), str(r[5] or ""))
+        for r in rows or []
+    ]
+
+
+def _query_flags_by_rule(conn: Any, stat_year: int) -> list[tuple[str, int, int]]:
+    from src.audit.config_loader import group_id_for_year
+
+    gid = group_id_for_year(stat_year)
+    rows = conn.execute(
+        """
+        SELECT rule_id,
+               count(*)::BIGINT,
+               sum(CASE WHEN COALESCE(is_confirmed, FALSE) THEN 1 ELSE 0 END)::BIGINT
+        FROM dm_audit_flag
+        WHERE group_id = ?
+        GROUP BY rule_id
+        ORDER BY count(*) DESC, rule_id
+        """,
+        [gid],
+    ).fetchall()
+    return [(str(r[0] or ""), int(r[1] or 0), int(r[2] or 0)) for r in rows or []]
+
+
+def _query_supplier_new(conn: Any, stat_year: int, limit: int = 20) -> list[tuple[str, str, float]]:
+    rows = conn.execute(
+        """
+        SELECT entity_name, supplier_name, net_jshj
+        FROM dws_sup_churn
+        WHERE stat_year = ? AND churn_kind = 'new'
+        ORDER BY net_jshj DESC NULLS LAST
+        LIMIT ?
+        """,
+        [stat_year, limit],
+    ).fetchall()
+    return [(str(r[0] or ""), str(r[1] or ""), float(r[2] or 0)) for r in rows or []]
+
+
+def _query_trade_top(conn: Any, stat_year: int, limit: int = 20) -> list[tuple[str, str, str, float]]:
+    rows = conn.execute(
+        """
+        SELECT entity_name, counterparty_name, counterparty_role, total_amount
+        FROM dws_trade_sum
+        WHERE stat_year = ?
+        ORDER BY abs(total_amount) DESC NULLS LAST
+        LIMIT ?
+        """,
+        [stat_year, limit],
+    ).fetchall()
+    return [
+        (str(r[0] or ""), str(r[1] or ""), str(r[2] or ""), float(r[3] or 0))
+        for r in rows or []
+    ]
+
+
+def _query_tax_deviation_summary(conn: Any, stat_year: int, limit: int = 10) -> list[tuple[str, str, float, float]]:
+    """各主体进销结构偏离度（需 DWS 已刷新）。"""
+    try:
+        rows = conn.execute(
+            """
+            SELECT entity_id, any_value(entity_name), 0.0, 0.0
+            FROM dws_inv_trend
+            WHERE stat_year = ?
+            GROUP BY entity_id
+            LIMIT ?
+            """,
+            [stat_year, limit],
+        ).fetchall()
+        out: list[tuple[str, str, float, float]] = []
+        for r in rows or []:
+            eid = str(r[0] or "")
+            ename = str(r[1] or eid)
+            dev = None
+            try:
+                from src.local_api.dws_dashboard_api import api_dws_tax_in_out_deviation
+
+                dev = api_dws_tax_in_out_deviation(conn, stat_year=str(stat_year), entity_id=eid)
+            except Exception:
+                pass
+            if dev and dev.get("ok"):
+                out.append(
+                    (
+                        ename,
+                        eid,
+                        float(dev.get("mix_deviation_l1") or 0),
+                        float(dev.get("exceeded_bucket_count") or 0),
+                    )
+                )
+        out.sort(key=lambda x: x[2], reverse=True)
+        return out[:limit]
+    except Exception:
+        return []
+
+
+def _query_finance_reconcile_summary(
+    conn: Any, stat_year: int, limit: int = 15
+) -> tuple[dict[str, dict[str, Any]], list[tuple[str, str, str, str, float, float, float]]]:
+    """财务账票核对差异汇总（按最新导入批次）。"""
+    try:
+        from src.local_api.finance_reconcile_api import _build_reconcile_rows
+
+        batch_row = conn.execute(
+            """
+            SELECT batch_id
+            FROM dm_finance_ledger_batch
+            WHERE stat_year = ?
+            ORDER BY imported_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            [stat_year],
+        ).fetchone()
+        if not batch_row or not batch_row[0]:
+            return {}, []
+        batch_id = str(batch_row[0])
+        rows = _build_reconcile_rows(conn, batch_id=batch_id, stat_year=stat_year)
+        summary: dict[str, dict[str, Any]] = {
+            c: {"count": 0, "diff_amount": 0.0} for c in ("A", "B", "C", "D")
+        }
+        top: list[tuple[str, str, str, str, float, float, float]] = []
+        for r in rows:
+            dt = str(r.get("diff_type") or "")
+            if dt == "MATCH":
+                continue
+            if dt in summary:
+                summary[dt]["count"] += 1
+                summary[dt]["diff_amount"] = round(
+                    summary[dt]["diff_amount"] + abs(float(r.get("diff_amount") or 0)), 2
+                )
+            top.append(
+                (
+                    str(r.get("entity_name") or r.get("tax_id") or ""),
+                    str(r.get("tax_id") or ""),
+                    dt,
+                    str(r.get("subject_name") or r.get("subject_code") or "—"),
+                    float(r.get("ledger_amount") or 0) if r.get("ledger_amount") is not None else 0.0,
+                    float(r.get("invoice_net") or 0) if r.get("invoice_net") is not None else 0.0,
+                    abs(float(r.get("diff_amount") or 0)),
+                )
+            )
+        top.sort(key=lambda x: x[6], reverse=True)
+        return summary, top[:limit]
+    except Exception:
+        logger.exception("finance reconcile report summary")
+        return {}, []
+
+
 def _query_flags(conn: Any, stat_year: int, limit: int = 50) -> list[tuple[str, str, str, str, str]]:
     from src.audit.config_loader import group_id_for_year
 
@@ -139,6 +310,75 @@ def _query_flags(conn: Any, stat_year: int, limit: int = 50) -> list[tuple[str, 
         (str(r[0] or ""), str(r[1] or ""), str(r[2] or ""), str(r[3] or ""), str(r[4] or ""))
         for r in rows or []
     ]
+
+
+def _query_data_quality_summary(conn: Any, stat_year: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """导入质量域 KPI 与分域指标（轻量摘要，完整明细见交付包 CSV）。"""
+    try:
+        from src.local_api.data_quality import load_dq_domain_overview
+
+        dq = load_dq_domain_overview(conn, stat_year=stat_year)
+        if not dq.get("ok"):
+            return None
+        return dict(dq.get("kpi") or {}), dict(dq.get("domains") or {})
+    except Exception:
+        logger.exception("data_quality report summary")
+        return None
+
+
+def _query_tax_code_summary(conn: Any, stat_year: int) -> dict[str, Any] | None:
+    """税收分类编码覆盖率摘要。"""
+    try:
+        from src.local_api.tax_code_analysis_api import api_tax_code_analysis_overview
+
+        payload = api_tax_code_analysis_overview(conn, stat_year=str(stat_year))
+        if not payload.get("ok"):
+            return None
+        return dict(payload.get("data") or payload)
+    except Exception:
+        logger.exception("tax_code report summary")
+        return None
+
+
+def _query_tax_risk_summary(conn: Any, stat_year: int, limit: int = 15) -> list[tuple[str, str, float, float, float]]:
+    """税风险敞口 Top 主体摘要。"""
+    try:
+        from src.local_api.dws_dashboard_api import api_dws_tax_risk_exposure
+
+        rows = conn.execute(
+            """
+            SELECT trim(COALESCE(entity_id, '')) AS eid,
+                   max(trim(COALESCE(entity_name, ''))) AS ename
+            FROM ads_scorecard
+            WHERE stat_year = ? AND length(trim(COALESCE(entity_id, ''))) > 0
+            GROUP BY 1
+            ORDER BY 1
+            LIMIT ?
+            """,
+            [stat_year, limit],
+        ).fetchall()
+        out: list[tuple[str, str, float, float, float]] = []
+        for r in rows or []:
+            eid, ename = str(r[0] or ""), str(r[1] or "")
+            if not eid:
+                continue
+            payload = api_dws_tax_risk_exposure(conn, stat_year=str(stat_year), entity_id=eid)
+            if not payload.get("ok"):
+                continue
+            out.append(
+                (
+                    ename or eid,
+                    eid,
+                    float(payload.get("total_exposure") or 0),
+                    float(payload.get("deviation_exposure") or 0),
+                    float(payload.get("high_risk_coding_amount") or 0),
+                )
+            )
+        out.sort(key=lambda x: x[2], reverse=True)
+        return out[:limit]
+    except Exception:
+        logger.exception("tax_risk report summary")
+        return []
 
 
 def _query_related(conn: Any, stat_year: int) -> tuple[list[tuple], list[tuple]]:
@@ -284,7 +524,20 @@ def generate_audit_report_docx(
 
     if _chapter_enabled(chapters, "audit_flags"):
         _add_heading(doc, "第四章  审计疑点清单", 1)
+        rule_dist = _query_flags_by_rule(conn, stat_year)
+        if rule_dist:
+            doc.add_heading("4.1 按规则分布", level=2)
+            table = doc.add_table(rows=len(rule_dist) + 1, cols=3)
+            table.style = "Table Grid"
+            hdr = ("规则", "疑点总数", "已确认")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (rule, total_n, confirmed_n) in enumerate(rule_dist, start=1):
+                table.rows[i].cells[0].text = rule
+                table.rows[i].cells[1].text = str(total_n)
+                table.rows[i].cells[2].text = str(confirmed_n)
         flags = _query_flags(conn, stat_year)
+        doc.add_heading("4.2 疑点明细（Top）", level=2)
         if flags:
             table = doc.add_table(rows=len(flags) + 1, cols=5)
             table.style = "Table Grid"
@@ -299,6 +552,206 @@ def generate_audit_report_docx(
                 table.rows[i].cells[4].text = (desc or "")[:200]
         else:
             doc.add_paragraph("（当前年度暂无审计疑点，请先运行疑点扫描。）")
+
+    if _chapter_enabled(chapters, "flags_track"):
+        _add_heading(doc, "附录  已确认疑点摘要", 1)
+        confirmed = _query_confirmed_flags(conn, stat_year)
+        if confirmed:
+            table = doc.add_table(rows=len(confirmed) + 1, cols=6)
+            table.style = "Table Grid"
+            hdr = ("规则", "风险", "企业", "供应商", "描述", "跟踪说明")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (rule, risk, ent, seller, desc, note) in enumerate(confirmed, start=1):
+                table.rows[i].cells[0].text = rule
+                table.rows[i].cells[1].text = risk
+                table.rows[i].cells[2].text = ent or "—"
+                table.rows[i].cells[3].text = seller or "—"
+                table.rows[i].cells[4].text = (desc or "")[:160]
+                table.rows[i].cells[5].text = (note or "")[:160]
+        else:
+            doc.add_paragraph("（当前年度暂无已确认疑点。）")
+
+    if _chapter_enabled(chapters, "supplier_new"):
+        _add_heading(doc, "专题  新增供应商", 1)
+        news = _query_supplier_new(conn, stat_year)
+        if news:
+            table = doc.add_table(rows=len(news) + 1, cols=3)
+            table.style = "Table Grid"
+            hdr = ("购方企业", "新增供应商", "采购净额")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (ent, sup, amt) in enumerate(news, start=1):
+                table.rows[i].cells[0].text = ent or "—"
+                table.rows[i].cells[1].text = sup or "—"
+                table.rows[i].cells[2].text = _fmt_amount(amt)
+        else:
+            doc.add_paragraph("（暂无新增供应商数据。）")
+
+    if _chapter_enabled(chapters, "trade_relationships"):
+        _add_heading(doc, "专题  往来关系摘要", 1)
+        trades = _query_trade_top(conn, stat_year)
+        if trades:
+            table = doc.add_table(rows=len(trades) + 1, cols=4)
+            table.style = "Table Grid"
+            hdr = ("主体", "对方", "角色", "金额")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (ent, cp, role, amt) in enumerate(trades, start=1):
+                table.rows[i].cells[0].text = ent or "—"
+                table.rows[i].cells[1].text = cp or "—"
+                table.rows[i].cells[2].text = role or "—"
+                table.rows[i].cells[3].text = _fmt_amount(amt)
+        else:
+            doc.add_paragraph("（暂无往来关系数据。）")
+
+    if _chapter_enabled(chapters, "tax_in_out_deviation"):
+        _add_heading(doc, "专题  进销偏离分析", 1)
+        dev_rows = _query_tax_deviation_summary(conn, stat_year)
+        if dev_rows:
+            table = doc.add_table(rows=len(dev_rows) + 1, cols=4)
+            table.style = "Table Grid"
+            hdr = ("企业", "税号", "结构偏离度", "超阈值档位数")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (ename, eid, mix, exc) in enumerate(dev_rows, start=1):
+                table.rows[i].cells[0].text = ename
+                table.rows[i].cells[1].text = eid
+                table.rows[i].cells[2].text = f"{mix:.4f}"
+                table.rows[i].cells[3].text = str(int(exc))
+        else:
+            doc.add_paragraph("（暂无进销偏离分析数据。）")
+
+    if _chapter_enabled(chapters, "finance_reconcile"):
+        _add_heading(doc, "专题  财务账票核对差异", 1)
+        fin_summary, fin_top = _query_finance_reconcile_summary(conn, stat_year)
+        if fin_summary and any(fin_summary[c]["count"] > 0 for c in fin_summary):
+            doc.add_paragraph(
+                "以下汇总基于该年度最近导入的财务账表批次与 DWD 发票净额比对结果；"
+                "差异类型 A=票面有账面无，B=账面有票面无，C=双方有金额不一致，D=待分类。"
+            )
+            type_rows = [
+                ("A 票面有账面无", str(fin_summary["A"]["count"]), _fmt_amount(fin_summary["A"]["diff_amount"])),
+                ("B 账面有票面无", str(fin_summary["B"]["count"]), _fmt_amount(fin_summary["B"]["diff_amount"])),
+                ("C 金额不一致", str(fin_summary["C"]["count"]), _fmt_amount(fin_summary["C"]["diff_amount"])),
+                ("D 待分类", str(fin_summary["D"]["count"]), _fmt_amount(fin_summary["D"]["diff_amount"])),
+            ]
+            table = doc.add_table(rows=len(type_rows) + 1, cols=3)
+            table.style = "Table Grid"
+            for j, h in enumerate(("差异类型", "笔数", "差异金额合计")):
+                table.rows[0].cells[j].text = h
+            for i, row in enumerate(type_rows, start=1):
+                for j, val in enumerate(row):
+                    table.rows[i].cells[j].text = val
+            if fin_top:
+                doc.add_heading("差异金额 Top 明细", level=2)
+                table2 = doc.add_table(rows=len(fin_top) + 1, cols=7)
+                table2.style = "Table Grid"
+                hdr = ("主体", "税号", "类型", "科目", "账表金额", "发票净额", "差异金额")
+                for j, h in enumerate(hdr):
+                    table2.rows[0].cells[j].text = h
+                for i, (ename, eid, dt, subj, led, inv, diff) in enumerate(fin_top, start=1):
+                    table2.rows[i].cells[0].text = ename or "—"
+                    table2.rows[i].cells[1].text = eid or "—"
+                    table2.rows[i].cells[2].text = dt
+                    table2.rows[i].cells[3].text = subj or "—"
+                    table2.rows[i].cells[4].text = _fmt_amount(led) if led else "—"
+                    table2.rows[i].cells[5].text = _fmt_amount(inv) if inv else "—"
+                    table2.rows[i].cells[6].text = _fmt_amount(diff)
+        else:
+            doc.add_paragraph("（暂无财务账票核对差异数据，请先导入账表并完成核对。）")
+
+    if _chapter_enabled(chapters, "data_quality_summary"):
+        _add_heading(doc, "专题  数据质量域摘要", 1)
+        dq_pair = _query_data_quality_summary(conn, stat_year)
+        if dq_pair:
+            kpi, domains = dq_pair
+            _add_kv_table(
+                doc,
+                [
+                    ("已扫描票头", str(kpi.get("scanned_headers") or 0)),
+                    ("异常票头", str(kpi.get("anomaly_headers") or 0)),
+                    ("阻塞级", str(kpi.get("block_count") or 0)),
+                    ("警告级", str(kpi.get("warn_count") or 0)),
+                    ("提示级", str(kpi.get("info_count") or 0)),
+                ],
+            )
+            domain_rows: list[tuple[str, str, str]] = []
+            label_map = {
+                "uniqueness": "身份与键·唯一性",
+                "tax_id": "购销方识别号",
+                "cross_table": "跨表对齐",
+                "header_detail": "头明细一致",
+                "semantic": "语义与专项",
+                "red_link": "红冲关联",
+            }
+            for key, label in label_map.items():
+                block = domains.get(key) or {}
+                if not isinstance(block, dict):
+                    continue
+                primary = next((str(v) for k, v in block.items() if k.endswith("_count") or k.endswith("_tickets")), "—")
+                if primary != "—" and primary not in ("0", "None"):
+                    domain_rows.append((label, primary, "见交付包 data_quality CSV"))
+            if domain_rows:
+                doc.add_heading("分域指标（节选）", level=2)
+                table = doc.add_table(rows=len(domain_rows) + 1, cols=3)
+                table.style = "Table Grid"
+                for j, h in enumerate(("质量域", "指标值", "说明")):
+                    table.rows[0].cells[j].text = h
+                for i, row in enumerate(domain_rows, start=1):
+                    for j, val in enumerate(row):
+                        table.rows[i].cells[j].text = val
+            doc.add_paragraph(
+                "说明：完整分域指标已写入交付包 exports/data_quality_domain_summary_{year}.csv。".format(
+                    year=stat_year
+                )
+            )
+        else:
+            doc.add_paragraph("（暂无数据质量扫描结果，请先完成导入质量评估。）")
+
+    if _chapter_enabled(chapters, "tax_code_analysis"):
+        _add_heading(doc, "专题  税收分类编码分析", 1)
+        tax = _query_tax_code_summary(conn, stat_year)
+        if tax:
+            _add_kv_table(
+                doc,
+                [
+                    ("含编码明细行", str(tax.get("lines_with_code") or 0)),
+                    ("维表命中行", str(tax.get("matched_lines") or 0)),
+                    ("未匹配行", str(tax.get("unmatched_lines") or 0)),
+                    ("命中率", _fmt_pct(float(tax.get("match_rate") or 0))),
+                    ("未匹配金额", _fmt_amount(float(tax.get("unmatched_amount") or 0))),
+                    ("HIGH 类目税额占比", _fmt_pct(float(tax.get("high_risk_amount_share") or 0))),
+                ],
+            )
+            if tax.get("top_category_name"):
+                doc.add_paragraph(
+                    f"Top1 二级类目：{tax.get('top_category_name')}（占比 {_fmt_pct(float(tax.get('top_category_share') or 0))}）"
+                )
+        else:
+            doc.add_paragraph("（暂无税收分类编码分析数据，请先维护 dim_tax_code 并完成 DWD 落盘。）")
+
+    if _chapter_enabled(chapters, "tax_risk_exposure"):
+        _add_heading(doc, "专题  税风险敞口", 1)
+        risk_rows = _query_tax_risk_summary(conn, stat_year)
+        if risk_rows:
+            doc.add_paragraph(
+                "敞口口径：超阈值进销偏离档位金额差 + 高风险税收分类编码税额 + RULE-05/08 疑点金额 + RULE-TAX-DEV；"
+                "完整分项见交付包 exports/tax_risk_exposure CSV。"
+            )
+            table = doc.add_table(rows=len(risk_rows) + 1, cols=5)
+            table.style = "Table Grid"
+            hdr = ("企业", "税号", "总敞口", "偏离敞口", "高风险编码税额")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (ename, eid, total, dev, coding) in enumerate(risk_rows, start=1):
+                table.rows[i].cells[0].text = ename
+                table.rows[i].cells[1].text = eid
+                table.rows[i].cells[2].text = _fmt_amount(total)
+                table.rows[i].cells[3].text = _fmt_amount(dev)
+                table.rows[i].cells[4].text = _fmt_amount(coding)
+        else:
+            doc.add_paragraph("（暂无税风险敞口数据，请先完成 DWS 聚合与进销偏离分析。）")
 
     if _chapter_enabled(chapters, "related"):
         _add_heading(doc, "第五章  关联交易分析", 1)

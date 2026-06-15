@@ -1,0 +1,48 @@
+name: field-mapping-template-zip-smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/field_mapping_template_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'frontend/src/fieldMapping/MappingTemplatesPrototype.tsx'
+      - 'frontend/src/config/localApi.ts'
+      - 'frontend/src/copy/zh-CN.ts'
+      - 'scripts/test_field_mapping_template_zip_smoke.py'
+      - 'scripts/test_field_mapping_templates_instance_smoke.py'
+      - 'scripts/test_import_field_mapping_template_smoke.py'
+  pull_request:
+    paths:
+      - 'src/local_api/field_mapping_template_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'frontend/src/fieldMapping/MappingTemplatesPrototype.tsx'
+      - 'frontend/src/config/localApi.ts'
+      - 'frontend/src/copy/zh-CN.ts'
+      - 'scripts/test_field_mapping_template_zip_smoke.py'
+      - 'scripts/test_field_mapping_templates_instance_smoke.py'
+      - 'scripts/test_import_field_mapping_template_smoke.py'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Run field mapping template ZIP smoke
+        run: python scripts/test_field_mapping_template_zip_smoke.py
+      - name: Run related field mapping template smokes
+        run: |
+          python scripts/test_field_mapping_templates_instance_smoke.py
+          python scripts/test_import_field_mapping_template_smoke.py
+      - name: Frontend build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build

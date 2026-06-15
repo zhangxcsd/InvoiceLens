@@ -3,8 +3,11 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchAuditedEnterpriseInvoiceLink, type AuditedEnterpriseInvoiceLinkRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { DWD_DIM_EXTRA_FOCUS_TASKS, navToDwdDimWithTask } from '../dwd/dwdDimNav'
+import type { NavKey } from '../types'
+import { navToSubjectLibrary } from './subjectLibraryNav'
 
-export function AuditedEnterpriseInvoiceLinkPage() {
+export function AuditedEnterpriseInvoiceLinkPage(props: { onNav?: (k: NavKey) => void }) {
   const ui = t.auditedEnterpriseInvoiceLinkUi
   const [snapshotYear, setSnapshotYear] = useState('2026')
   const [snapshotYears, setSnapshotYears] = useState<string[]>(['2026'])
@@ -67,6 +70,8 @@ export function AuditedEnterpriseInvoiceLinkPage() {
   const hasBaseData = rows.length > 0
   const emptyMessage = loading ? '…' : loadError || (hasBaseData ? ui.emptyByFilter : ui.emptyByData)
 
+  const canNavigate = (status: string) => status === '已匹配' || status === '名称兜底匹配'
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
@@ -74,7 +79,7 @@ export function AuditedEnterpriseInvoiceLinkPage() {
         description={ui.pageDesc}
         note={ui.pageNote}
         noteTone="compact"
-        badgeText={ui.prototypeBadge}
+        badgeText={ui.prototypeBadge || undefined}
       />
       {loadError ? <p className="-mt-3 mb-5 text-il-meta text-red-600">{loadError}</p> : null}
 
@@ -152,38 +157,74 @@ export function AuditedEnterpriseInvoiceLinkPage() {
           <div className="flex items-end text-il-meta text-text-3">{ui.tableHint.replace('{count}', String(filteredRows.length))}</div>
         </div>
         <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1240px] border-collapse text-il-page-desc">
+          <table className="w-full min-w-[1320px] border-collapse text-il-page-desc">
             <thead>
               <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
                 <th className="px-3 py-2 font-medium">{ui.colName}</th>
                 <th className="px-3 py-2 font-medium">{ui.colCode}</th>
+                <th className="px-3 py-2 font-medium">{ui.colEntityId}</th>
                 <th className="px-3 py-2 font-medium">{ui.colStateCapitalStatus}</th>
                 <th className="px-3 py-2 font-medium">{ui.colMatchKey}</th>
                 <th className="px-3 py-2 font-medium">{ui.colLinkedTaxpayerId}</th>
                 <th className="px-3 py-2 font-medium">{ui.colPendingReason}</th>
                 <th className="px-3 py-2 font-medium">{ui.colMatchStatus}</th>
+                {props.onNav ? <th className="px-3 py-2 font-medium">{ui.colActions}</th> : null}
               </tr>
             </thead>
             <tbody className="text-text-2">
               {filteredRows.length > 0 ? (
-                filteredRows.map((row) => (
-                  <tr key={`${row.name}_${row.code}`} className="border-b border-border-light last:border-b-0">
-                    <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code || '—'}</td>
-                    <td className="px-3 py-2.5">{row.stateCapitalStatus}</td>
-                    <td className="px-3 py-2.5">{row.matchKey}</td>
-                    <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.linkedTaxpayerId}</td>
-                    <td className="px-3 py-2.5">{row.pendingReason?.trim() ? row.pendingReason : '—'}</td>
-                    <td className="px-3 py-2.5">
-                      <span className={['inline-flex rounded-full border px-2 py-0.5 text-il-meta font-medium', getStatusClass(row.matchStatus)].join(' ')}>
-                        {row.matchStatus}
-                      </span>
-                    </td>
-                  </tr>
-                ))
+                filteredRows.map((row) => {
+                  const subjectKw = row.linkedTaxpayerId !== '-' ? row.linkedTaxpayerId : row.code || row.name
+                  const navReady = props.onNav && canNavigate(row.matchStatus)
+                  return (
+                    <tr key={`${row.name}_${row.code}`} className="border-b border-border-light last:border-b-0">
+                      <td className="px-3 py-2.5 font-medium text-text">{row.name}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code || '—'}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code || '—'}</td>
+                      <td className="px-3 py-2.5">{row.stateCapitalStatus}</td>
+                      <td className="px-3 py-2.5">{row.matchKey}</td>
+                      <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.linkedTaxpayerId}</td>
+                      <td className="px-3 py-2.5">{row.pendingReason?.trim() ? row.pendingReason : '—'}</td>
+                      <td className="px-3 py-2.5">
+                        <span className={['inline-flex rounded-full border px-2 py-0.5 text-il-meta font-medium', getStatusClass(row.matchStatus)].join(' ')}>
+                          {row.matchStatus}
+                        </span>
+                      </td>
+                      {props.onNav ? (
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              className="text-il-label text-accent hover:underline disabled:text-text-3 disabled:no-underline"
+                              disabled={!navReady}
+                              onClick={() => navToSubjectLibrary(props.onNav!, subjectKw)}
+                            >
+                              {ui.actionSubjectLibrary}
+                            </button>
+                            <button
+                              type="button"
+                              className="text-il-label text-accent hover:underline disabled:text-text-3 disabled:no-underline"
+                              disabled={!navReady}
+                              onClick={() => props.onNav?.('dim_audit_related_library')}
+                            >
+                              {ui.actionCoverage}
+                            </button>
+                            <button
+                              type="button"
+                              className="text-il-label text-accent hover:underline"
+                              onClick={() => navToDwdDimWithTask(props.onNav!, DWD_DIM_EXTRA_FOCUS_TASKS.enterpriseMappingCheck)}
+                            >
+                              {ui.actionDwdMapping}
+                            </button>
+                          </div>
+                        </td>
+                      ) : null}
+                    </tr>
+                  )
+                })
               ) : (
                 <tr>
-                  <td className="px-3 py-6 text-center text-text-3" colSpan={7}>
+                  <td className="px-3 py-6 text-center text-text-3" colSpan={props.onNav ? 9 : 8}>
                     {emptyMessage}
                   </td>
                 </tr>

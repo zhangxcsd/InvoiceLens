@@ -16,11 +16,15 @@ type AuditedEnterpriseFiltersProps = {
   resetLabel: string
   canReset: boolean
   onReset: () => void
+  hideStateInvestor?: boolean
 }
 
 export function AuditedEnterpriseFilters(props: AuditedEnterpriseFiltersProps) {
+  const gridCls = props.hideStateInvestor
+    ? 'mb-3 grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end'
+    : 'mb-3 grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end'
   return (
-    <div className="mb-3 grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end">
+    <div className={gridCls}>
       <label className="text-il-label text-text-2">
         <div className="mb-1 text-text-3">{props.yearLabel}</div>
         <select
@@ -37,6 +41,7 @@ export function AuditedEnterpriseFilters(props: AuditedEnterpriseFiltersProps) {
         </select>
       </label>
 
+      {props.hideStateInvestor ? null : (
       <label className="text-il-label text-text-2">
         <div className="mb-1 text-text-3">{props.stateInvestorLabel}</div>
         <select
@@ -52,6 +57,7 @@ export function AuditedEnterpriseFilters(props: AuditedEnterpriseFiltersProps) {
           ))}
         </select>
       </label>
+      )}
 
       <label className="text-il-label text-text-2">
         <div className="mb-1 text-text-3">{props.enterpriseLabel}</div>

@@ -1,0 +1,26 @@
+name: Dim Caliber Version Smoke
+
+on:
+  push:
+    paths:
+      - 'scripts/test_dim_caliber_version_smoke.py'
+      - 'src/local_api/dim_caliber_version_api.py'
+      - '.github/workflows/dim-caliber-version-smoke.yml'
+  pull_request:
+    paths:
+      - 'scripts/test_dim_caliber_version_smoke.py'
+      - 'src/local_api/dim_caliber_version_api.py'
+      - '.github/workflows/dim-caliber-version-smoke.yml'
+
+jobs:
+  dim-caliber-version-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install duckdb
+      - name: Run smoke
+        run: python scripts/test_dim_caliber_version_smoke.py

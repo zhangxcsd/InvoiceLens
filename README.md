@@ -64,6 +64,7 @@ HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
 - 树形回归测试约定（Playwright）：`docs/playwright_tree_regression_convention.md`
 - 前端字体与排版规范（Tailwind `il-*`）：`docs/frontend-typography.md`
 - 企业年度关系回填运行手册（Runbook）：`docs/dim_enterprise_year_rel_runbook.md`
+- **离线打包（PyInstaller）**：`docs/packaging.md`
 - 主体库命名收敛清单（术语/字段统一基准）：`docs/subject_naming_convergence.md`
 - 主体库分域规则（组织机构主体/自然人主体）：`docs/subject_dimension_split_rules.md`
 - 主体库范围与数据职责（主数据/血缘/更名口径决策）：`docs/subject_library_scope_decision.md`

@@ -1,7 +1,7 @@
 """
 年度一级企业名单 dim_level1_enterprise_year 读写 API。
 
-与 dim_group_enterprise_year.level1_group_id 税号口径对齐；按 stat_year 独立维护清单。
+与 dim_enterprise_year_roster.state_investor_unified_credit_code 税号口径对齐；按 stat_year 独立维护清单。
 """
 
 from __future__ import annotations
@@ -142,7 +142,7 @@ def _group_level1_name_map(conn: Any, year_i: int) -> dict[str, str]:
             [year_i],
         ).fetchall()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("读取集团 level1 名称映射失败: %s", exc)
+        logger.warning("读取花名册一级企业名称映射失败: %s", exc)
         return {}
     out: dict[str, str] = {}
     for norm_id, name in rows or []:
@@ -158,7 +158,7 @@ def api_level1_enterprise_year_preview_from_previous(conn: Any, body: dict[str, 
     """
     预览从来源年度复制/推导到目标年度的行（不写库）。
     mode=copy：原样复制来源年度名单；
-    mode=derive：在 copy 基础上用目标年度集团成员表刷新名称，并追加成员表中新出现的一级企业。
+    mode=derive：在 copy 基础上用目标年度花名册刷新名称，并追加花名册中新出现的一级企业。
     """
     target_i = _safe_int_year(body.get("target_stat_year") or body.get("targetStatYear"))
     source_i = _resolve_source_year(target_i, body.get("source_stat_year") or body.get("sourceStatYear"))
@@ -193,7 +193,7 @@ def api_level1_enterprise_year_preview_from_previous(conn: Any, body: dict[str, 
             gname = group_names[eid]
             if gname and gname != name:
                 name = gname
-                derive_hint = "名称已按目标年度集团成员表刷新"
+                derive_hint = "名称已按目标年度花名册刷新"
         preview.append(
             {
                 "level1_enterprise_id": eid,
@@ -221,8 +221,8 @@ def api_level1_enterprise_year_preview_from_previous(conn: Any, body: dict[str, 
                     "level1_enterprise_name": gname,
                     "display_order": order_base,
                     "is_active": True,
-                    "remark": "由目标年度集团成员表推导新增",
-                    "derive_hint": "集团成员表中出现、上年度计划未包含",
+                    "remark": "由目标年度花名册推导新增",
+                    "derive_hint": "花名册中出现、上年度计划未包含",
                     "already_in_target": eid in existing_target,
                     "from_group_extra": True,
                 }

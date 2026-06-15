@@ -4,8 +4,10 @@ import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
   fetchDwsTaxInOutDeviation,
   type DwsTaxInOutDeviationRow,
+  type TaxDevFlagSummary,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { navigateToFlagsList, navigateToReportConfig } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
 
@@ -18,7 +20,9 @@ const BUCKET_COLORS: Record<string, string> = {
   其他: 'bg-[#7030a0]',
 }
 
-export function TaxInOutDeviationPage() {
+type Props = { onNav?: (key: import('../types').NavKey) => void }
+
+export function TaxInOutDeviationPage({ onNav }: Props) {
   const ui = t.taxInOutDeviationUi
   const dash = t.dwsDashboardUi
   const f = useDwsFilters(true, { entityPool: 'analysis', requireBothRoles: true })
@@ -27,6 +31,9 @@ export function TaxInOutDeviationPage() {
   const [outputTotal, setOutputTotal] = useState(0)
   const [amountRatio, setAmountRatio] = useState<number | null>(null)
   const [mixDeviation, setMixDeviation] = useState(0)
+  const [deviationThresholdPct, setDeviationThresholdPct] = useState(10)
+  const [exceededBucketCount, setExceededBucketCount] = useState(0)
+  const [taxDevFlags, setTaxDevFlags] = useState<TaxDevFlagSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -40,6 +47,7 @@ export function TaxInOutDeviationPage() {
       setOutputTotal(0)
       setAmountRatio(null)
       setMixDeviation(0)
+      setTaxDevFlags(null)
       return
     }
     setLoading(true)
@@ -60,6 +68,9 @@ export function TaxInOutDeviationPage() {
       setOutputTotal(res.output_total_amount_je ?? 0)
       setAmountRatio(res.amount_ratio_input_over_output ?? null)
       setMixDeviation(res.mix_deviation_l1 ?? 0)
+      setDeviationThresholdPct(res.deviation_threshold_pct ?? 10)
+      setExceededBucketCount(res.exceeded_bucket_count ?? 0)
+      setTaxDevFlags(res.tax_dev_flags ?? null)
     } finally {
       setLoading(false)
     }
@@ -101,6 +112,21 @@ export function TaxInOutDeviationPage() {
           onMinInvoiceCountChange={f.setMinInvoiceCount}
         />
         <p className="mt-2 text-il-meta text-text-3">{caliberHint}</p>
+        {onNav ? (
+          <button
+            type="button"
+            className="mt-2 text-il-meta text-accent hover:underline"
+            onClick={() =>
+              navigateToReportConfig(onNav, {
+                statYear: f.effectiveYear,
+                entityId: f.entityId.trim(),
+                chapters: ['tax_in_out_deviation', 'audit_flags'],
+              })
+            }
+          >
+            {ui.reportLink}
+          </button>
+        ) : null}
       </Card>
 
       {!f.entityId.trim() ? (
@@ -121,18 +147,80 @@ export function TaxInOutDeviationPage() {
                 {
                   label: ui.kpiMixDeviation,
                   value: mixDeviation.toFixed(4),
+                  warn: exceededBucketCount > 0,
+                },
+                {
+                  label: ui.kpiExceededBuckets,
+                  value: String(exceededBucketCount),
+                  warn: exceededBucketCount > 0,
                 },
               ].map((item) => (
                 <div
                   key={item.label}
-                  className="rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2.5"
+                  className={[
+                    'rounded-sm border px-3 py-2.5',
+                    item.warn ? 'border-danger/40 bg-danger/5' : 'border-border-light bg-[#fafbfd]',
+                  ].join(' ')}
                 >
                   <div className="text-il-label text-text-3">{item.label}</div>
-                  <div className="mt-1 text-[18px] font-semibold tabular-nums text-text">{item.value}</div>
+                  <div
+                    className={[
+                      'mt-1 text-[18px] font-semibold tabular-nums',
+                      item.warn ? 'text-danger' : 'text-text',
+                    ].join(' ')}
+                  >
+                    {item.value}
+                  </div>
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-il-meta text-text-3">{ui.mixDeviationHint}</p>
+            <p className="mt-2 text-il-meta text-text-3">
+              {ui.mixDeviationHint}{' '}
+              {ui.thresholdHint.replace('{pct}', String(deviationThresholdPct))}
+            </p>
+            {taxDevFlags && taxDevFlags.total > 0 ? (
+              <div className="mt-3 rounded-sm border border-border-light bg-[#fafbfd] px-3 py-2">
+                <p className="text-il-meta text-text-2">
+                  {ui.taxDevFlagSummary
+                    .replace('{total}', String(taxDevFlags.total))
+                    .replace('{pending}', String(taxDevFlags.pending))
+                    .replace('{confirmed}', String(taxDevFlags.confirmed))}
+                </p>
+                {onNav ? (
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      className="text-il-meta text-accent hover:underline"
+                      onClick={() =>
+                        navigateToFlagsList(onNav, {
+                          statYear: f.effectiveYear,
+                          entityId: f.entityId.trim(),
+                          ruleId: 'RULE-TAX-DEV',
+                        })
+                      }
+                    >
+                      {ui.viewTaxDevFlags}
+                    </button>
+                    {taxDevFlags.pending > 0 ? (
+                      <button
+                        type="button"
+                        className="text-il-meta text-warn hover:underline"
+                        onClick={() =>
+                          navigateToFlagsList(onNav, {
+                            statYear: f.effectiveYear,
+                            entityId: f.entityId.trim(),
+                            ruleId: 'RULE-TAX-DEV',
+                            trackStatus: 'pending',
+                          })
+                        }
+                      >
+                        {ui.viewPendingTaxDevFlags.replace('{n}', String(taxDevFlags.pending))}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </Card>
 
           <Card title={ui.chartTitle}>
@@ -182,12 +270,19 @@ export function TaxInOutDeviationPage() {
                     <th className="px-3 py-2 font-medium text-right">{ui.colOutputAmount}</th>
                     <th className="px-3 py-2 font-medium text-right">{ui.colOutputRatio}</th>
                     <th className="px-3 py-2 font-medium text-right">{ui.colRatioDiff}</th>
+                    <th className="px-3 py-2 font-medium text-center">{ui.colExceeded}</th>
                   </tr>
                 </thead>
                 <tbody className="text-text-2">
                   {rows.length > 0 ? (
                     rows.map((r) => (
-                      <tr key={r.tax_bucket} className="border-b border-border-light last:border-b-0">
+                      <tr
+                        key={r.tax_bucket}
+                        className={[
+                          'border-b border-border-light last:border-b-0',
+                          r.exceeded_threshold ? 'bg-danger/5' : '',
+                        ].join(' ')}
+                      >
                         <td className="px-3 py-2">{r.tax_bucket}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatDwsAmount(r.input_amount_je)}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{formatDwsPct(r.input_amount_ratio)}</td>
@@ -201,11 +296,18 @@ export function TaxInOutDeviationPage() {
                         >
                           {(r.ratio_diff * 100).toFixed(2)}pp
                         </td>
+                        <td className="px-3 py-2 text-center text-il-meta">
+                          {r.exceeded_threshold ? (
+                            <span className="font-medium text-danger">{ui.exceededYes}</span>
+                          ) : (
+                            ui.exceededNo
+                          )}
+                        </td>
                       </tr>
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-text-3">
+                      <td colSpan={7} className="px-3 py-6 text-center text-text-3">
                         {loading ? ui.loading : ui.emptyHint}
                       </td>
                     </tr>

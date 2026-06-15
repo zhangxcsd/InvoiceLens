@@ -8,6 +8,7 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { TaxTreeGrid } from './TaxTreeGrid'
+import { useDimDictDomain } from './useDimDict'
 
 type CleanStatus = 'ok' | 'invalid' | 'duplicate'
 type RiskLabel = 'NORMAL' | 'HIGH'
@@ -156,6 +157,7 @@ export function TaxCodeLibraryPage(props?: {
   onOpenManage?: () => void
 }) {
   const ui = t.taxCodeLibraryUi
+  const riskLabelDict = useDimDictDomain('audit_risk_label')
   const resultOnly = props?.mode === 'result'
   const viewMode: 'list' | 'hierarchy' = resultOnly ? 'hierarchy' : 'list'
   const pageTitleText = resultOnly ? ui.resultPageTitle : ui.pageTitle
@@ -166,7 +168,7 @@ export function TaxCodeLibraryPage(props?: {
   const [importBatchOptions, setImportBatchOptions] = useState<string[]>([])
   const [importSessionOptions, setImportSessionOptions] = useState<string[]>([])
   const [cleanFilter, setCleanFilter] = useState<'all' | CleanStatus>('all')
-  const [riskFilter, setRiskFilter] = useState<'all' | RiskLabel>('all')
+  const [riskFilter, setRiskFilter] = useState<'all' | string>('all')
   const [abnormalOnly, setAbnormalOnly] = useState(false)
   const [showQualityColumn, setShowQualityColumn] = useState(false)
 
@@ -857,11 +859,12 @@ export function TaxCodeLibraryPage(props?: {
             <select
               className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
               value={riskFilter}
-              onChange={(e) => setRiskFilter(e.target.value as 'all' | RiskLabel)}
+              onChange={(e) => setRiskFilter(e.target.value)}
             >
               <option value="all">{ui.riskAll}</option>
-              <option value="NORMAL">{ui.riskNormal}</option>
-              <option value="HIGH">{ui.riskHigh}</option>
+              {riskLabelDict.options.map((o) => (
+                <option key={o.code} value={o.code}>{o.label}</option>
+              ))}
             </select>
           </div>
           <div className="min-w-[140px] shrink-0 self-center pt-5">
@@ -1129,7 +1132,7 @@ export function TaxCodeLibraryPage(props?: {
                                 : 'bg-[#f3f6fa] text-text-2',
                             ].join(' ')}
                           >
-                            {row.auditRiskLabel}
+                            {riskLabelDict.getLabel(row.auditRiskLabel)}
                           </span>
                         </td>
                       </tr>

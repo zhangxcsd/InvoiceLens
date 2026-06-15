@@ -309,7 +309,7 @@ def _refresh_goods_cat(conn: Any, stat_year: int) -> int:
             ?,
             stat_quarter,
             tax_code_short,
-            tax_code_level2,
+            max(tax_code_level2),
             sum(line_amt),
             count(*)::INT,
             count(DISTINCT supplier_id)::INT,
@@ -319,7 +319,7 @@ def _refresh_goods_cat(conn: Any, stat_year: int) -> int:
             CURRENT_TIMESTAMP
         FROM line
         WHERE length(entity_id) > 0
-        GROUP BY entity_id, stat_quarter, tax_code_short, tax_code_level2
+        GROUP BY entity_id, stat_quarter, tax_code_short
         """,
         [stat_year, stat_year, stat_year],
     )

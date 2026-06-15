@@ -1,14 +1,22 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
+import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { zhCN as t } from '../copy/zh-CN'
 import {
+  fetchDqDomainOverview,
   fetchOdsPreviewBatches,
   odsPreviewBatchKey,
   postDwdBuild,
   postDwdForceRebuild,
+  postDwdRetryStep,
+  postDwdRollback,
+  dwdBuildLogDownloadUrl,
+  type DqDomainOverview,
   type DwdBuildResult,
   type OdsPreviewBatchMeta,
 } from '../config/localApi'
+import { useLicense } from '../settings/useLicense'
+import { useWriteGate, WriteGateButton } from '../users/useWriteGate'
 
 type DwdStatus = 'not_built' | 'running' | 'succeeded' | 'failed'
 
@@ -78,6 +86,13 @@ function statusBadge(status: DwdStatus): { text: string; cls: string } {
   return { text: t.odsToDwdCenterUi.badgeNotBuilt, cls: 'border-[#f2c078] bg-[#fff7ea] text-[#9a5a00] font-semibold' }
 }
 
+type CleanerBuildMetrics = {
+  rows_scanned_header: number
+  rows_scanned_detail: number
+  rows_rejected: number
+  dq_flag_count: number
+}
+
 type BatchBuildOverlay = {
   dwdStatus: DwdStatus
   dwdRows: number | null
@@ -85,7 +100,54 @@ type BatchBuildOverlay = {
   errorMsg?: string
   steps?: { id: string; label: string; status: string; detail?: string }[]
   logText?: string
+  buildRunId?: string
   statYear?: string | number
+  cleanerMetrics?: CleanerBuildMetrics
+}
+
+const RETRYABLE_DWD_STEP_IDS = new Set(['standardize', 'write_dwd', 'validate'])
+
+function countCleanerDqFlags(cl: Record<string, unknown>): number {
+  const labels = t.odsToDwdCenterUi.dqReportLabels as Record<string, string>
+  let n = 0
+  for (const key of Object.keys(labels)) {
+    const v = cl[key]
+    if (Array.isArray(v) && v.length > 0) n += v.length
+  }
+  return n
+}
+
+function summarizeCleanerMetrics(cl: Record<string, unknown>): CleanerBuildMetrics {
+  return {
+    rows_scanned_header: Number(cl.rows_scanned_header ?? 0),
+    rows_scanned_detail: Number(cl.rows_scanned_detail ?? 0),
+    rows_rejected: Number(cl.rows_rejected ?? 0),
+    dq_flag_count: countCleanerDqFlags(cl),
+  }
+}
+
+type BatchOdsMetrics = {
+  sessionCount: number
+  watermarkCount: number
+  odsImportRows: number
+  fileSuccess: number
+  fileFail: number
+  fileWarn: number
+  dwdHeaderRows: number
+  dwdDetailRows: number
+}
+
+function aggregateBatchOdsMetrics(sessions: OdsPreviewBatchMeta[]): BatchOdsMetrics {
+  return {
+    sessionCount: sessions.length,
+    watermarkCount: sessions.filter((s) => String(s.dwd_session_processed_at ?? '').trim().length > 0).length,
+    odsImportRows: sessions.reduce((a, s) => a + Math.max(0, Number(s.total_rows ?? 0)), 0),
+    fileSuccess: sessions.reduce((a, s) => a + Math.max(0, Number(s.success_count ?? 0)), 0),
+    fileFail: sessions.reduce((a, s) => a + Math.max(0, Number(s.fail_count ?? 0)), 0),
+    fileWarn: sessions.reduce((a, s) => a + Math.max(0, Number(s.warn_count ?? 0)), 0),
+    dwdHeaderRows: sessions.reduce((a, s) => a + Math.max(0, Number(s.dwd_header_rows ?? 0)), 0),
+    dwdDetailRows: sessions.reduce((a, s) => a + Math.max(0, Number(s.dwd_detail_rows ?? 0)), 0),
+  }
 }
 
 /** 将 DWD 响应中的 enterprise_year_rel_rebuild 摘要追加到构建日志 */
@@ -168,6 +230,19 @@ function sessionIdsInBatch(row: DwdBatchRow): string[] {
 }
 
 export function OdsToDwdCenterPage() {
+  const license = useLicense()
+  const writeGate = useWriteGate()
+  const quotaHint = useMemo(() => {
+    const parts: string[] = []
+    if (license.maxInvoices != null && license.maxInvoices > 0) {
+      parts.push(`发票上限 ${license.maxInvoices.toLocaleString('zh-CN')} 张`)
+    }
+    if (license.maxYears != null && license.maxYears > 0) {
+      parts.push(`统计年度上限 ${license.maxYears} 年`)
+    }
+    if (!parts.length) return null
+    return `当前授权：${parts.join('、')}。超出后将拒绝导入或 DWD 加工。`
+  }, [license.maxInvoices, license.maxYears])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [list, setList] = useState<OdsPreviewBatchMeta[]>([])
@@ -184,6 +259,9 @@ export function OdsToDwdCenterPage() {
   const [bulkProgressLabel, setBulkProgressLabel] = useState<string | null>(null)
   /** 与 POST /api/dwd/build 的 rebuild_enterprise_year_rel 对齐；单次与批量增量构建共用 */
   const [rebuildEnterpriseYearRelAfterDwd, setRebuildEnterpriseYearRelAfterDwd] = useState(false)
+  const [dqOverview, setDqOverview] = useState<DqDomainOverview | null>(null)
+  const [dqMetricsLoading, setDqMetricsLoading] = useState(false)
+  const logsPanelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -241,6 +319,31 @@ export function OdsToDwdCenterPage() {
   }, [filtered, selectedBatchId])
 
   const current = useMemo(() => filtered.find((r) => r.batchId === selectedBatchId) ?? null, [filtered, selectedBatchId])
+  const batchOdsMetrics = useMemo(
+    () => (current ? aggregateBatchOdsMetrics(current.sessions) : null),
+    [current],
+  )
+
+  useEffect(() => {
+    const bid = String(current?.batchId ?? '').trim()
+    if (!bid) {
+      setDqOverview(null)
+      setDqMetricsLoading(false)
+      return
+    }
+    let cancelled = false
+    const ac = new AbortController()
+    setDqMetricsLoading(true)
+    void fetchDqDomainOverview({ batchId: bid, signal: ac.signal }).then((res) => {
+      if (cancelled) return
+      setDqMetricsLoading(false)
+      setDqOverview(res.ok ? res : null)
+    })
+    return () => {
+      cancelled = true
+      ac.abort()
+    }
+  }, [current?.batchId])
 
   const reloadBatches = async () => {
     try {
@@ -272,6 +375,13 @@ export function OdsToDwdCenterPage() {
 
   const badge = statusBadge(current?.dwdStatus ?? 'not_built')
   const buildDetail = current ? buildByBatch[current.batchId] : undefined
+  const effectiveDwdStatus = buildDetail?.dwdStatus ?? current?.dwdStatus ?? 'not_built'
+  const hasDwdRows =
+    (buildDetail?.dwdRows ?? current?.dwdRows ?? 0) > 0 ||
+    effectiveDwdStatus === 'succeeded' ||
+    effectiveDwdStatus === 'failed'
+  const canRetryFailed = Boolean(current && !building && effectiveDwdStatus === 'failed')
+  const canRollback = Boolean(current && !building && hasDwdRows)
 
   const applyDwdResult = (
     batchId: string,
@@ -337,7 +447,9 @@ export function OdsToDwdCenterPage() {
           durationLabel: dur,
           steps: r.steps,
           logText: logLines,
+          buildRunId: 'build_run_id' in r ? String((r as { build_run_id?: string }).build_run_id ?? '') || undefined : undefined,
           statYear: yearsLabel,
+          cleanerMetrics: skipped ? undefined : summarizeCleanerMetrics(cl),
         },
       }))
       if (!opts?.skipReload) void reloadBatches()
@@ -363,9 +475,42 @@ export function OdsToDwdCenterPage() {
           durationLabel: dur,
           errorMsg: msg,
           logText: logLines,
+          buildRunId: 'build_run_id' in r ? String((r as { build_run_id?: string }).build_run_id ?? '') || undefined : undefined,
         },
       }))
       setError(msg)
+    }
+  }
+
+  const runRetryStep = async (stepId: string) => {
+    if (!current || building || !RETRYABLE_DWD_STEP_IDS.has(stepId)) return
+    setBuilding(true)
+    setError(null)
+    const t0 = Date.now()
+    setBuildByBatch((prev) => ({
+      ...prev,
+      [current.batchId]: {
+        ...(prev[current.batchId] ?? {
+          dwdStatus: 'running' as DwdStatus,
+          dwdRows: null,
+          durationLabel: '—',
+        }),
+        dwdStatus: 'running',
+        logText: `${formatLocalDateTime()} · 单步重跑 step=${stepId}`,
+      },
+    }))
+    try {
+      const r = await postDwdRetryStep({
+        import_batch_id: current.batchId,
+        step_id: stepId,
+        ...(rebuildEnterpriseYearRelAfterDwd ? { rebuild_enterprise_year_rel: true } : {}),
+      })
+      applyDwdResult(current.batchId, r, t0)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
+    } finally {
+      setBuilding(false)
     }
   }
 
@@ -524,6 +669,68 @@ export function OdsToDwdCenterPage() {
     }
   }
 
+  const runBatchRollback = async () => {
+    if (!current || building || !canRollback) return
+    if (!window.confirm(t.odsToDwdCenterUi.actionRollbackConfirm)) return
+    setBuilding(true)
+    setError(null)
+    const bid = current.batchId
+    const ts = formatLocalDateTime()
+    try {
+      const r = await postDwdRollback({ import_batch_id: bid })
+      if (r.ok) {
+        const del = r.deleted_rows_by_table ?? {}
+        const delSummary = Object.entries(del)
+          .filter(([, n]) => Number(n) > 0)
+          .map(([tbl, n]) => `${tbl} ${Number(n).toLocaleString('zh-CN')}`)
+          .join('；')
+        const logLines = [
+          `${ts} · 批次 DWD 回滚`,
+          `已删除 DWD 行：${delSummary || '（无匹配行）'}`,
+          r.ods_sessions_reset != null
+            ? `已重置 ${r.ods_sessions_reset} 个会话的 DWD 水位`
+            : '已重置 ods_load_log 水位',
+        ].join('\n')
+        setBuildByBatch((prev) => ({
+          ...prev,
+          [bid]: {
+            dwdStatus: 'not_built',
+            dwdRows: null,
+            durationLabel: '—',
+            logText: logLines,
+          },
+        }))
+        void reloadBatches()
+      } else {
+        const msg = r.error?.message ?? '批次回滚失败'
+        setError(msg)
+        setBuildByBatch((prev) => ({
+          ...prev,
+          [bid]: {
+            ...(prev[bid] ?? {
+              dwdStatus: effectiveDwdStatus,
+              dwdRows: current.dwdRows,
+              durationLabel: current.durationLabel,
+            }),
+            logText: `${ts} · 回滚失败\n${msg}`,
+          },
+        }))
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
+    } finally {
+      setBuilding(false)
+    }
+  }
+
+  const focusLogsPanel = () => {
+    setActiveTab('logs')
+    window.requestAnimationFrame(() => {
+      logsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    })
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-[22px]">
       <div className="mb-4 flex min-h-0 shrink-0 flex-wrap items-start justify-between gap-3">
@@ -532,6 +739,7 @@ export function OdsToDwdCenterPage() {
             <span className="text-il-page-title font-semibold text-text">{t.odsToDwdCenterUi.pageTitle}</span>
           </div>
           <p className="w-full text-il-page-desc leading-relaxed text-text-2">{t.odsToDwdCenterUi.pageBody}</p>
+          <LicenseGateBanner hint={quotaHint} className="mt-2" />
           {error ? (
             <p className="mt-2 w-full rounded-[7px] border border-danger/30 bg-[#fff5f5] px-3 py-2 text-il-meta text-danger">
               {error}
@@ -604,16 +812,15 @@ export function OdsToDwdCenterPage() {
                 >
                   {t.odsToDwdCenterUi.bulkClearSelection}
                 </button>
-                <button
-                  type="button"
-                  disabled={building || bulkStats.batchN === 0}
+                <WriteGateButton
                   className="rounded-[6px] border border-border bg-white px-3 py-1 text-[12px] text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                  disabled={building || bulkStats.batchN === 0}
                   onClick={() => void runBulkIncremental()}
                 >
                   {bulkProgressLabel != null
                     ? `${t.odsToDwdCenterUi.bulkIncrementalBuild}（${bulkProgressLabel}）`
                     : `${t.odsToDwdCenterUi.bulkIncrementalBuild}（${t.odsToDwdCenterUi.bulkIncrementalSummary.replace('{b}', String(bulkStats.batchN)).replace('{s}', String(bulkStats.sessN))}）`}
-                </button>
+                </WriteGateButton>
                 <span className="text-il-meta text-text-3">{t.odsToDwdCenterUi.bulkToolbarHint}</span>
                 <label className="mt-1 flex w-full max-w-[56rem] cursor-pointer items-start gap-2 rounded-[6px] border border-border-light/80 bg-white/80 px-2 py-2 text-[12px] text-text-2">
                   <input
@@ -784,8 +991,7 @@ export function OdsToDwdCenterPage() {
                                         </span>
                                       </label>
                                       {hasDwdWatermark ? (
-                                        <button
-                                          type="button"
+                                        <WriteGateButton
                                           className="shrink-0 rounded-[6px] border border-amber-700/35 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-950 hover:bg-amber-100 disabled:opacity-50"
                                           title={t.odsToDwdCenterUi.forceRebuildHint}
                                           disabled={building}
@@ -795,7 +1001,7 @@ export function OdsToDwdCenterPage() {
                                           }}
                                         >
                                           {t.odsToDwdCenterUi.forceRebuild}
-                                        </button>
+                                        </WriteGateButton>
                                       ) : (
                                         <span
                                           className="shrink-0 w-[4.5rem] text-center text-[11px] text-text-3"
@@ -887,36 +1093,44 @@ export function OdsToDwdCenterPage() {
                       </span>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={building || !current}
+                      <WriteGateButton
                         className="rounded-[7px] bg-accent px-4 py-1.5 text-il-btn font-medium text-white disabled:opacity-60"
                         title={t.odsToDwdCenterUi.actionBuildTitle}
+                        disabled={building || !current}
                         onClick={() => void runFullBuild()}
                       >
                         {building ? '处理中…' : t.odsToDwdCenterUi.actionBuild}
-                      </button>
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-3 opacity-60"
-                        title={t.odsToDwdCenterUi.actionDisabledHint}
+                      </WriteGateButton>
+                      <WriteGateButton
+                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-60 disabled:text-text-3"
+                        title={
+                          canRetryFailed
+                            ? t.odsToDwdCenterUi.actionRetryFailedTitle
+                            : t.odsToDwdCenterUi.actionRetryFailedDisabledHint
+                        }
+                        disabled={!canRetryFailed}
+                        onClick={() => void runFullBuild()}
                       >
                         {t.odsToDwdCenterUi.actionRetryFailed}
-                      </button>
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-3 opacity-60"
-                        title={t.odsToDwdCenterUi.actionDisabledHint}
+                      </WriteGateButton>
+                      <WriteGateButton
+                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-60 disabled:text-text-3"
+                        title={
+                          canRollback
+                            ? t.odsToDwdCenterUi.actionRollbackTitle
+                            : t.odsToDwdCenterUi.actionRollbackDisabledHint
+                        }
+                        disabled={!canRollback}
+                        onClick={() => void runBatchRollback()}
                       >
                         {t.odsToDwdCenterUi.actionRollback}
-                      </button>
+                      </WriteGateButton>
                       <button
                         type="button"
-                        disabled
-                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-3 opacity-60"
-                        title={t.odsToDwdCenterUi.actionDisabledHint}
+                        disabled={!current}
+                        className="rounded-[7px] border border-border bg-white px-4 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-60 disabled:text-text-3"
+                        title={t.odsToDwdCenterUi.actionViewLogsTitle}
+                        onClick={focusLogsPanel}
                       >
                         {t.odsToDwdCenterUi.actionViewLogs}
                       </button>
@@ -939,9 +1153,15 @@ export function OdsToDwdCenterPage() {
                             ] as const
                           ).map((s) => ({ ...s, status: 'pending', detail: '' }))
                       ).map((s, idx) => {
+                        const stepId = String((s as { id?: string }).id ?? '')
                         const st = (s as { status?: string }).status ?? 'pending'
-                        const label = (s as { label?: string }).label ?? String((s as { id?: string }).id ?? idx)
+                        const label = (s as { label?: string }).label ?? (stepId || String(idx))
                         const detail = (s as { detail?: string }).detail
+                        const canRetryStep =
+                          !building &&
+                          writeGate.canWrite &&
+                          RETRYABLE_DWD_STEP_IDS.has(stepId) &&
+                          (st === 'error' || st === 'warning' || effectiveDwdStatus === 'failed')
                         const sub =
                           st === 'ok'
                             ? '完成'
@@ -953,19 +1173,33 @@ export function OdsToDwdCenterPage() {
                                   ? '失败'
                                   : '待执行'
                         return (
-                          <div key={(s as { id?: string }).id ?? idx} className="rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2">
-                            <div className="text-il-meta text-text-3">{label}</div>
-                            <div className="mt-0.5 text-[12px] font-medium text-text-2">{sub}</div>
-                            {detail ? (
-                              <div className="mt-0.5 text-[11px] leading-snug text-text-3">{detail}</div>
-                            ) : null}
+                          <div key={stepId || idx} className="rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-il-meta text-text-3">{label}</div>
+                                <div className="mt-0.5 text-[12px] font-medium text-text-2">{sub}</div>
+                                {detail ? (
+                                  <div className="mt-0.5 text-[11px] leading-snug text-text-3">{detail}</div>
+                                ) : null}
+                              </div>
+                              {canRetryStep ? (
+                                <WriteGateButton
+                                  className="shrink-0 rounded-[6px] border border-border bg-white px-2 py-0.5 text-[11px] text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                                  title={t.odsToDwdCenterUi.actionRetryStepTitle}
+                                  disabled={building}
+                                  onClick={() => void runRetryStep(stepId)}
+                                >
+                                  {t.odsToDwdCenterUi.actionRetryStep}
+                                </WriteGateButton>
+                              ) : null}
+                            </div>
                           </div>
                         )
                       })}
                     </div>
                   </div>
 
-                  <div className="rounded-[10px] border border-border-light bg-white p-3">
+                  <div ref={logsPanelRef} className="rounded-[10px] border border-border-light bg-white p-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <div className="text-[12px] font-medium text-text-2">{t.odsToDwdCenterUi.panelsTitle}</div>
                       <div className="flex gap-1.5">
@@ -1001,9 +1235,24 @@ export function OdsToDwdCenterPage() {
                           [{odsPreviewBatchKey(current.sessions[0] ?? { batch_id: current.batchId, session_id: '—' } as any)}]
                         </div>
                         {buildDetail?.logText ? (
-                          <pre className="mt-2 max-h-[240px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-text-2">
-                            {buildDetail.logText}
-                          </pre>
+                          <>
+                            <pre className="mt-2 max-h-[240px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-text-2">
+                              {buildDetail.logText}
+                            </pre>
+                            {buildDetail.buildRunId ? (
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <a
+                                  href={dwdBuildLogDownloadUrl(buildDetail.buildRunId)}
+                                  className="rounded-[6px] border border-border bg-white px-2.5 py-1 text-[11px] text-accent hover:border-accent"
+                                  title={t.odsToDwdCenterUi.actionDownloadLogTitle}
+                                  download
+                                >
+                                  {t.odsToDwdCenterUi.actionDownloadLog}
+                                </a>
+                                <span className="font-mono text-[10px] text-text-3">run_id={buildDetail.buildRunId}</span>
+                              </div>
+                            ) : null}
+                          </>
                         ) : (
                           <>
                             <div className="text-text-2">{t.odsToDwdCenterUi.logsPlaceholder}</div>
@@ -1015,26 +1264,114 @@ export function OdsToDwdCenterPage() {
                       </div>
                     ) : (
                       <div className="rounded-[8px] border border-border-light bg-[#fafbfc] px-3 py-2 text-[12px] leading-relaxed text-text-2">
-                        <div className="text-text-2">{t.odsToDwdCenterUi.metricsPlaceholder}</div>
-                        <p className="mt-2 text-[11px] text-text-3">{t.odsToDwdCenterUi.metricsPrototypeNote}</p>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
-                          <div className="rounded-[8px] border border-border-light bg-white px-3 py-2">
-                            <div className="text-il-meta text-text-3">关键字段空值率</div>
-                            <div className="mt-0.5 text-[12px] font-semibold text-text-2">0.23%</div>
-                          </div>
-                          <div className="rounded-[8px] border border-border-light bg-white px-3 py-2">
-                            <div className="text-il-meta text-text-3">主键重复率</div>
-                            <div className="mt-0.5 text-[12px] font-semibold text-text-2">0.01%</div>
-                          </div>
-                          <div className="rounded-[8px] border border-border-light bg-white px-3 py-2">
-                            <div className="text-il-meta text-text-3">金额校验（通过）</div>
-                            <div className="mt-0.5 text-[12px] font-semibold text-text-2">98.7%</div>
-                          </div>
-                          <div className="rounded-[8px] border border-border-light bg-white px-3 py-2">
-                            <div className="text-il-meta text-text-3">异常规则命中</div>
-                            <div className="mt-0.5 text-[12px] font-semibold text-text-2">12</div>
-                          </div>
-                        </div>
+                        {!current ? (
+                          <div className="text-text-3">{t.odsToDwdCenterUi.metricsNoBatch}</div>
+                        ) : (
+                          <>
+                            <div className="text-text-2">{t.odsToDwdCenterUi.metricsPlaceholder}</div>
+                            {dqMetricsLoading ? (
+                              <p className="mt-2 text-[11px] text-text-3">{t.odsToDwdCenterUi.metricsLoading}</p>
+                            ) : null}
+                            {batchOdsMetrics ? (
+                              <div className="mt-3 grid grid-cols-2 gap-2">
+                                {[
+                                  {
+                                    label: t.odsToDwdCenterUi.metricOdsImportRows,
+                                    value: batchOdsMetrics.odsImportRows.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricSessionWatermark,
+                                    value: `${batchOdsMetrics.watermarkCount}/${batchOdsMetrics.sessionCount}`,
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricFileSuccess,
+                                    value: batchOdsMetrics.fileSuccess.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricFileFail,
+                                    value: batchOdsMetrics.fileFail.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricFileWarn,
+                                    value: batchOdsMetrics.fileWarn.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricDwdHeaderRows,
+                                    value: batchOdsMetrics.dwdHeaderRows.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricDwdDetailRows,
+                                    value: batchOdsMetrics.dwdDetailRows.toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricRowReject,
+                                    value: (dqOverview?.domains?.lineage_reject?.row_reject_count ?? 0).toLocaleString(
+                                      'zh-CN',
+                                    ),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricHeaderUnbalanced,
+                                    value: (dqOverview?.domains?.header_detail?.unbalanced_count ?? 0).toLocaleString(
+                                      'zh-CN',
+                                    ),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricCrossTableMismatch,
+                                    value: (
+                                      dqOverview?.domains?.cross_table?.linecount_mismatch_tickets ?? 0
+                                    ).toLocaleString('zh-CN'),
+                                  },
+                                  {
+                                    label: t.odsToDwdCenterUi.metricDqAnomalyHeaders,
+                                    value: (dqOverview?.kpi?.anomaly_headers ?? 0).toLocaleString('zh-CN'),
+                                  },
+                                ].map((cell) => (
+                                  <div
+                                    key={cell.label}
+                                    className="rounded-[8px] border border-border-light bg-white px-3 py-2"
+                                  >
+                                    <div className="text-il-meta text-text-3">{cell.label}</div>
+                                    <div className="mt-0.5 text-[12px] font-semibold tabular-nums text-text-2">
+                                      {cell.value}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                            {buildDetail?.cleanerMetrics ? (
+                              <div className="mt-3 rounded-[8px] border border-[#c8dff7] bg-[#f0f7ff] px-3 py-2">
+                                <div className="text-[11px] font-medium text-accent-mid">
+                                  {t.odsToDwdCenterUi.metricsFromBuild}
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                  {[
+                                    {
+                                      label: t.odsToDwdCenterUi.metricCleanerScannedHeader,
+                                      value: buildDetail.cleanerMetrics.rows_scanned_header.toLocaleString('zh-CN'),
+                                    },
+                                    {
+                                      label: t.odsToDwdCenterUi.metricCleanerScannedDetail,
+                                      value: buildDetail.cleanerMetrics.rows_scanned_detail.toLocaleString('zh-CN'),
+                                    },
+                                    {
+                                      label: t.odsToDwdCenterUi.metricCleanerRejected,
+                                      value: buildDetail.cleanerMetrics.rows_rejected.toLocaleString('zh-CN'),
+                                    },
+                                    {
+                                      label: t.odsToDwdCenterUi.metricDqFlags,
+                                      value: buildDetail.cleanerMetrics.dq_flag_count.toLocaleString('zh-CN'),
+                                    },
+                                  ].map((cell) => (
+                                    <div key={cell.label}>
+                                      <div className="text-il-meta text-text-3">{cell.label}</div>
+                                      <div className="mt-0.5 font-semibold tabular-nums text-text-2">{cell.value}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

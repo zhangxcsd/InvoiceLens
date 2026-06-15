@@ -1,0 +1,35 @@
+name: E2E Delivery Chain Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/tax_code_analysis_api.py'
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/report_api.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'scripts/test_e2e_delivery_chain_smoke.py'
+      - '.github/workflows/e2e-delivery-chain-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/tax_code_analysis_api.py'
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/report_api.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'scripts/test_e2e_delivery_chain_smoke.py'
+      - '.github/workflows/e2e-delivery-chain-smoke.yml'
+
+jobs:
+  e2e-delivery-chain-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Run E2E delivery chain smoke tests
+        run: python scripts/test_e2e_delivery_chain_smoke.py

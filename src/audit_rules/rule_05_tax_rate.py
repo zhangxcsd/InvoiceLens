@@ -14,7 +14,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import entity_filter, norm_tax
+from src.audit_rules._sql_common import entity_filter, flag_detail_json, norm_tax
 
 
 def _category_case_sql(category_map: list[dict[str, Any]]) -> str:
@@ -108,6 +108,14 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核对税收分类编码与适用税率政策，排除错误开票或不当抵扣。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    goods_name=goods_name,
+                    slv_num=float(slv_num or 0),
+                    expected_rate=float(expected_rate or 0),
+                    header_uuid=str(hid),
+                    detail_uuid=str(did),
+                ),
             }
         )
 
@@ -137,7 +145,7 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 buyer_id, buyer_name, seller_id, seller_name, goods_key,
                 count(DISTINCT slv_num)::INT AS rate_cnt,
                 list(DISTINCT slv_num) AS rates,
-                list(header_uuid) AS uuids
+                list_distinct(flatten(list(uuids))) AS uuids
             FROM tagged
             GROUP BY buyer_id, buyer_name, seller_id, seller_name, goods_key
             HAVING count(DISTINCT slv_num) >= 2
@@ -174,6 +182,11 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议按货物清单核对税收分类编码变更记录及开票口径是否统一。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    goods_name=goods_key,
+                    rate_count=int(rate_cnt or 0),
+                ),
             }
         )
 

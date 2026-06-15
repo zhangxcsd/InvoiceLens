@@ -16,7 +16,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, entity_filter, norm_tax
+from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, entity_filter, flag_detail_json, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -100,6 +100,15 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议调取红冲申请、原业务合同及两次入账凭证，核对业务实质是否一致。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    red_date=str(red_date),
+                    blue_date=str(blue_date),
+                    date_from=str(red_date),
+                    date_to=str(blue_date),
+                    red_header_uuid=str(red_uuid),
+                    blue_header_uuid=str(blue_uuid),
+                ),
             }
         )
 
@@ -150,6 +159,13 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核对红冲原因说明及跨期账务调整依据。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    red_year=int(red_year or 0) or None,
+                    blue_year=int(blue_year or 0) or None,
+                    red_header_uuid=str(red_uuid),
+                    blue_header_uuid=str(blue_uuid),
+                ),
             }
         )
 
@@ -202,6 +218,12 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议了解频繁红冲原因，关注是否存在价格调整、退货未及时处理或虚开发票后冲回。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    red_amount=float(red_amt or 0),
+                    blue_amount=float(blue_amt or 0),
+                    red_ratio=ratio,
+                ),
             }
         )
 
@@ -246,6 +268,11 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议从税控系统导出原蓝票信息或查阅备注字段，补全红蓝关联后再复核净额。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    header_uuid=str(hid),
+                    fpzt="红字",
+                ),
             }
         )
 

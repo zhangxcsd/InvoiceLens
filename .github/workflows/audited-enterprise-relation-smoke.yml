@@ -1,0 +1,33 @@
+name: Audited Enterprise Relation Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/audited_enterprise_relation_api.py'
+      - 'src/local_api/audited_enterprise_dims.py'
+      - 'scripts/test_audited_enterprise_relation_smoke.py'
+      - 'frontend/src/dim/auditedEnterpriseRegistryHelpers.ts'
+      - '.github/workflows/audited-enterprise-relation-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/audited_enterprise_relation_api.py'
+      - 'src/local_api/audited_enterprise_dims.py'
+      - 'scripts/test_audited_enterprise_relation_smoke.py'
+      - 'frontend/src/dim/auditedEnterpriseRegistryHelpers.ts'
+      - '.github/workflows/audited-enterprise-relation-smoke.yml'
+
+jobs:
+  audited-enterprise-relation-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb pandas
+
+      - name: Run audited enterprise relation smoke tests
+        run: python scripts/test_audited_enterprise_relation_smoke.py

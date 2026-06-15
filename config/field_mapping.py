@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextvars
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -219,6 +221,36 @@ _cached_sheet_label_zh: dict[str, dict[str, str]] | None = None
 _cached_sheet_header_slug_keys: list[str] | None = None
 _cached_mtime: float | None = None
 _last_source: str = "builtin"
+
+_runtime_default_fields: contextvars.ContextVar[dict[str, list[str]] | None] = contextvars.ContextVar(
+    "field_mapping_runtime_default",
+    default=None,
+)
+_runtime_sheet_overrides: contextvars.ContextVar[dict[str, dict[str, list[str]]] | None] = contextvars.ContextVar(
+    "field_mapping_runtime_sheets",
+    default=None,
+)
+
+
+def merge_default_field_aliases(loaded_default: dict[str, list[str]]) -> dict[str, list[str]]:
+    """将 YAML/模板中的 default 别名与内置默认合并（供导入运行时覆盖使用）。"""
+    return _build_default_mapping(loaded_default)
+
+
+@contextmanager
+def field_mapping_import_context(
+    *,
+    default_fields: dict[str, list[str]],
+    sheet_overrides: dict[str, dict[str, list[str]]],
+) -> Iterator[None]:
+    """导入线程内临时覆盖字段映射（不修改 field_mapping.yaml）。"""
+    tok_d = _runtime_default_fields.set(dict(default_fields))
+    tok_s = _runtime_sheet_overrides.set({k: dict(v) for k, v in sheet_overrides.items()})
+    try:
+        yield
+    finally:
+        _runtime_default_fields.reset(tok_d)
+        _runtime_sheet_overrides.reset(tok_s)
 
 
 def _api_default_entries() -> dict[str, Any]:
@@ -515,30 +547,18 @@ def save_field_mapping_config(
     return True, str(_CONFIG_PATH)
 
 
-def get_field_mapping_for_sheet(sheet_name: str) -> dict[str, list[str]]:
-    """
-    根据 sheet_name 命中 sheet 覆盖（通过包含匹配：去空格后 override_key in sheet_name）。
-    命中多个覆盖时：按 YAML 中顺序合并；同一字段在后出现的块覆盖前者。
-
-    仅使用别名列表；label_zh 不参与列推断。
-
-    **重要**：若命中 `sheets` 下某一类型块，则**仅对该块中显式列出的标准字段**做列推断；
-    别名为空列表 => 继承 default 中该字段的别名；未出现在该块中的 default 字段不参与推断。
-    这样「发票基础信息」不会要求「税收分类编码」等仅属于汇总/明细表的列。
-
-    若工作表名未命中任何 `sheets` 键，则回退为整表 default_fields（兼容未单独建模的表）。
-    """
-    get_field_mapping_config_info()
-    assert _cached_default_fields is not None
-    assert _cached_sheet_overrides is not None
-
-    default = _cached_default_fields
+def _resolve_field_mapping_for_sheet(
+    sheet_name: str,
+    *,
+    default: dict[str, list[str]],
+    sheet_overrides: dict[str, dict[str, list[str]]],
+) -> dict[str, list[str]]:
     sheet_norm = _normalize_sheet_key(sheet_name)
     if not sheet_norm:
         return {k: list(v) for k, v in default.items()}
 
     matching_maps: list[dict[str, list[str]]] = []
-    for override_sheet_key, field_map in _cached_sheet_overrides.items():
+    for override_sheet_key, field_map in sheet_overrides.items():
         ok = _normalize_sheet_key(override_sheet_key) and _normalize_sheet_key(override_sheet_key) in sheet_norm
         if ok:
             matching_maps.append(field_map)
@@ -557,6 +577,38 @@ def get_field_mapping_for_sheet(sheet_name: str) -> dict[str, list[str]]:
                 out[field] = []
 
     return out
+
+
+def get_field_mapping_for_sheet(sheet_name: str) -> dict[str, list[str]]:
+    """
+    根据 sheet_name 命中 sheet 覆盖（通过包含匹配：去空格后 override_key in sheet_name）。
+    命中多个覆盖时：按 YAML 中顺序合并；同一字段在后出现的块覆盖前者。
+
+    仅使用别名列表；label_zh 不参与列推断。
+
+    **重要**：若命中 `sheets` 下某一类型块，则**仅对该块中显式列出的标准字段**做列推断；
+    别名为空列表 => 继承 default 中该字段的别名；未出现在该块中的 default 字段不参与推断。
+    这样「发票基础信息」不会要求「税收分类编码」等仅属于汇总/明细表的列。
+
+    若工作表名未命中任何 `sheets` 键，则回退为整表 default_fields（兼容未单独建模的表）。
+    """
+    runtime_default = _runtime_default_fields.get()
+    runtime_sheets = _runtime_sheet_overrides.get()
+    if runtime_default is not None and runtime_sheets is not None:
+        return _resolve_field_mapping_for_sheet(
+            sheet_name,
+            default=runtime_default,
+            sheet_overrides=runtime_sheets,
+        )
+
+    get_field_mapping_config_info()
+    assert _cached_default_fields is not None
+    assert _cached_sheet_overrides is not None
+    return _resolve_field_mapping_for_sheet(
+        sheet_name,
+        default=_cached_default_fields,
+        sheet_overrides=_cached_sheet_overrides,
+    )
 
 
 # 兼容旧代码：仍保留 FIELD_MAPPING 常量

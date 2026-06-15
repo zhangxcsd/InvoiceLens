@@ -137,8 +137,8 @@ CREATE INDEX IF NOT EXISTS idx_group_year_status      ON dim_group_enterprise_ye
 -- 审计含义：
 -- 1) 一行 = 某 stat_year 下应纳入集团成员范围的一个企业（enterprise_id 为统一社会信用代码）；
 -- 2) 仅承载「成员是谁、归属哪家国家出资企业」，不记录管理/产权层级与上下级树结构（见台账与 dim_group_enterprise_year）；
--- 3) 由 dim_audited_enterprise_registry 重算写入；台账变更或加工中心「集团成员表」任务后须同步刷新；
--- 4) 发票报送覆盖分析、dim_enterprise_year_rel 重算、花名册查询页均以本表为成员清单权威来源。
+-- 3) 成员清单 = 台账同步（dim_audited_enterprise_registry）+ 人工维护（含从上年度复制）；合并/来源/冲突规则见 docs/dim_enterprise_year_roster_policy.md；
+-- 4) 发票报送覆盖分析、dim_enterprise_year_rel 重算、花名册查询页均以本表现值为成员清单权威来源。
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dim_enterprise_year_roster (
     stat_year                         SMALLINT NOT NULL,
@@ -153,6 +153,10 @@ CREATE TABLE IF NOT EXISTS dim_enterprise_year_roster (
     calc_version                      VARCHAR,
     quality_status                    VARCHAR,
     quality_issue                     VARCHAR,
+    in_registry                       BOOLEAN DEFAULT FALSE,
+    in_manual                         BOOLEAN DEFAULT FALSE,
+    manual_updated_at                 TIMESTAMP,
+    manual_note                       VARCHAR,
     updated_at                        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (stat_year, enterprise_id)
 );
@@ -1323,4 +1327,32 @@ CREATE TABLE IF NOT EXISTS dim_audited_enterprise_contribution (
 CREATE INDEX IF NOT EXISTS idx_audited_ent_contrib_year ON dim_audited_enterprise_contribution (snapshot_year);
 CREATE INDEX IF NOT EXISTS idx_audited_ent_contrib_investee
     ON dim_audited_enterprise_contribution (snapshot_year, investee_unified_credit_code);
+
+-- -----------------------------------------------------------------------------
+-- dim_caliber_version：年度维度口径版本（主体库/花名册/关系树默认生效快照边界）
+-- 审计含义：每个 stat_year 可有多条版本记录，但仅一条 is_current=true 且 status=published 为对外口径。
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dim_caliber_version (
+    version_id             VARCHAR NOT NULL PRIMARY KEY, -- 如 2026-v1
+    stat_year              SMALLINT NOT NULL,             -- 统计年度
+    version_no             INTEGER NOT NULL,              -- 年度内递增版本号
+    status                 VARCHAR NOT NULL DEFAULT 'draft', -- draft / published / archived
+    is_current             BOOLEAN DEFAULT FALSE,           -- 是否为当年当前生效口径
+    rule_version           VARCHAR,                         -- 分类/归集规则版本号
+    batch_start            VARCHAR,                         -- 批次范围起
+    batch_end              VARCHAR,                         -- 批次范围止
+    include_external_import BOOLEAN DEFAULT FALSE,          -- 是否并入外部导入主体
+    external_import_batch_count INTEGER DEFAULT 0,          -- 外部导入批次数
+    change_note            VARCHAR,                         -- 变更说明
+    kpis_json              VARCHAR,                         -- KPI 快照 JSON
+    updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_by             VARCHAR,
+    published_at           TIMESTAMP,
+    published_by           VARCHAR,
+    UNIQUE (stat_year, version_no),
+    CHECK (status IN ('draft', 'published', 'archived'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_caliber_version_year ON dim_caliber_version (stat_year, version_no DESC);
+CREATE INDEX IF NOT EXISTS idx_caliber_version_current ON dim_caliber_version (stat_year, is_current);
 

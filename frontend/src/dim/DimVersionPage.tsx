@@ -1,8 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
+import {
+  fetchDimCaliberVersions,
+  postDimCaliberVersionArchive,
+  postDimCaliberVersionCreateDraft,
+  postDimCaliberVersionPublish,
+  postDimCaliberVersionRollback,
+  postDimCaliberVersionSaveDraft,
+} from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import type { DetailTab, DimVersion } from './version/types'
-import { versionSeed } from './version/mock'
 import { VersionActionBar } from './version/VersionActionBar'
 import { VersionDetailTabs } from './version/VersionDetailTabs'
 import { VersionHeader } from './version/VersionHeader'
@@ -10,11 +17,46 @@ import { VersionListPanel } from './version/VersionListPanel'
 
 export function DimVersionPage() {
   const ui = t.dimVersionUi
-  const [allVersions, setAllVersions] = useState<DimVersion[]>(versionSeed)
-  const [statYear, setStatYear] = useState('2026')
-  const [selectedId, setSelectedId] = useState('2026-v3')
+  const [allVersions, setAllVersions] = useState<DimVersion[]>([])
+  const [statYear, setStatYear] = useState('')
+  const [selectedId, setSelectedId] = useState('')
   const [activeTab, setActiveTab] = useState<DetailTab>('definition')
   const [banner, setBanner] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
+    const res = await fetchDimCaliberVersions()
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.loadFailed)
+      setAllVersions([])
+      setLoading(false)
+      return
+    }
+    const versions = (res.versions ?? []) as DimVersion[]
+    setAllVersions(versions)
+    const years = res.stat_years?.length
+      ? res.stat_years
+      : Array.from(new Set(versions.map((v) => v.statYear))).sort((a, b) => Number(b) - Number(a))
+    setStatYear((prev) => {
+      if (prev && years.includes(prev)) return prev
+      return years[0] ?? String(new Date().getFullYear())
+    })
+    setSelectedId((prev) => {
+      if (prev && versions.some((v) => v.id === prev)) return prev
+      const y = years[0] ?? String(new Date().getFullYear())
+      const top = versions.filter((v) => v.statYear === y).sort((a, b) => b.versionNo - a.versionNo)[0]
+      return top?.id ?? ''
+    })
+    setLoading(false)
+  }, [ui.loadFailed])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
 
   const yearOptions = useMemo(
     () => Array.from(new Set(allVersions.map((v) => v.statYear))).sort((a, b) => Number(b) - Number(a)),
@@ -25,7 +67,10 @@ export function DimVersionPage() {
     [allVersions, statYear],
   )
 
-  const selected = useMemo(() => yearVersions.find((v) => v.id === selectedId) ?? yearVersions[0] ?? null, [selectedId, yearVersions])
+  const selected = useMemo(
+    () => yearVersions.find((v) => v.id === selectedId) ?? yearVersions[0] ?? null,
+    [selectedId, yearVersions],
+  )
 
   const currentVersion = useMemo(
     () => yearVersions.find((v) => v.isCurrent && v.status === 'published') ?? null,
@@ -35,7 +80,8 @@ export function DimVersionPage() {
   const previousPublished = useMemo(() => {
     if (!selected) return null
     return (
-      yearVersions.find((v) => v.status === 'published' && v.id !== selected.id && v.versionNo < selected.versionNo) ?? null
+      yearVersions.find((v) => v.status === 'published' && v.id !== selected.id && v.versionNo < selected.versionNo) ??
+      null
     )
   }, [selected, yearVersions])
 
@@ -43,8 +89,16 @@ export function DimVersionPage() {
     if (!selected || !previousPublished) return []
     return [
       { metric: ui.diffMetricTotal, prev: previousPublished.kpis.subjectTotal, curr: selected.kpis.subjectTotal },
-      { metric: ui.diffMetricEnterpriseRatio, prev: previousPublished.kpis.enterpriseRatio, curr: selected.kpis.enterpriseRatio },
-      { metric: ui.diffMetricCoverage, prev: previousPublished.kpis.mappingCoverage, curr: selected.kpis.mappingCoverage },
+      {
+        metric: ui.diffMetricEnterpriseRatio,
+        prev: previousPublished.kpis.enterpriseRatio,
+        curr: selected.kpis.enterpriseRatio,
+      },
+      {
+        metric: ui.diffMetricCoverage,
+        prev: previousPublished.kpis.mappingCoverage,
+        curr: selected.kpis.mappingCoverage,
+      },
       { metric: ui.diffMetricUnmatched, prev: previousPublished.kpis.unmatchedCount, curr: selected.kpis.unmatchedCount },
     ]
   }, [previousPublished, selected, ui])
@@ -56,76 +110,75 @@ export function DimVersionPage() {
 
   const onStatYearChange = (year: string) => {
     setStatYear(year)
-    const top = allVersions
-      .filter((v) => v.statYear === year)
-      .sort((a, b) => b.versionNo - a.versionNo)[0]
+    const top = allVersions.filter((v) => v.statYear === year).sort((a, b) => b.versionNo - a.versionNo)[0]
     if (top) setSelectedId(top.id)
   }
 
-  const createDraftFromCurrent = () => {
-    if (!currentVersion) return
-    const nextNo = Math.max(...yearVersions.map((v) => v.versionNo)) + 1
-    const draft: DimVersion = {
-      ...currentVersion,
-      id: `${statYear}-v${nextNo}`,
-      versionNo: nextNo,
-      status: 'draft',
-      isCurrent: false,
-      updatedAt: ui.nowMock,
-      updatedBy: ui.currentUser,
-      publishedAt: undefined,
-      publishedBy: undefined,
-      changeNote: ui.defaultDraftNote,
+  const createDraftFromCurrent = async () => {
+    if (!statYear || busy) return
+    setBusy(true)
+    setBanner('')
+    const res = await postDimCaliberVersionCreateDraft(statYear)
+    setBusy(false)
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.actionFailed)
+      return
     }
-    setAllVersions((prev) => [draft, ...prev])
-    setSelectedId(draft.id)
-    setBanner(ui.bannerDraftCreated.replace('{version}', `v${nextNo}`))
+    await reload()
+    if (res.version?.id) setSelectedId(res.version.id)
+    setBanner(ui.bannerDraftCreated.replace('{version}', `v${res.version?.versionNo ?? ''}`))
   }
 
-  const publishSelected = () => {
-    if (!selected || selected.status !== 'draft') return
-    setAllVersions((prev) =>
-      prev.map((v) => {
-        if (v.statYear !== selected.statYear) return v
-        if (v.id === selected.id) {
-          return {
-            ...v,
-            status: 'published',
-            isCurrent: true,
-            publishedAt: ui.nowMock,
-            publishedBy: ui.currentUser,
-            updatedAt: ui.nowMock,
-            updatedBy: ui.currentUser,
-          }
-        }
-        if (v.isCurrent) return { ...v, isCurrent: false }
-        return v
-      }),
-    )
+  const publishSelected = async () => {
+    if (!selected || selected.status !== 'draft' || busy) return
+    setBusy(true)
+    const res = await postDimCaliberVersionPublish(selected.id)
+    setBusy(false)
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.actionFailed)
+      return
+    }
+    await reload()
     setBanner(ui.bannerPublished.replace('{version}', `v${selected.versionNo}`))
   }
 
-  const rollbackToPrevious = () => {
-    if (!selected || selected.status !== 'published') return
-    if (!previousPublished) return
-    setAllVersions((prev) =>
-      prev.map((v) => {
-        if (v.statYear !== selected.statYear) return v
-        if (v.id === previousPublished.id) return { ...v, isCurrent: true, updatedAt: ui.nowMock, updatedBy: ui.currentUser }
-        if (v.id === selected.id) return { ...v, isCurrent: false, updatedAt: ui.nowMock, updatedBy: ui.currentUser }
-        return v
-      }),
-    )
-    setSelectedId(previousPublished.id)
-    setBanner(ui.bannerRollback.replace('{version}', `v${previousPublished.versionNo}`))
+  const rollbackToPrevious = async () => {
+    if (!selected || selected.status !== 'published' || !previousPublished || busy) return
+    setBusy(true)
+    const res = await postDimCaliberVersionRollback(selected.id)
+    setBusy(false)
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.actionFailed)
+      return
+    }
+    await reload()
+    if (res.version?.id) setSelectedId(res.version.id)
+    setBanner(ui.bannerRollback.replace('{version}', `v${res.version?.versionNo ?? previousPublished.versionNo}`))
   }
 
-  const archiveSelected = () => {
-    if (!selected || selected.status === 'archived') return
-    setAllVersions((prev) =>
-      prev.map((v) => (v.id === selected.id ? { ...v, status: 'archived', isCurrent: false, updatedAt: ui.nowMock, updatedBy: ui.currentUser } : v)),
-    )
+  const archiveSelected = async () => {
+    if (!selected || selected.status === 'archived' || busy) return
+    setBusy(true)
+    const res = await postDimCaliberVersionArchive(selected.id)
+    setBusy(false)
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.actionFailed)
+      return
+    }
+    await reload()
     setBanner(ui.bannerArchived.replace('{version}', `v${selected.versionNo}`))
+  }
+
+  const saveDraft = async () => {
+    if (!selected || selected.status !== 'draft' || busy) return
+    setBusy(true)
+    const res = await postDimCaliberVersionSaveDraft(selected.id)
+    setBusy(false)
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.actionFailed)
+      return
+    }
+    setBanner(ui.bannerSaved)
   }
 
   const canPublish = selected?.status === 'draft'
@@ -139,12 +192,12 @@ export function DimVersionPage() {
         description={ui.pageNote}
         note={ui.pageDesc}
         noteTone="plain"
-        badgeText={ui.prototypeBadge}
         actions={
           <button
             type="button"
-            className="rounded-sm border border-border-light bg-white px-3 py-1.5 text-il-meta text-text transition-colors hover:bg-[#f8fafc]"
-            onClick={createDraftFromCurrent}
+            className="rounded-sm border border-border-light bg-white px-3 py-1.5 text-il-meta text-text transition-colors hover:bg-[#f8fafc] disabled:opacity-50"
+            disabled={busy || loading || !currentVersion}
+            onClick={() => void createDraftFromCurrent()}
           >
             {ui.createDraftBtn}
           </button>
@@ -161,35 +214,44 @@ export function DimVersionPage() {
         </ul>
       </div>
 
+      {loadError ? (
+        <div className="mb-4 rounded-sm border border-danger/30 bg-[#fff5f5] px-3 py-2 text-il-meta text-danger">{loadError}</div>
+      ) : null}
       {banner ? (
         <div className="mb-4 rounded-sm border border-[#c8e6d0] bg-[#f4fbf6] px-3 py-2 text-il-meta text-[#1b6b3a]">{banner}</div>
       ) : null}
 
-      <VersionHeader
-        ui={ui}
-        statYear={statYear}
-        yearOptions={yearOptions}
-        onStatYearChange={onStatYearChange}
-        currentVersion={currentVersion}
-        selected={selected}
-      />
+      {loading ? (
+        <div className="py-8 text-center text-il-meta text-text-3">{ui.loading}</div>
+      ) : (
+        <>
+          <VersionHeader
+            ui={ui}
+            statYear={statYear}
+            yearOptions={yearOptions.length ? yearOptions : [statYear || String(new Date().getFullYear())]}
+            onStatYearChange={onStatYearChange}
+            currentVersion={currentVersion}
+            selected={selected}
+          />
 
-      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-        <VersionListPanel ui={ui} yearVersions={yearVersions} selected={selected} onSelectVersion={selectVersion} />
-        <VersionDetailTabs ui={ui} selected={selected} activeTab={activeTab} onTabChange={setActiveTab} diffRows={diffRows} />
-      </div>
+          <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+            <VersionListPanel ui={ui} yearVersions={yearVersions} selected={selected} onSelectVersion={selectVersion} />
+            <VersionDetailTabs ui={ui} selected={selected} activeTab={activeTab} onTabChange={setActiveTab} diffRows={diffRows} />
+          </div>
 
-      <VersionActionBar
-        ui={ui}
-        canPublish={!!canPublish}
-        canRollback={!!canRollback}
-        canArchive={!!canArchive}
-        onSaveDraft={() => setBanner(ui.bannerSaved)}
-        onPublish={publishSelected}
-        onRollback={rollbackToPrevious}
-        onArchive={archiveSelected}
-        onExport={() => setBanner(ui.bannerExported)}
-      />
+          <VersionActionBar
+            ui={ui}
+            canPublish={!!canPublish}
+            canRollback={!!canRollback}
+            canArchive={!!canArchive}
+            onSaveDraft={() => void saveDraft()}
+            onPublish={() => void publishSelected()}
+            onRollback={() => void rollbackToPrevious()}
+            onArchive={() => void archiveSelected()}
+            onExport={() => setBanner(ui.bannerExported)}
+          />
+        </>
+      )}
     </div>
   )
 }

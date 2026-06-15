@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 from datetime import date
 from typing import Any
@@ -45,6 +47,34 @@ def _distinct_years(conn: Any) -> list[str]:
     return [str(y) for y in sorted(years, reverse=True)]
 
 
+def api_audit_pending_count(conn: Any, *, stat_year: str | None = None) -> dict[str, Any]:
+    """侧栏徽章：待跟踪疑点数量（is_confirmed=false）。"""
+    try:
+        if stat_year and str(stat_year).strip().isdigit():
+            y = _safe_int_year(stat_year)
+            gid = group_id_for_year(y)
+            row = conn.execute(
+                """
+                SELECT count(*)::BIGINT
+                FROM dm_audit_flag
+                WHERE group_id = ? AND NOT COALESCE(is_confirmed, FALSE)
+                """,
+                [gid],
+            ).fetchone()
+            pending = int(row[0] or 0) if row else 0
+            return {"ok": True, "stat_year": str(y), "pending": pending}
+        row = conn.execute(
+            """
+            SELECT count(*)::BIGINT FROM dm_audit_flag
+            WHERE NOT COALESCE(is_confirmed, FALSE)
+            """
+        ).fetchone()
+        pending = int(row[0] or 0) if row else 0
+        return {"ok": True, "pending": pending}
+    except Exception as exc:
+        return {"ok": False, "pending": 0, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+
 def api_audit_meta(conn: Any) -> dict[str, Any]:
     try:
         years = _distinct_years(conn)
@@ -67,6 +97,20 @@ def api_audit_meta(conn: Any) -> dict[str, Any]:
                     "enabled": bool((rc or {}).get("enabled", True)) if isinstance(rc, dict) else True,
                 }
             )
+        try:
+            from src.local_api.dim_dict_api import get_domain_codes, get_domain_label_map
+
+            risk_codes = get_domain_codes("audit_risk_level")
+            risk_labels = get_domain_label_map("audit_risk_level")
+            risk_level_options = [
+                {"code": c, "label": risk_labels.get(c, c)} for c in risk_codes
+            ]
+        except Exception:
+            risk_level_options = [
+                {"code": "高风险", "label": "高风险"},
+                {"code": "中风险", "label": "中风险"},
+                {"code": "低风险", "label": "低风险"},
+            ]
         return {
             "ok": True,
             "stat_years": years,
@@ -74,6 +118,7 @@ def api_audit_meta(conn: Any) -> dict[str, Any]:
             "flag_ready": flag_cnt > 0,
             "total_flags": flag_cnt,
             "rules": rules,
+            "risk_level_options": risk_level_options,
             "hint": None
             if flag_cnt > 0
             else "尚无审计疑点。请先完成 ODS→DWD 构建，再点击「运行疑点扫描」。",
@@ -91,6 +136,125 @@ def _track_status_clause(track_status: str | None) -> tuple[str, list[Any]]:
     return "", []
 
 
+def _audit_flags_where(
+    *,
+    stat_year: int,
+    risk_level: str | None = None,
+    rule_id: str | None = None,
+    keyword: str | None = None,
+    track_status: str | None = None,
+    batch_id: str | None = None,
+) -> tuple[str, list[Any], str]:
+    group_id = group_id_for_year(stat_year)
+    clauses = ["group_id = ?"]
+    params: list[Any] = [group_id]
+    if risk_level and risk_level.strip() and risk_level.strip() != "all":
+        clauses.append("risk_level = ?")
+        params.append(risk_level.strip())
+    if rule_id and rule_id.strip() and rule_id.strip() != "all":
+        clauses.append("rule_id = ?")
+        params.append(rule_id.strip())
+    bid = (batch_id or "").strip()
+    if bid:
+        clauses.append(
+            "(json_extract_string(detail_json, '$.batch_id') = ? "
+            "OR analysis_batch = ? OR analysis_batch = ?)"
+        )
+        params.extend([bid, f"finance_reconcile_{bid}", f"semantic_quality_{bid}"])
+    kw = (keyword or "").strip()
+    if kw:
+        clauses.append(
+            "(coalesce(entity_name, '') ILIKE ? OR coalesce(seller_name, '') ILIKE ? "
+            "OR coalesce(description, '') ILIKE ? OR coalesce(flag_type, '') ILIKE ?)"
+        )
+        like = f"%{kw}%"
+        params.extend([like, like, like, like])
+    track_clause, track_params = _track_status_clause(track_status)
+    if track_clause:
+        clauses.append(track_clause)
+        params.extend(track_params)
+    return " AND ".join(clauses), params, group_id
+
+
+_FLAG_CSV_HEADERS = [
+    "疑点编号",
+    "规则编号",
+    "风险等级",
+    "疑点类型",
+    "主体税号",
+    "涉及企业",
+    "涉及金额",
+    "已确认",
+    "跟踪说明",
+    "异常描述",
+    "建议核查动作",
+    "统计年度",
+]
+
+
+def export_audit_flags_csv_bytes(
+    conn: Any,
+    *,
+    stat_year: int,
+    risk_level: str | None = None,
+    rule_id: str | None = None,
+    keyword: str | None = None,
+    track_status: str | None = None,
+    batch_id: str | None = None,
+    max_rows: int = 10000,
+) -> tuple[bytes, int]:
+    """导出疑点清单 CSV（UTF-8 BOM），返回 (bytes, row_count)。"""
+    where, params, group_id = _audit_flags_where(
+        stat_year=stat_year,
+        risk_level=risk_level,
+        rule_id=rule_id,
+        keyword=keyword,
+        track_status=track_status,
+        batch_id=batch_id,
+    )
+    lim = max(1, min(int(max_rows or 10000), 50000))
+    rows = conn.execute(
+        f"""
+        SELECT
+            flag_id, rule_id, risk_level, flag_type,
+            entity_id, entity_name, amount, is_confirmed, confirm_note,
+            description, suggestion
+        FROM dm_audit_flag
+        WHERE {where}
+        ORDER BY
+            CASE risk_level WHEN '高风险' THEN 1 WHEN '中风险' THEN 2 ELSE 3 END,
+            coalesce(amount, 0) DESC,
+            flag_id
+        LIMIT ?
+        """,
+        [*params, lim],
+    ).fetchall()
+    year_str = str(stat_year)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(_FLAG_CSV_HEADERS)
+    for r in rows or []:
+        amount = float(r[6]) if r[6] is not None else None
+        writer.writerow(
+            [
+                str(r[0] or ""),
+                str(r[1] or ""),
+                str(r[2] or ""),
+                str(r[3] or ""),
+                str(r[4] or "") or "",
+                str(r[5] or "") or "",
+                f"{amount:.2f}" if amount is not None else "",
+                "是" if bool(r[7]) else "否",
+                str(r[8] or "") or "",
+                str(r[9] or ""),
+                str(r[10] or ""),
+                year_str,
+            ]
+        )
+    _ = group_id
+    return buf.getvalue().encode("utf-8-sig"), len(rows or [])
+
+
 def api_audit_flags_list(
     conn: Any,
     *,
@@ -99,33 +263,20 @@ def api_audit_flags_list(
     rule_id: str | None = None,
     keyword: str | None = None,
     track_status: str | None = None,
+    batch_id: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
     try:
         y = _safe_int_year(stat_year)
-        group_id = group_id_for_year(y)
-        clauses = ["group_id = ?"]
-        params: list[Any] = [group_id]
-        if risk_level and risk_level.strip() and risk_level.strip() != "all":
-            clauses.append("risk_level = ?")
-            params.append(risk_level.strip())
-        if rule_id and rule_id.strip() and rule_id.strip() != "all":
-            clauses.append("rule_id = ?")
-            params.append(rule_id.strip())
-        kw = (keyword or "").strip()
-        if kw:
-            clauses.append(
-                "(coalesce(entity_name, '') ILIKE ? OR coalesce(seller_name, '') ILIKE ? "
-                "OR coalesce(description, '') ILIKE ? OR coalesce(flag_type, '') ILIKE ?)"
-            )
-            like = f"%{kw}%"
-            params.extend([like, like, like, like])
-        track_clause, track_params = _track_status_clause(track_status)
-        if track_clause:
-            clauses.append(track_clause)
-            params.extend(track_params)
-        where = " AND ".join(clauses)
+        where, params, group_id = _audit_flags_where(
+            stat_year=y,
+            risk_level=risk_level,
+            rule_id=rule_id,
+            keyword=keyword,
+            track_status=track_status,
+            batch_id=batch_id,
+        )
         total = int(
             conn.execute(f"SELECT COUNT(*)::BIGINT FROM dm_audit_flag WHERE {where}", params).fetchone()[0] or 0
         )
@@ -136,7 +287,7 @@ def api_audit_flags_list(
             SELECT
                 flag_id, rule_id, risk_level, flag_type, group_id,
                 entity_id, entity_name, seller_name, seller_tax_no,
-                amount, description, suggestion, is_confirmed, confirm_note, analysis_batch, created_at
+                amount, description, suggestion, is_confirmed, confirm_note, analysis_batch, created_at, detail_json
             FROM dm_audit_flag
             WHERE {where}
             ORDER BY
@@ -165,6 +316,7 @@ def api_audit_flags_list(
                 "confirm_note": str(r[13] or "") or None,
                 "analysis_batch": str(r[14] or ""),
                 "created_at": str(r[15] or "") if r[15] is not None else None,
+                "detail_json": str(r[16] or "") or None,
             }
             for r in rows or []
         ]
@@ -285,6 +437,70 @@ def api_audit_run(
         return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
 
 
+RULE_MODULE_MAP: dict[str, list[str]] = {
+    "RULE-01": ["疑点清单"],
+    "RULE-02": ["疑点清单"],
+    "RULE-03": ["疑点清单"],
+    "RULE-04": ["疑点清单"],
+    "RULE-05": ["税务分析", "疑点清单"],
+    "RULE-06": ["疑点清单"],
+    "RULE-07": ["疑点清单"],
+    "RULE-08": ["税务分析", "疑点清单"],
+    "RULE-09": ["关联交易", "疑点清单"],
+    "RULE-10": ["疑点清单"],
+    "RULE-SHELL": ["通道公司", "疑点清单"],
+    "RULE-TAX-DEV": ["税务分析", "进销偏离"],
+    "RULE-FIN-DIFF": ["财务核对", "疑点清单"],
+    "RULE-FIN-LEDGER-ONLY": ["财务核对", "疑点清单"],
+    "RULE-FIN-INVOICE-ONLY": ["财务核对", "疑点清单"],
+    "RULE-FIN-OTHER": ["财务核对", "疑点清单"],
+    "RULE-DQ-MISSING-SPC": ["数据质量", "疑点清单"],
+    "RULE-DQ-SUMMARY-LINE": ["数据质量", "疑点清单"],
+    "RULE-TAX-UNMATCH": ["税务分析", "税收分类编码", "疑点清单"],
+    "RULE-TAX-HIGH-CODE": ["税务分析", "税收分类编码", "疑点清单"],
+}
+
+
+def _validate_audit_rules_data(data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
+    errors: list[str] = []
+    rules_list: list[dict[str, Any]] = []
+    if not isinstance(data, dict):
+        return ["YAML 根节点必须为 mapping（对象）"], rules_list
+    if "rules" not in data:
+        errors.append("缺少顶层 rules 配置块")
+        return errors, rules_list
+    rules_block = data.get("rules")
+    if not isinstance(rules_block, dict):
+        errors.append("rules 必须为 mapping（对象）")
+        return errors, rules_list
+    for rid, rc in rules_block.items():
+        rule_id = str(rid).strip()
+        if not rule_id:
+            errors.append("存在空的规则编号键")
+            continue
+        if not isinstance(rc, dict):
+            errors.append(f"{rule_id}: 规则配置必须为对象")
+            continue
+        enabled = rc.get("enabled", True)
+        if enabled is not None and not isinstance(enabled, bool):
+            errors.append(f"{rule_id}: enabled 必须为布尔值")
+        name = str(rc.get("name") or rule_id)
+        risk_keys = [k for k in rc if k.startswith("risk_level")]
+        risk_level = str(rc.get("risk_level") or (rc.get(risk_keys[0]) if risk_keys else "") or "")
+        rules_list.append(
+            {
+                "rule_id": rule_id,
+                "name": name,
+                "enabled": bool(enabled) if enabled is not None else True,
+                "risk_level": risk_level,
+                "modules": RULE_MODULE_MAP.get(rule_id, ["疑点清单"]),
+                "param_keys": sorted(k for k in rc if k not in ("enabled", "name")),
+            }
+        )
+    rules_list.sort(key=lambda x: str(x.get("rule_id", "")))
+    return errors, rules_list
+
+
 def api_audit_rules_config_get(conn: Any) -> dict[str, Any]:
     _ = conn
     try:
@@ -292,9 +508,38 @@ def api_audit_rules_config_get(conn: Any) -> dict[str, Any]:
 
         yaml_text, source = audit_rules_yaml_text()
         cfg = load_audit_rules_config()
-        return {"ok": True, "yaml_text": yaml_text, "source": source, "config": cfg}
+        _, rules_list = _validate_audit_rules_data(cfg if isinstance(cfg, dict) else {})
+        return {
+            "ok": True,
+            "yaml_text": yaml_text,
+            "source": source,
+            "config": cfg,
+            "rules_list": rules_list,
+            "module_map": RULE_MODULE_MAP,
+        }
     except Exception as exc:
         return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+
+def api_audit_rules_config_validate(conn: Any, *, yaml_text: str) -> dict[str, Any]:
+    _ = conn
+    try:
+        import yaml
+
+        data = yaml.safe_load(yaml_text or "") or {}
+        errors, rules_list = _validate_audit_rules_data(data if isinstance(data, dict) else {})
+        if errors:
+            return {"ok": False, "errors": errors, "rules_list": rules_list}
+        return {
+            "ok": True,
+            "message": f"解析成功，共 {len(rules_list)} 条规则",
+            "rules_list": rules_list,
+            "module_map": RULE_MODULE_MAP,
+        }
+    except yaml.YAMLError as exc:
+        return {"ok": False, "errors": [f"YAML 语法错误：{exc}"], "rules_list": []}
+    except Exception as exc:
+        return {"ok": False, "errors": [str(exc)], "rules_list": []}
 
 
 def api_audit_rules_config_save(conn: Any, *, yaml_text: str) -> dict[str, Any]:
@@ -305,15 +550,19 @@ def api_audit_rules_config_save(conn: Any, *, yaml_text: str) -> dict[str, Any]:
         from src.audit.config_loader import audit_rules_yaml_text, save_audit_rules_config
 
         data = yaml.safe_load(yaml_text or "") or {}
-        if not isinstance(data, dict):
-            return {"ok": False, "error": {"message": "YAML 根节点必须为 mapping"}}
-        if "rules" not in data or not isinstance(data.get("rules"), dict):
-            return {"ok": False, "error": {"message": "缺少 rules 配置块"}}
+        errors, rules_list = _validate_audit_rules_data(data if isinstance(data, dict) else {})
+        if errors:
+            return {"ok": False, "error": {"message": "；".join(errors)}, "errors": errors}
         save_audit_rules_config(data)
         _, source = audit_rules_yaml_text()
-        return {"ok": True, "message": "审计规则配置已保存", "source": source}
+        return {
+            "ok": True,
+            "message": "审计规则配置已保存",
+            "source": source,
+            "rules_list": rules_list,
+        }
     except yaml.YAMLError as exc:
-        return {"ok": False, "error": {"message": f"YAML 解析失败：{exc}"}}
+        return {"ok": False, "error": {"message": f"YAML 解析失败：{exc}"}, "errors": [str(exc)]}
     except Exception as exc:
         return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
 

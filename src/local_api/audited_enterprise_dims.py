@@ -55,7 +55,21 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _norm_str(v: Any) -> str:
-    return str(v or "").strip()
+    if v is None:
+        return ""
+    if isinstance(v, float) and v != v:
+        return ""
+    try:
+        import pandas as pd
+
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    s = str(v).strip()
+    if s.lower() == "nan":
+        return ""
+    return s
 
 
 def _snapshot_years_registry(conn: Any) -> list[str]:
@@ -241,6 +255,60 @@ def api_registry_list(
     return out
 
 
+def fetch_all_registry_rows(
+    conn: Any,
+    *,
+    snapshot_year: str | None,
+    state_investor_kw: str = "",
+    enterprise_kw: str = "",
+    include_years: bool = True,
+    chunk_size: int = 500,
+) -> dict[str, Any]:
+    """
+    分页拉取台账全量行（供关系树/关系清单等需全量计算的 API 使用）。
+    单次 chunk 仍受 api_registry_list 上限约束，内部循环 offset 直至 total。
+    """
+    chunk = max(1, min(int(chunk_size or 500), 500))
+    first = api_registry_list(
+        conn,
+        snapshot_year=snapshot_year,
+        state_investor_kw=state_investor_kw,
+        enterprise_kw=enterprise_kw,
+        limit=chunk,
+        offset=0,
+        include_years=include_years,
+    )
+    if not first.get("ok"):
+        return first
+
+    total = int(first.get("total") or 0)
+    merged: list[dict[str, Any]] = list(first.get("rows") or [])
+    if total > len(merged):
+        for offset in range(len(merged), total, chunk):
+            part = api_registry_list(
+                conn,
+                snapshot_year=snapshot_year,
+                state_investor_kw=state_investor_kw,
+                enterprise_kw=enterprise_kw,
+                limit=chunk,
+                offset=offset,
+                include_years=False,
+            )
+            if not part.get("ok"):
+                return part
+            merged.extend(part.get("rows") or [])
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "selected_year": first.get("selected_year"),
+        "rows": merged,
+        "total": total,
+    }
+    if include_years:
+        out["snapshot_years"] = first.get("snapshot_years") or []
+    return out
+
+
 def _merge_shareholders(name: str, ratio: str) -> str:
     n = name.strip()
     rt = ratio.strip()
@@ -314,8 +382,13 @@ def api_registry_insert(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True, "row_id": row_id}
         if roster_sync.get("ok"):
             out["roster_rows_written"] = roster_sync.get("rows_written", 0)
+            rel = roster_sync.get("enterprise_year_rel_rebuild")
+            if isinstance(rel, dict):
+                out["enterprise_year_rel_rebuild"] = rel
         else:
             out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
+        if roster_sync.get("rel_rebuild_warning"):
+            out["rel_rebuild_warning"] = roster_sync["rel_rebuild_warning"]
         return out
     except Exception as exc:
         logger.exception("registry insert failed: %s", exc)
@@ -427,8 +500,13 @@ def api_registry_bootstrap_demo(conn: Any) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True, "inserted": n}
         if roster_sync.get("ok"):
             out["roster_rows_written"] = roster_sync.get("rows_written", 0)
+            rel = roster_sync.get("enterprise_year_rel_rebuild")
+            if isinstance(rel, dict):
+                out["enterprise_year_rel_rebuild"] = rel
         else:
             out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
+        if roster_sync.get("rel_rebuild_warning"):
+            out["rel_rebuild_warning"] = roster_sync["rel_rebuild_warning"]
         return out
     except Exception as exc:
         logger.exception("registry bootstrap: %s", exc)
@@ -625,3 +703,436 @@ def api_contribution_bootstrap_demo(conn: Any) -> dict[str, Any]:
             "ok": False,
             "error": {"message": str(exc), "exception_type": type(exc).__name__, "detail": str(exc)},
         }
+
+
+# -----------------------------------------------------------------------------
+# Excel 批量导入（管理与产权 / 出资股权）
+# -----------------------------------------------------------------------------
+
+import io as _io
+
+import pandas as pd
+
+_REGISTRY_EXCEL_ALIASES: dict[str, list[str]] = {
+    "snapshot_year": ["snapshot_year", "快照年度", "统计年度", "年度"],
+    "unified_social_credit_code": ["unified_social_credit_code", "统一社会信用代码", "信用代码", "税号"],
+    "enterprise_name": ["enterprise_name", "企业名称", "名称"],
+    "domestic_overseas": ["domestic_overseas", "境内/境外", "境内境外"],
+    "detail_address": ["detail_address", "详细地址", "地址"],
+    "currency": ["currency", "币种"],
+    "registered_capital": ["registered_capital", "注册资本"],
+    "registration_date": ["registration_date", "注册日期"],
+    "national_economy_industry_major": ["national_economy_industry_major", "国民经济行业大类", "行业大类"],
+    "enterprise_category": ["enterprise_category", "企业类别"],
+    "sasac_authority": ["sasac_authority", "所属国资监管机构", "国资监管机构"],
+    "sasac_relation": ["sasac_relation", "与国资监管机构的关系", "国资关系"],
+    "consolidated_reporting": ["consolidated_reporting", "是否并表", "并表"],
+    "listed_company": ["listed_company", "是否上市公司", "上市公司"],
+    "main_business": ["main_business", "主业情况", "主业"],
+    "state_investor": ["state_investor", "国家出资企业"],
+    "mgmt_level": ["mgmt_level", "管理层级"],
+    "mgmt_parent": ["mgmt_parent", "上级管理单位", "管理上级"],
+    "equity_level": ["equity_level", "产权层级"],
+    "shareholders": ["shareholders", "上级产权单位", "股东", "出资人"],
+}
+
+_CONTRIB_EXCEL_ALIASES: dict[str, list[str]] = {
+    "snapshot_year": ["snapshot_year", "快照年度", "统计年度", "年度"],
+    "investee_unified_credit_code": [
+        "investee_unified_credit_code",
+        "企业统一社会信用代码",
+        "统一社会信用代码",
+        "信用代码",
+    ],
+    "investee_name": ["investee_name", "企业名称", "标的企业名称"],
+    "state_investor_enterprise": ["state_investor_enterprise", "国家出资企业"],
+    "state_investor_unified_credit_code": [
+        "state_investor_unified_credit_code",
+        "国家出资企业统一社会信用代码",
+    ],
+    "contributor_name": ["contributor_name", "出资人名称", "出资人"],
+    "contributor_org_code": ["contributor_org_code", "出资人组织机构代码", "组织机构代码"],
+    "contributor_category": ["contributor_category", "出资人类别"],
+    "contribution_info": ["contribution_info", "出资信息"],
+    "relation_to_target": ["relation_to_target", "与标的企业关系"],
+    "currency": ["currency", "币种"],
+    "subscribed_amount_wan": ["subscribed_amount_wan", "认缴金额（万元）", "认缴金额", "出资额万元"],
+    "share_ratio": ["share_ratio", "股权比例", "持股比例", "出资比例"],
+}
+
+
+def _norm_header_cell(v: Any) -> str:
+    return str(v or "").strip().lower().replace(" ", "").replace("_", "")
+
+
+def _map_excel_headers(header_row: list[Any], aliases: dict[str, list[str]]) -> dict[str, int]:
+    norm_aliases: dict[str, str] = {}
+    for key, names in aliases.items():
+        for n in names:
+            norm_aliases[_norm_header_cell(n)] = key
+    out: dict[str, int] = {}
+    for idx, cell in enumerate(header_row):
+        key = norm_aliases.get(_norm_header_cell(cell))
+        if key and key not in out:
+            out[key] = idx
+    return out
+
+
+def _compress_seq_ranges(seqs: list[int], reason: str) -> list[dict[str, Any]]:
+    if not seqs:
+        return []
+    sorted_seqs = sorted(set(seqs))
+    ranges: list[dict[str, Any]] = []
+    start = prev = sorted_seqs[0]
+    for s in sorted_seqs[1:]:
+        if s == prev + 1:
+            prev = s
+            continue
+        ranges.append({"seq_no_start": start, "seq_no_end": prev, "reason": reason})
+        start = prev = s
+    ranges.append({"seq_no_start": start, "seq_no_end": prev, "reason": reason})
+    return ranges
+
+
+def _build_row_reject_summary(
+    reject_rows: list[dict[str, Any]],
+    sheet: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not reject_rows:
+        return [], []
+    samples: list[dict[str, Any]] = []
+    reason_to_seqs: dict[str, list[int]] = {}
+    for row in reject_rows[:50]:
+        samples.append(
+            {
+                "seq_no": row.get("seq_no"),
+                "sheet": sheet,
+                "field": row.get("field") or "unknown",
+                "reason": row.get("reason") or "RowValidationError",
+                "exception_type": row.get("exception_type") or "RowValidationError",
+            }
+        )
+    for row in reject_rows:
+        seq_no = row.get("seq_no")
+        if seq_no is None:
+            continue
+        reason = str(row.get("reason") or "RowValidationError")
+        reason_to_seqs.setdefault(reason, []).append(int(seq_no))
+    ranges: list[dict[str, Any]] = []
+    for reason, seqs in reason_to_seqs.items():
+        ranges.extend(_compress_seq_ranges(seqs, reason))
+    ranges.sort(key=lambda x: (x["seq_no_start"], x["seq_no_end"]))
+    return ranges, samples
+
+
+def _read_audited_excel_sheet(
+    file_bytes: bytes,
+    upload_filename: str | None,
+) -> tuple[pd.DataFrame, str]:
+    fn = (upload_filename or "upload.xlsx").lower()
+    bio = _io.BytesIO(file_bytes)
+    engine = "xlrd" if fn.endswith(".xls") else "openpyxl"
+    xls = pd.ExcelFile(bio, engine=engine)
+    sheet = xls.sheet_names[0]
+    df = pd.read_excel(xls, sheet_name=sheet, header=0, dtype=str)
+    return df, sheet
+
+
+def api_registry_import_excel(
+    conn: Any,
+    *,
+    file_bytes: bytes,
+    upload_filename: str | None = None,
+) -> dict[str, Any]:
+    try:
+        df, sheet = _read_audited_excel_sheet(file_bytes, upload_filename)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("读取管理与产权 Excel 失败")
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+        }
+
+    if df.empty or df.shape[1] == 0:
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {"message": "Excel 无有效表头或数据行", "exception_type": "EmptyFileError"},
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+        }
+
+    col_map = _map_excel_headers(list(df.columns), _REGISTRY_EXCEL_ALIASES)
+    required = ["snapshot_year", "unified_social_credit_code", "enterprise_name"]
+    missing_cols = [k for k in required if k not in col_map]
+    if missing_cols:
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {
+                "message": f"缺少必需列：{', '.join(missing_cols)}",
+                "exception_type": "TemplateError",
+            },
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+            "sheet": sheet,
+        }
+
+    imported = 0
+    reject_rows: list[dict[str, Any]] = []
+    years_sync: set[int] = set()
+
+    for row_idx, row in df.iterrows():
+        seq_no = int(row_idx) + 2
+        try:
+            def _cell(key: str) -> str:
+                idx = col_map.get(key)
+                if idx is None:
+                    return ""
+                return _norm_str(row.iloc[idx])
+
+            sy = _cell("snapshot_year")
+            code = _cell("unified_social_credit_code")
+            name = _cell("enterprise_name")
+            if not sy or not sy.isdigit():
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "snapshot_year",
+                        "reason": "快照年度无效或为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+            if not code:
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "unified_social_credit_code",
+                        "reason": "统一社会信用代码为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+            if not name:
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "enterprise_name",
+                        "reason": "企业名称为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+
+            body: dict[str, Any] = {
+                "snapshotYear": sy,
+                "code": code,
+                "name": name,
+                "domesticOverseas": _cell("domestic_overseas") or "境内",
+                "detailAddress": _cell("detail_address"),
+                "currency": _cell("currency"),
+                "registeredCapital": _cell("registered_capital"),
+                "registrationDate": _cell("registration_date"),
+                "nationalEconomyIndustryMajor": _cell("national_economy_industry_major"),
+                "enterpriseCategory": _cell("enterprise_category"),
+                "stateInvestor": _cell("state_investor"),
+                "sasacAuthority": _cell("sasac_authority"),
+                "sasacRelation": _cell("sasac_relation"),
+                "consolidatedReporting": _cell("consolidated_reporting"),
+                "listedCompany": _cell("listed_company"),
+                "mainBusiness": _cell("main_business"),
+                "mgmtLevel": _safe_int(_cell("mgmt_level"), 1),
+                "mgmtParent": _cell("mgmt_parent"),
+                "equityLevel": _safe_int(_cell("equity_level"), 1),
+                "shareholders": _cell("shareholders"),
+            }
+            res = api_registry_insert(conn, body)
+            if not res.get("ok"):
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "row",
+                        "reason": str((res.get("error") or {}).get("message") or "写入失败"),
+                        "exception_type": str((res.get("error") or {}).get("exception_type") or "WriteError"),
+                    }
+                )
+                continue
+            imported += 1
+            years_sync.add(int(sy))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("registry import row %s: %s", seq_no, exc)
+            reject_rows.append(
+                {
+                    "seq_no": seq_no,
+                    "field": "row",
+                    "reason": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            )
+
+    reject_ranges, reject_samples = _build_row_reject_summary(reject_rows, sheet)
+    rejected = len(reject_rows)
+    return {
+        "ok": imported > 0 or rejected == 0,
+        "imported": imported,
+        "rejected": rejected,
+        "reject_row_samples": reject_samples,
+        "reject_row_ranges": reject_ranges,
+        "sheet": sheet,
+        "snapshot_years": sorted(years_sync),
+    }
+
+
+def api_contribution_import_excel(
+    conn: Any,
+    *,
+    file_bytes: bytes,
+    upload_filename: str | None = None,
+) -> dict[str, Any]:
+    try:
+        df, sheet = _read_audited_excel_sheet(file_bytes, upload_filename)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("读取出资股权 Excel 失败")
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+        }
+
+    if df.empty or df.shape[1] == 0:
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {"message": "Excel 无有效表头或数据行", "exception_type": "EmptyFileError"},
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+        }
+
+    col_map = _map_excel_headers(list(df.columns), _CONTRIB_EXCEL_ALIASES)
+    required = ["snapshot_year", "investee_name", "contributor_name"]
+    missing_cols = [k for k in required if k not in col_map]
+    if missing_cols:
+        return {
+            "ok": False,
+            "file_blocking": True,
+            "error": {
+                "message": f"缺少必需列：{', '.join(missing_cols)}",
+                "exception_type": "TemplateError",
+            },
+            "imported": 0,
+            "rejected": 0,
+            "reject_row_samples": [],
+            "reject_row_ranges": [],
+            "sheet": sheet,
+        }
+
+    imported = 0
+    reject_rows: list[dict[str, Any]] = []
+
+    for row_idx, row in df.iterrows():
+        seq_no = int(row_idx) + 2
+        try:
+            def _cell(key: str) -> str:
+                idx = col_map.get(key)
+                if idx is None:
+                    return ""
+                return _norm_str(row.iloc[idx])
+
+            sy = _cell("snapshot_year")
+            investee = _cell("investee_name")
+            contributor = _cell("contributor_name")
+            if not sy or not sy.isdigit():
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "snapshot_year",
+                        "reason": "快照年度无效或为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+            if not investee:
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "investee_name",
+                        "reason": "企业名称为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+            if not contributor:
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "contributor_name",
+                        "reason": "出资人名称为空",
+                        "exception_type": "ValidationError",
+                    }
+                )
+                continue
+
+            body: dict[str, Any] = {
+                "snapshotYear": sy,
+                "unifiedCreditCode": _cell("investee_unified_credit_code"),
+                "investeeName": investee,
+                "stateInvestorEnterprise": _cell("state_investor_enterprise"),
+                "stateInvestorUnifiedCreditCode": _cell("state_investor_unified_credit_code"),
+                "contributorName": contributor,
+                "contributorOrgCode": _cell("contributor_org_code"),
+                "contributorCategory": _cell("contributor_category"),
+                "contributionInfo": _cell("contribution_info"),
+                "relationToTarget": _cell("relation_to_target"),
+                "currency": _cell("currency") or "人民币",
+                "subscribedAmountWan": _safe_float(_cell("subscribed_amount_wan"), 0.0),
+                "shareRatio": _safe_float(_cell("share_ratio"), 0.0),
+            }
+            res = api_contribution_insert(conn, body)
+            if not res.get("ok"):
+                reject_rows.append(
+                    {
+                        "seq_no": seq_no,
+                        "field": "row",
+                        "reason": str((res.get("error") or {}).get("message") or "写入失败"),
+                        "exception_type": str((res.get("error") or {}).get("exception_type") or "WriteError"),
+                    }
+                )
+                continue
+            imported += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("contribution import row %s: %s", seq_no, exc)
+            reject_rows.append(
+                {
+                    "seq_no": seq_no,
+                    "field": "row",
+                    "reason": str(exc),
+                    "exception_type": type(exc).__name__,
+                }
+            )
+
+    reject_ranges, reject_samples = _build_row_reject_summary(reject_rows, sheet)
+    rejected = len(reject_rows)
+    return {
+        "ok": imported > 0 or rejected == 0,
+        "imported": imported,
+        "rejected": rejected,
+        "reject_row_samples": reject_samples,
+        "reject_row_ranges": reject_ranges,
+        "sheet": sheet,
+    }

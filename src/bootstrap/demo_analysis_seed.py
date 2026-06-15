@@ -18,13 +18,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 固定演示年度 = 当前日历年（与前端 useDwsFilters 默认一致）
+# 演示年度：近三年（供 supplier_new / compare_charts 跨年度对比）
 DEMO_STAT_YEAR = date.today().year
+DEMO_STAT_YEARS: list[int] = [DEMO_STAT_YEAR - 2, DEMO_STAT_YEAR - 1, DEMO_STAT_YEAR]
+DEMO_STAT_YEARS = [y for y in DEMO_STAT_YEARS if 1990 <= y <= 2100]
 
 _DEMO_PREFIX = "demo_analysis_"
-_BATCH_ID = f"{_DEMO_PREFIX}batch_{DEMO_STAT_YEAR}"
 _DEMO_FILE = f"{_DEMO_PREFIX}invoices.xlsx"
-_ANALYSIS_BATCH = f"{_DEMO_PREFIX}audit_{DEMO_STAT_YEAR}"
 
 _LEDGER_SEED = (
     Path(__file__).resolve().parents[2] / "frontend" / "src" / "dim" / "data" / "property_ledger_seed.json"
@@ -35,14 +35,17 @@ _MAIN_ENTITIES: list[tuple[str, str]] = [
     ("91110000MA01DEMO01", "华能示范集团有限公司"),
     ("91310000MA01DEMO02", "华东能源开发有限公司"),
     ("91440000MA01DEMO03", "粤电新能源科技有限公司"),
+    ("91550000MA01DEMO04", "北方热电运营有限公司"),
+    ("91660000MA01DEMO05", "西部储能科技有限公司"),
 ]
 
-# 外部往来单位（演示 L2 往来 / 供应商分析）
 _COUNTERPARTIES: list[tuple[str, str]] = [
     ("91500000MA01DEMOA1", "示范电力设备有限公司"),
     ("91600000MA01DEMOB2", "全国煤炭贸易股份公司"),
     ("91700000MA01DEMOC3", "华南建材供应链有限公司"),
     ("91800000MA01DEMOD4", "华北工程服务有限责任公司"),
+    ("91990000MA01DEMOE5", "中部物流运输有限公司"),
+    ("92000000MA01DEMOF6", "沿海国际贸易有限公司"),
 ]
 
 _TAX_RATES: list[tuple[str, float]] = [
@@ -58,8 +61,16 @@ def _now() -> datetime:
     return datetime.now()
 
 
-def _hdr_uuid(seq: int) -> str:
-    return f"{_DEMO_PREFIX}hdr_{DEMO_STAT_YEAR}_{seq:04d}"
+def _batch_id(stat_year: int) -> str:
+    return f"{_DEMO_PREFIX}batch_{stat_year}"
+
+
+def _analysis_batch(stat_year: int) -> str:
+    return f"{_DEMO_PREFIX}audit_{stat_year}"
+
+
+def _hdr_uuid(stat_year: int, seq: int) -> str:
+    return f"{_DEMO_PREFIX}hdr_{stat_year}_{seq:04d}"
 
 
 def _dtl_uuid(hdr: str, line: int) -> str:
@@ -73,8 +84,11 @@ def _cleanup_demo_rows(conn: Any) -> dict[str, int]:
     steps: list[tuple[str, str]] = [
         ("dwd_inv_detail", f"import_batch_id LIKE '{_DEMO_PREFIX}%'"),
         ("dwd_inv_header", f"first_import_batch_id LIKE '{_DEMO_PREFIX}%'"),
-        ("dm_audit_flag", f"analysis_batch LIKE '{_DEMO_PREFIX}%'"),
-        ("dim_enterprise_year_roster", f"data_source = '{_DEMO_PREFIX}seed'"),
+        ("dm_audit_flag", f"analysis_batch LIKE '{_DEMO_PREFIX}%' OR flag_id LIKE '{_DEMO_PREFIX}%' OR analysis_batch = 'tax_deviation_sync'"),
+        (
+            "dim_enterprise_year_roster",
+            f"enterprise_id LIKE '%DEMO%' OR data_source = '{_DEMO_PREFIX}seed' OR source_record_id LIKE '{_DEMO_PREFIX}%'",
+        ),
         (
             "dim_subject_master",
             f"first_import_batch_id LIKE '{_DEMO_PREFIX}%' OR last_import_batch_id LIKE '{_DEMO_PREFIX}%'",
@@ -105,48 +119,51 @@ def _seed_registry_and_roster(conn: Any) -> dict[str, Any]:
 
 
 
-def _ensure_roster_for_year(conn: Any) -> int:
-    """确保 DEMO_STAT_YEAR 花名册含演示成员（台账 bootstrap 可能只写 snapshotYear）。"""
+def _ensure_roster_for_years(conn: Any) -> int:
+    """确保各演示年度花名册含演示成员。"""
     n = 0
     state_investor = "华能示范集团有限公司"
     state_code = "91110000MA01DEMO01"
     now = _now()
-    for tax_no, name in _MAIN_ENTITIES:
-        try:
-            conn.execute(
-                """
-                INSERT INTO dim_enterprise_year_roster (
-                    stat_year, enterprise_id, enterprise_name,
-                    state_investor, state_investor_unified_credit_code,
-                    is_member, data_source, in_registry, updated_at
-                ) VALUES (?, ?, ?, ?, ?, TRUE, ?, TRUE, ?)
-                ON CONFLICT (stat_year, enterprise_id) DO UPDATE SET
-                    enterprise_name = excluded.enterprise_name,
-                    state_investor = excluded.state_investor,
-                    state_investor_unified_credit_code = excluded.state_investor_unified_credit_code,
-                    is_member = TRUE,
-                    data_source = excluded.data_source,
-                    updated_at = excluded.updated_at
-                """,
-                [DEMO_STAT_YEAR, tax_no, name, state_investor, state_code, f"{_DEMO_PREFIX}seed", now],
-            )
-            n += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("roster upsert %s: %s", tax_no, exc)
+    for stat_year in DEMO_STAT_YEARS:
+        for tax_no, name in _MAIN_ENTITIES:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO dim_enterprise_year_roster (
+                        stat_year, enterprise_id, enterprise_name,
+                        state_investor, state_investor_unified_credit_code,
+                        is_member, data_source, in_registry, in_manual,
+                        source_record_id, calc_version, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, TRUE, 'registry', TRUE, FALSE, ?, 'v2', ?)
+                    ON CONFLICT (stat_year, enterprise_id) DO UPDATE SET
+                        enterprise_name = excluded.enterprise_name,
+                        state_investor = excluded.state_investor,
+                        state_investor_unified_credit_code = excluded.state_investor_unified_credit_code,
+                        is_member = TRUE,
+                        data_source = 'registry',
+                        in_registry = TRUE,
+                        in_manual = FALSE,
+                        source_record_id = excluded.source_record_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    [stat_year, tax_no, name, state_investor, state_code, f"{_DEMO_PREFIX}roster", now],
+                )
+                n += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("roster upsert %s/%s: %s", stat_year, tax_no, exc)
     return n
 
 
-def _build_invoice_specs() -> list[dict[str, Any]]:
-    """构造发票规格：主实体购销双向 + 多往来 + 跨月 + 多税率。"""
+def _build_invoice_specs(stat_year: int) -> list[dict[str, Any]]:
+    """构造发票规格：主实体购销双向 + 多往来 + 跨月 + 多税率 + 规则触发样本。"""
     specs: list[dict[str, Any]] = []
     seq = 1
-    all_entities = _MAIN_ENTITIES + _COUNTERPARTIES
+    year_offset = max(0, stat_year - DEMO_STAT_YEAR)
 
-    # 主实体：每月 2 销 + 2 购，覆盖 1–6 月
     for month in range(1, 7):
         for buyer_tax, buyer_name in _MAIN_ENTITIES:
-            # 销项：主实体 → 外部客户
-            cust = _COUNTERPARTIES[(month + seq) % len(_COUNTERPARTIES)]
+            cust = _COUNTERPARTIES[(month + seq + year_offset) % len(_COUNTERPARTIES)]
             rate_idx = seq % len(_TAX_RATES)
             specs.append(
                 {
@@ -155,12 +172,11 @@ def _build_invoice_specs() -> list[dict[str, Any]]:
                     "seller": (buyer_tax, buyer_name),
                     "buyer": cust,
                     "tax_idx": rate_idx,
-                    "amount": 50000 + seq * 1200,
+                    "amount": 50000 + seq * 1200 + year_offset * 5000,
                 }
             )
             seq += 1
-            # 进项：供应商 → 主实体
-            sup = _COUNTERPARTIES[(month + seq + 1) % len(_COUNTERPARTIES)]
+            sup = _COUNTERPARTIES[(month + seq + 1 + year_offset) % len(_COUNTERPARTIES)]
             rate_idx2 = (seq + 1) % len(_TAX_RATES)
             specs.append(
                 {
@@ -174,7 +190,32 @@ def _build_invoice_specs() -> list[dict[str, Any]]:
             )
             seq += 1
 
-    # 双向往来：DEMO01 ↔ DEMOB2 互相开票
+    # 进销结构偏离：DEMO01 销项偏 13%、进项偏 6%（触发 RULE-TAX-DEV / 风险敞口）
+    if stat_year == DEMO_STAT_YEAR:
+        for month in range(1, 5):
+            specs.append(
+                {
+                    "seq": seq,
+                    "month": month,
+                    "seller": _MAIN_ENTITIES[0],
+                    "buyer": _COUNTERPARTIES[0],
+                    "tax_idx": 0,
+                    "amount": 180000,
+                }
+            )
+            seq += 1
+            specs.append(
+                {
+                    "seq": seq,
+                    "month": month,
+                    "seller": _COUNTERPARTIES[1],
+                    "buyer": _MAIN_ENTITIES[0],
+                    "tax_idx": 2,
+                    "amount": 40000,
+                }
+            )
+            seq += 1
+
     bidir_pairs = [
         ("91110000MA01DEMO01", "华能示范集团有限公司", "91600000MA01DEMOB2", "全国煤炭贸易股份公司"),
         ("91600000MA01DEMOB2", "全国煤炭贸易股份公司", "91110000MA01DEMO01", "华能示范集团有限公司"),
@@ -212,16 +253,17 @@ def _build_invoice_specs() -> list[dict[str, Any]]:
         )
         seq += 1
 
-    _ = all_entities  # 保留扩展点
     return specs
 
 
-def _insert_invoices(conn: Any) -> dict[str, int]:
-    specs = _build_invoice_specs()
+def _insert_invoices_for_year(conn: Any, stat_year: int) -> dict[str, int]:
+    specs = _build_invoice_specs(stat_year)
     hdr_n = 0
     dtl_n = 0
     now = _now()
-    fp_base = 10000000
+    fp_base = 10000000 + stat_year * 1000
+    batch_id = _batch_id(stat_year)
+    fpzt = str(specs[0].get("fpzt") or "正常") if specs else "正常"
 
     for spec in specs:
         seq = int(spec["seq"])
@@ -229,18 +271,22 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
         if month > 12:
             month = 12
         day = min(28, 5 + (seq % 20))
-        inv_date = date(DEMO_STAT_YEAR, month, day)
+        inv_date = date(stat_year, month, day)
+        if spec.get("invoice_date"):
+            inv_date = spec["invoice_date"]
         seller_tax, seller_name = spec["seller"]
         buyer_tax, buyer_name = spec["buyer"]
         slv_label, slv_num = _TAX_RATES[int(spec["tax_idx"]) % len(_TAX_RATES)]
         amount = Decimal(str(spec["amount"]))
         tax = (amount * Decimal(str(slv_num))).quantize(Decimal("0.01"))
         jshj = amount + tax
+        row_fpzt = str(spec.get("fpzt") or "正常")
+        net_jshj = float(-abs(jshj)) if row_fpzt != "正常" and float(jshj) > 0 else float(jshj)
 
-        hdr_id = _hdr_uuid(seq)
-        fpdm = "0440"
-        fphm = str(fp_base + seq)
-        sdfphm = f"{fpdm}{fphm}"
+        hdr_id = _hdr_uuid(stat_year, seq)
+        fpdm = str(spec.get("fpdm") or "0440")
+        fphm = str(spec.get("fphm") or str(fp_base + seq))
+        sdfphm = str(spec.get("sdfphm") or f"{fpdm}{fphm}")
 
         try:
             conn.execute(
@@ -261,7 +307,7 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
                     ?, ?, ?, ?,
                     ?, ?,
                     ?, ?, ?, ?,
-                    '正常', '电子发票服务平台', '数电票',
+                    ?, '电子发票服务平台', '数电票',
                     '平账', '蓝票已计算',
                     ?, ?, ?,
                     ?, '信息汇总表', ?, ?
@@ -269,7 +315,7 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
                 """,
                 [
                     hdr_id,
-                    DEMO_STAT_YEAR,
+                    stat_year,
                     month,
                     fpdm,
                     fphm,
@@ -283,9 +329,10 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
                     float(amount),
                     float(tax),
                     float(jshj),
-                    float(jshj),
-                    _BATCH_ID,
-                    _BATCH_ID,
+                    net_jshj,
+                    row_fpzt,
+                    batch_id,
+                    batch_id,
                     _DEMO_FILE,
                     _DEMO_FILE,
                     now,
@@ -314,7 +361,7 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
                 [
                     dtl_id,
                     hdr_id,
-                    DEMO_STAT_YEAR,
+                    stat_year,
                     month,
                     fpdm,
                     fphm,
@@ -324,13 +371,13 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
                     seller_name,
                     buyer_tax,
                     buyer_name,
-                    "演示商品/服务",
+                    str(spec.get("hwlwmc") or "演示商品/服务"),
                     float(amount),
                     float(tax),
                     float(jshj),
                     slv_label,
                     float(slv_num),
-                    _BATCH_ID,
+                    batch_id,
                     _DEMO_FILE,
                     now,
                     now,
@@ -338,9 +385,17 @@ def _insert_invoices(conn: Any) -> dict[str, int]:
             )
             dtl_n += 1
         except Exception as exc:  # noqa: BLE001
-            logger.warning("insert invoice seq=%s failed: %s", seq, exc)
+            logger.warning("insert invoice year=%s seq=%s failed: %s", stat_year, seq, exc)
 
-    return {"headers": hdr_n, "details": dtl_n}
+    _ = fpzt
+    return {"headers": hdr_n, "details": dtl_n, "stat_year": stat_year}
+
+
+def _insert_all_invoices(conn: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for y in DEMO_STAT_YEARS:
+        out[str(y)] = _insert_invoices_for_year(conn, y)
+    return out
 
 
 def _rebuild_rel_and_dws(conn: Any) -> dict[str, Any]:
@@ -359,7 +414,7 @@ def _rebuild_rel_and_dws(conn: Any) -> dict[str, Any]:
 
         rel = rebuild_dim_enterprise_year_rel(
             conn,
-            stat_years=[DEMO_STAT_YEAR],
+            stat_years=DEMO_STAT_YEARS,
             trigger_source="demo_analysis_seed",
             run_id=f"{_DEMO_PREFIX}rel_{uuid.uuid4().hex[:8]}",
         )
@@ -369,9 +424,9 @@ def _rebuild_rel_and_dws(conn: Any) -> dict[str, Any]:
         out["enterprise_year_rel"] = {"ok": False, "error": str(exc)}
 
     try:
-        from src.etl.dws_build import refresh_dws
+        from src.etl.dws_build import refresh_dws_years
 
-        dws = refresh_dws(conn, stat_year=DEMO_STAT_YEAR, run_id=f"{_DEMO_PREFIX}dws")
+        dws = refresh_dws_years(conn, stat_years=DEMO_STAT_YEARS, run_id=f"{_DEMO_PREFIX}dws")
         out["dws_refresh"] = dws
     except Exception as exc:  # noqa: BLE001
         logger.exception("dws refresh")
@@ -380,61 +435,61 @@ def _rebuild_rel_and_dws(conn: Any) -> dict[str, Any]:
     return out
 
 
-def _seed_audit_flags(conn: Any) -> int:
-    """少量 dm_audit_flag 供 flags track 页演示。"""
+def _run_audit_scan(conn: Any) -> dict[str, Any]:
+    try:
+        from src.etl.dm_audit_build import refresh_audit_flags
+
+        return refresh_audit_flags(
+            conn,
+            stat_years=DEMO_STAT_YEARS,
+            trigger_source="demo_analysis_seed",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("audit scan")
+        return {"ok": False, "error": str(exc)}
+
+
+def _seed_confirmed_flag(conn: Any) -> int:
+    """一条已确认疑点供 flags_track 演示。"""
     from src.audit.config_loader import group_id_for_year
 
     gid = group_id_for_year(DEMO_STAT_YEAR)
-    flags = [
-        (
-            f"{_DEMO_PREFIX}flag_01",
-            "rule_01_holiday",
-            "中风险",
-            "节假日开票",
-            "91110000MA01DEMO01",
-            "华能示范集团有限公司",
-            156000.0,
-            "演示：节假日存在大额开票",
-            "核对业务真实性并留存说明",
-        ),
-        (
-            f"{_DEMO_PREFIX}flag_02",
-            "rule_05_tax_rate",
-            "低风险",
-            "税率异常",
-            "91310000MA01DEMO02",
-            "华东能源开发有限公司",
-            42000.0,
-            "演示：明细行税率与商品分类可能不匹配",
-            "复核税收分类编码",
-        ),
-    ]
-    n = 0
-    for fid, rule_id, risk, ftype, eid, ename, amt, desc, sug in flags:
-        try:
-            conn.execute(
-                """
-                INSERT INTO dm_audit_flag (
-                    flag_id, rule_id, risk_level, flag_type, group_id,
-                    entity_id, entity_name, amount, description, suggestion,
-                    is_confirmed, analysis_batch
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?)
-                ON CONFLICT (flag_id) DO UPDATE SET
-                    risk_level = excluded.risk_level,
-                    description = excluded.description,
-                    analysis_batch = excluded.analysis_batch
-                """,
-                [fid, rule_id, risk, ftype, gid, eid, ename, amt, desc, sug, _ANALYSIS_BATCH],
-            )
-            n += 1
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("audit flag %s: %s", fid, exc)
-    return n
+    fid = f"{_DEMO_PREFIX}flag_confirmed"
+    try:
+        conn.execute(
+            """
+            INSERT INTO dm_audit_flag (
+                flag_id, rule_id, risk_level, flag_type, group_id,
+                entity_id, entity_name, amount, description, suggestion,
+                is_confirmed, confirm_note, analysis_batch, detail_json
+            ) VALUES (?, 'RULE-02', '中风险', '异常开票日期', ?, ?, ?, ?, ?, ?, TRUE, ?, ?, ?)
+            ON CONFLICT (flag_id) DO UPDATE SET
+                is_confirmed = TRUE,
+                confirm_note = excluded.confirm_note,
+                detail_json = excluded.detail_json
+            """,
+            [
+                fid,
+                gid,
+                "91110000MA01DEMO01",
+                "华能示范集团有限公司",
+                88000.0,
+                "演示：已确认疑点（报告附录用）",
+                "已核对合同与出库单，留档备查",
+                "演示已确认跟踪说明",
+                _analysis_batch(DEMO_STAT_YEAR),
+                '{"invoice_date":"2024-12-15","date_from":"2024-12-15","date_to":"2024-12-15"}',
+            ],
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("confirmed flag: %s", exc)
+        return 0
 
 
 def _verification_counts(conn: Any) -> dict[str, Any]:
     """种子后验证计数。"""
-    out: dict[str, Any] = {"stat_year": DEMO_STAT_YEAR}
+    out: dict[str, Any] = {"stat_year": DEMO_STAT_YEAR, "stat_years": DEMO_STAT_YEARS}
     try:
         from src.local_api.analysis_subject_pool import api_analysis_subject_options
 
@@ -462,7 +517,7 @@ def _verification_counts(conn: Any) -> dict[str, Any]:
             [DEMO_STAT_YEAR],
         ),
         "dm_audit_flag": (
-            f"SELECT COUNT(*)::BIGINT FROM dm_audit_flag WHERE analysis_batch = '{_ANALYSIS_BATCH}'"
+            f"SELECT COUNT(*)::BIGINT FROM dm_audit_flag WHERE analysis_batch LIKE '{_DEMO_PREFIX}%'"
         ),
     }
     for key, spec in queries.items():
@@ -492,20 +547,27 @@ def seed_demo_analysis_data(conn: Any, *, skip_audit_flags: bool = False) -> dic
     summary: dict[str, Any] = {
         "ok": True,
         "stat_year": DEMO_STAT_YEAR,
+        "stat_years": DEMO_STAT_YEARS,
         "demo_prefix": _DEMO_PREFIX,
-        "batch_id": _BATCH_ID,
     }
 
     try:
         summary["deleted"] = _cleanup_demo_rows(conn)
         registry = _seed_registry_and_roster(conn)
         summary["registry_bootstrap"] = registry
-        summary["roster_upserted"] = _ensure_roster_for_year(conn)
-        inv = _insert_invoices(conn)
-        summary["invoices"] = inv
+        summary["roster_upserted"] = _ensure_roster_for_years(conn)
+        try:
+            from src.local_api.enterprise_year_roster_store import repair_roster_data_source
+
+            summary["roster_data_source_repaired"] = repair_roster_data_source(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("roster data_source repair skipped: %s", exc)
+            summary["roster_data_source_repaired"] = 0
+        summary["invoices"] = _insert_all_invoices(conn)
         summary["rebuild"] = _rebuild_rel_and_dws(conn)
         if not skip_audit_flags:
-            summary["audit_flags"] = _seed_audit_flags(conn)
+            summary["audit_scan"] = _run_audit_scan(conn)
+            summary["confirmed_flag"] = _seed_confirmed_flag(conn)
         summary["verification"] = _verification_counts(conn)
 
         v = summary.get("verification") or {}

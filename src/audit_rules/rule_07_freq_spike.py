@@ -12,7 +12,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import FPZT_NORMAL, IS_POSITIVE, entity_filter, norm_tax
+from src.audit_rules._sql_common import FPZT_NORMAL, IS_POSITIVE, entity_filter, flag_detail_json, month_date_bounds, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -73,6 +73,8 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
         key = f"freq|{buyer_id}|{seller_id}|{month}"
         digest = hashlib.md5(key.encode()).hexdigest()[:10]
         ratio = float(month_cnt or 0) / float(avg_cnt or 1)
+        month_i = int(month or 0)
+        date_from, date_to = month_date_bounds(stat_year, month_i) if month_i else (None, None)
         flags.append(
             {
                 "flag_id": f"FP-{stat_year}-07-{digest}",
@@ -93,6 +95,15 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核查该月业务背景，是否存在集中验收、预开票或贸易频率异常。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    stat_year=stat_year,
+                    stat_month=month_i or None,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_id,
+                    month_count=int(month_cnt or 0),
+                    avg_month_count=float(avg_cnt or 0),
+                ),
             }
         )
     return flags

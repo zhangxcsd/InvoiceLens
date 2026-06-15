@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
-import { deleteOdsPreviewImport, fetchOdsPreviewBatches, odsPreviewBatchKey, type OdsPreviewBatchMeta } from '../config/localApi'
+import { deleteOdsPreviewImport, fetchOdsPreviewBatches, odsPreviewBatchKey, postDwdBuild, postDwdForceRebuild, type OdsPreviewBatchMeta } from '../config/localApi'
 import type { NavKey } from '../types'
 
 type BatchGroup = {
@@ -137,6 +137,8 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
   const [deleteAck, setDeleteAck] = useState(false)
   const [batchConfirmInput, setBatchConfirmInput] = useState('')
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [rerunBusy, setRerunBusy] = useState(false)
+  const [rerunMsg, setRerunMsg] = useState('')
   const [deleteBusy, setDeleteBusy] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
@@ -236,6 +238,30 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
     setDeleteError(null)
     setDeleteAck(false)
     setBatchConfirmInput('')
+  }
+
+  const runRerun = async (mode: 'failed' | 'all') => {
+    if (!currentGroup || !currentSession) return
+    setRerunBusy(true)
+    setRerunMsg('')
+    try {
+      const params = {
+        import_batch_id: currentGroup.batchId,
+        import_session_id: currentSession.meta.session_id,
+      }
+      const res =
+        mode === 'all'
+          ? await postDwdForceRebuild(params)
+          : await postDwdBuild(params)
+      if (!res.ok) {
+        setRerunMsg((res as { message?: string }).message ?? res.error?.message ?? t.importHistoryUi.rerunFailed)
+        return
+      }
+      setRerunMsg(mode === 'all' ? t.importHistoryUi.rerunAllOk : t.importHistoryUi.rerunFailedOk)
+      await reload()
+    } finally {
+      setRerunBusy(false)
+    }
   }
 
   const runDelete = async () => {
@@ -523,19 +549,19 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          disabled
-                          className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-3 opacity-60"
-                          title={t.importHistoryUi.rerunSoonHint}
+                          disabled={rerunBusy || !currentSession}
+                          className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                          onClick={() => void runRerun('failed')}
                         >
-                          {t.importHistoryUi.rerunFailed}
+                          {rerunBusy ? '…' : t.importHistoryUi.rerunFailed}
                         </button>
                         <button
                           type="button"
-                          disabled
-                          className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-3 opacity-60"
-                          title={t.importHistoryUi.rerunSoonHint}
+                          disabled={rerunBusy || !currentSession}
+                          className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                          onClick={() => void runRerun('all')}
                         >
-                          {t.importHistoryUi.rerunAll}
+                          {rerunBusy ? '…' : t.importHistoryUi.rerunAll}
                         </button>
                         <button
                           type="button"
@@ -564,7 +590,9 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
                         <div className="mt-0.5 text-text-2">{currentSession ? currentSession.meta.parquet_path_count : '—'}</div>
                       </div>
                     </div>
-                    <div className="mt-3 text-il-meta leading-relaxed text-text-3">{t.importHistoryUi.detailFootnote}</div>
+                    <div className="mt-3 text-il-meta leading-relaxed text-text-3">
+                      {rerunMsg || t.importHistoryUi.detailFootnote}
+                    </div>
                   </div>
                 </>
               )}

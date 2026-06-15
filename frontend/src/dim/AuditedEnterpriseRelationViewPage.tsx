@@ -1,11 +1,17 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AuditedEnterpriseFilters } from '../components/AuditedEnterpriseFilters'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
+import {
+  fetchDimOrgHierRows,
+  type AuditedEnterpriseRelationKpis,
+  type AuditedEnterpriseRelationListRow,
+} from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { useAuditedEnterpriseFilters } from '../hooks/useAuditedEnterpriseFilters'
-import { useAuditedEnterpriseRegistryRows } from '../hooks/useAuditedEnterpriseRegistryRows'
-import { registryRowsToRelationRows, type AuditedEnterpriseRelationRow } from './auditedEnterpriseRegistryHelpers'
+import type { NavKey } from '../types'
+import { readNavQueryParams } from '../utils/navHelpers'
+import { DimTablePagination } from './DimTablePagination'
+import { navToSubjectLibrary } from './subjectLibraryNav'
 
 function relationTypeClass(value: string) {
   if (value === '一致') return 'rounded-sm border border-[#c8e6d0] bg-[#f4fbf6] px-2 py-0.5 text-il-meta font-medium text-[#1b6b3a]'
@@ -13,38 +19,11 @@ function relationTypeClass(value: string) {
   return 'text-text-2'
 }
 
-type SortKey = 'name' | 'snapshotYear' | 'mgmtPath' | 'equityPath' | 'relationType'
+type SortKey = 'name' | 'snapshot_year' | 'mgmt_path' | 'equity_path' | 'relation_type' | 'invoice_count'
 
-function relationTypeRank(value: string) {
-  if (value === '一致') return 0
-  if (value === '不一致') return 1
-  return 2
-}
-
-function compareRows(a: AuditedEnterpriseRelationRow, b: AuditedEnterpriseRelationRow, key: SortKey, dir: 'asc' | 'desc'): number {
-  const inv = dir === 'desc' ? -1 : 1
-  let c = 0
-  switch (key) {
-    case 'name':
-      c = a.name.localeCompare(b.name, 'zh-CN')
-      break
-    case 'snapshotYear':
-      c = (Number(a.snapshotYear) || 0) - (Number(b.snapshotYear) || 0)
-      break
-    case 'mgmtPath':
-      c = a.mgmtPath.localeCompare(b.mgmtPath, 'zh-CN')
-      break
-    case 'equityPath':
-      c = a.equityPath.localeCompare(b.equityPath, 'zh-CN')
-      break
-    case 'relationType':
-      c = relationTypeRank(a.relationType) - relationTypeRank(b.relationType)
-      break
-    default:
-      break
-  }
-  if (c !== 0) return c * inv
-  return a.name.localeCompare(b.name, 'zh-CN')
+function sortToApi(key: SortKey | null, dir: 'asc' | 'desc'): string | undefined {
+  if (!key) return undefined
+  return `${key}_${dir}`
 }
 
 function exportStamp() {
@@ -60,70 +39,183 @@ const thStickyTop = 'sticky top-0 z-20 border-b border-border-light bg-[#fafbfd]
 const thCorner = `${thStickyTop} sticky left-0 z-30 border-r border-border-light pr-2`
 const tdStickyLeft = 'sticky left-0 z-10 border-b border-border-light border-r border-border-light bg-white group-hover:bg-[#f8fafc]'
 
-export function AuditedEnterpriseRelationViewPage() {
+const emptyKpis: AuditedEnterpriseRelationKpis = {
+  total: 0,
+  relation_mismatch: 0,
+  mapped: 0,
+  unmapped: 0,
+  in_analysis_pool: 0,
+}
+
+export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) => void }) {
   const ui = t.auditedEnterpriseRelationUi
-  const { rows: registryRows, loading, loadError } = useAuditedEnterpriseRegistryRows(ui.loadFailed)
+  const dash = t.dwsDashboardUi
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
 
-  const relationRows = useMemo(() => registryRowsToRelationRows(registryRows), [registryRows])
+  const [rows, setRows] = useState<AuditedEnterpriseRelationListRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [kpis, setKpis] = useState<AuditedEnterpriseRelationKpis>(emptyKpis)
+  const [snapshotYears, setSnapshotYears] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [emptyHint, setEmptyHint] = useState('')
 
-  const {
-    selectedYear,
-    setSelectedYear,
-    selectedStateInvestor,
-    setSelectedStateInvestor,
-    enterpriseKeyword,
-    setEnterpriseKeyword,
-    years,
-    stateInvestorEnterprises,
-    filteredRows,
-    canReset,
-    resetFilters,
-  } = useAuditedEnterpriseFilters(relationRows, {
-    yearAll: ui.filterYearAll,
-    stateInvestorAll: ui.filterStateInvestorAll,
-  })
-
+  const [selectedYear, setSelectedYear] = useState<string>(
+    urlQuery.stat_year?.trim() || ui.filterYearAll,
+  )
+  const [selectedStateInvestor, setSelectedStateInvestor] = useState<string>(ui.filterStateInvestorAll)
+  const [enterpriseKeyword, setEnterpriseKeyword] = useState(
+    urlQuery.keyword ?? urlQuery.seller_tax_no ?? urlQuery.buyer_tax_no ?? '',
+  )
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [exportError, setExportError] = useState('')
   const [exported, setExported] = useState(false)
 
+  const filterRows = useMemo(
+    () =>
+      rows.map((r) => ({
+        name: r.name,
+        snapshotYear: r.snapshot_year,
+        stateInvestorEnterprise: r.state_investor_enterprise,
+      })),
+    [rows],
+  )
+
+  const years = useMemo(() => {
+    const fromApi = snapshotYears.length ? snapshotYears : Array.from(new Set(filterRows.map((r) => r.snapshotYear)))
+    return fromApi.sort((a, b) => Number(b) - Number(a))
+  }, [filterRows, snapshotYears])
+
+  const stateInvestorEnterprises = useMemo(
+    () => Array.from(new Set(filterRows.map((r) => r.stateInvestorEnterprise))).sort((a, b) => a.localeCompare(b, 'zh-CN')),
+    [filterRows],
+  )
+
+  const canReset =
+    selectedYear !== ui.filterYearAll ||
+    selectedStateInvestor !== ui.filterStateInvestorAll ||
+    enterpriseKeyword.trim().length > 0
+
+  const resetFilters = () => {
+    if (!canReset) return
+    setSelectedYear(ui.filterYearAll)
+    setSelectedStateInvestor(ui.filterStateInvestorAll)
+    setEnterpriseKeyword('')
+    setPage(1)
+  }
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setLoadError('')
+    const res = await fetchDimOrgHierRows({
+      statYear: selectedYear === ui.filterYearAll ? undefined : selectedYear,
+      keyword: enterpriseKeyword.trim() || undefined,
+      page,
+      pageSize,
+      sort: sortToApi(sortKey, sortDir),
+    })
+    if (!res.ok) {
+      setLoadError(res.error?.message ?? ui.loadFailed)
+      setRows([])
+      setTotal(0)
+      setKpis(emptyKpis)
+      setLoading(false)
+      return
+    }
+    setSnapshotYears(res.stat_years ?? [])
+    setRows(res.rows ?? [])
+    setTotal(res.total ?? 0)
+    setKpis(res.kpis ?? emptyKpis)
+    setEmptyHint('')
+    setLoading(false)
+  }, [
+    enterpriseKeyword,
+    page,
+    pageSize,
+    selectedStateInvestor,
+    selectedYear,
+    sortDir,
+    sortKey,
+    ui.filterStateInvestorAll,
+    ui.filterYearAll,
+    ui.loadFailed,
+  ])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
   const toggleSort = (key: SortKey) => {
+    setPage(1)
     if (sortKey !== key) {
       setSortKey(key)
-      setSortDir(key === 'snapshotYear' ? 'desc' : 'asc')
+      setSortDir(key === 'snapshot_year' || key === 'invoice_count' ? 'desc' : 'asc')
       return
     }
     setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
   }
 
-  const displayRows = useMemo(() => {
-    if (!sortKey) return filteredRows
-    const arr = [...filteredRows]
-    arr.sort((a, b) => compareRows(a, b, sortKey, sortDir))
-    return arr
-  }, [filteredRows, sortDir, sortKey])
-
   const exportCurrent = useCallback(async () => {
-    if (displayRows.length === 0) return
+    if (rows.length === 0) return
     try {
       setExportError('')
       const XLSX = await import('xlsx')
-      const header = [ui.colName, ui.colSnapshotYear, ui.colMgmtPath, ui.colEquityPath, ui.colRelationType]
-      const body = displayRows.map((r) => [r.name, r.snapshotYear, r.mgmtPath, r.equityPath, r.relationType])
+      const header = [
+        ui.colName,
+        ui.colSnapshotYear,
+        ui.colMgmtPath,
+        ui.colEquityPath,
+        ui.colRelationType,
+        ui.colEntityId,
+        ui.colRoleLabel,
+        ui.colInvoiceCount,
+        ui.colMatchStatus,
+        ui.colInRoster,
+      ]
+      const body = rows.map((r) => [
+        r.name,
+        r.snapshot_year,
+        r.mgmt_path,
+        r.equity_path,
+        r.relation_type,
+        r.entity_id || r.code || '',
+        r.role_label || '—',
+        r.invoice_count ?? 0,
+        r.match_status || '—',
+        r.in_roster ? ui.rosterYes : ui.rosterNo,
+      ])
       const ws = XLSX.utils.aoa_to_sheet([header, ...body])
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, '对照')
-      const name = `${ui.exportFileNamePrefix}_${exportStamp()}.xlsx`
-      XLSX.writeFile(wb, name)
+      XLSX.writeFile(wb, `${ui.exportFileNamePrefix}_${exportStamp()}.xlsx`)
       setExported(true)
       window.setTimeout(() => setExported(false), 2000)
     } catch {
       setExportError(ui.exportFailed)
     }
-  }, [displayRows, ui])
+  }, [rows, ui])
 
-  const emptyMessage = loading ? '…' : loadError || (relationRows.length === 0 ? ui.loadEmptyHint : ui.filterEmpty)
+  const emptyMessage = loading ? '…' : loadError || emptyHint || (total === 0 ? ui.loadEmptyHint : ui.filterEmpty)
+
+  const kpiCards = [
+    { label: ui.kpiTotal, value: kpis.total },
+    { label: ui.kpiMismatch, value: kpis.relation_mismatch },
+    { label: ui.kpiHierDiff ?? '管产分离', value: (kpis as { hier_diff?: number }).hier_diff ?? kpis.relation_mismatch },
+    { label: ui.kpiMgChange ?? '管理变更', value: (kpis as { mg_change_count?: number }).mg_change_count ?? 0 },
+    { label: ui.kpiEqChange ?? '产权变更', value: (kpis as { eq_change_count?: number }).eq_change_count ?? 0 },
+  ]
+
+  const flagContextHint = useMemo(() => {
+    const buyer = urlQuery.buyer_tax_no?.trim()
+    const seller = urlQuery.seller_tax_no?.trim()
+    if (!buyer && !seller) return null
+    return dash.flagContextInternalHint
+      .replace('{buyer}', buyer || '—')
+      .replace('{seller}', seller || '—')
+  }, [dash, urlQuery.buyer_tax_no, urlQuery.seller_tax_no])
 
   return (
     <div className="w-full px-5 py-6">
@@ -132,7 +224,7 @@ export function AuditedEnterpriseRelationViewPage() {
         description={ui.pageNote}
         note={ui.pageDesc}
         noteTone="plain"
-        badgeText={ui.prototypeBadge}
+        badgeText={undefined}
         actions={
           <div className="flex items-center gap-2">
             {exported ? <span className="text-il-meta text-[#1b6b3a]">{ui.exportSuccess}</span> : null}
@@ -140,11 +232,11 @@ export function AuditedEnterpriseRelationViewPage() {
               type="button"
               className={[
                 'rounded-sm border px-3 py-1.5 text-il-meta transition-colors',
-                displayRows.length > 0
+                rows.length > 0
                   ? 'border-border-light bg-white text-text hover:bg-[#f8fafc]'
                   : 'cursor-not-allowed border-border-light bg-[#f5f7fa] text-text-3',
               ].join(' ')}
-              disabled={displayRows.length === 0}
+              disabled={rows.length === 0}
               onClick={() => void exportCurrent()}
             >
               {ui.exportCurrentResult}
@@ -153,7 +245,17 @@ export function AuditedEnterpriseRelationViewPage() {
         }
       />
 
+      {flagContextHint ? <p className="mb-3 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
+
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+        {kpiCards.map((item) => (
+          <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
+            <div className="text-il-label text-text-3">{item.label}</div>
+            <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
+          </div>
+        ))}
+      </div>
 
       <Card title={ui.tableTitle}>
         <AuditedEnterpriseFilters
@@ -161,16 +263,25 @@ export function AuditedEnterpriseRelationViewPage() {
           yearAllLabel={ui.filterYearAll}
           years={years}
           selectedYear={selectedYear}
-          onYearChange={setSelectedYear}
+          onYearChange={(y) => {
+            setSelectedYear(y)
+            setPage(1)
+          }}
           stateInvestorLabel={ui.filterStateInvestorLabel}
           stateInvestorAllLabel={ui.filterStateInvestorAll}
           stateInvestorOptions={stateInvestorEnterprises}
           selectedStateInvestor={selectedStateInvestor}
-          onStateInvestorChange={setSelectedStateInvestor}
+          onStateInvestorChange={(v) => {
+            setSelectedStateInvestor(v)
+            setPage(1)
+          }}
           enterpriseLabel={ui.filterEnterpriseLabel}
           enterprisePlaceholder={ui.filterEnterprisePlaceholder}
           enterpriseKeyword={enterpriseKeyword}
-          onEnterpriseKeywordChange={setEnterpriseKeyword}
+          onEnterpriseKeywordChange={(kw) => {
+            setEnterpriseKeyword(kw)
+            setPage(1)
+          }}
           resetLabel={ui.filterReset}
           canReset={canReset}
           onReset={resetFilters}
@@ -179,93 +290,89 @@ export function AuditedEnterpriseRelationViewPage() {
           <span className="min-w-0 max-w-[720px] leading-relaxed">{ui.tableHint}</span>
           <span className="whitespace-nowrap">
             <span className="text-text-3">{ui.recordCountLabel}</span>
-            <span className="ml-1 font-semibold tabular-nums text-text">{filteredRows.length}</span>
+            <span className="ml-1 font-semibold tabular-nums text-text">{total}</span>
           </span>
         </div>
         {exportError ? <div className="mb-2 text-il-meta text-[#c2410c]">{exportError}</div> : null}
         <div className="overflow-x-auto rounded-sm border border-border-light">
-          <table className="w-full min-w-[1120px] border-separate border-spacing-0 text-il-page-desc">
+          <table className="w-full min-w-[1400px] border-separate border-spacing-0 text-il-page-desc">
             <thead>
               <tr className="text-left text-il-label text-text-3">
                 <th scope="col" className={`${thCorner} px-3 py-2 pl-3 font-medium`}>
-                  <button
-                    type="button"
-                    className="inline-flex cursor-pointer items-center gap-1 select-none text-left font-medium text-text-3 hover:text-text-2"
-                    onClick={() => toggleSort('name')}
-                  >
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('name')}>
                     {ui.colName}
                     {sortKey === 'name' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
                   </button>
                 </th>
                 <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>
-                  <button
-                    type="button"
-                    className="inline-flex cursor-pointer items-center gap-1 select-none font-medium text-text-3 hover:text-text-2"
-                    onClick={() => toggleSort('snapshotYear')}
-                  >
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('snapshot_year')}>
                     {ui.colSnapshotYear}
-                    {sortKey === 'snapshotYear' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
+                    {sortKey === 'snapshot_year' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
                   </button>
                 </th>
                 <th scope="col" className={`${thStickyTop} px-3 py-2 font-medium`}>
-                  <button
-                    type="button"
-                    className="inline-flex cursor-pointer items-center gap-1 select-none font-medium text-text-3 hover:text-text-2"
-                    onClick={() => toggleSort('mgmtPath')}
-                  >
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('mgmt_path')}>
                     {ui.colMgmtPath}
-                    {sortKey === 'mgmtPath' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
+                    {sortKey === 'mgmt_path' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
                   </button>
                 </th>
                 <th scope="col" className={`${thStickyTop} px-3 py-2 font-medium`}>
-                  <button
-                    type="button"
-                    className="inline-flex cursor-pointer items-center gap-1 select-none font-medium text-text-3 hover:text-text-2"
-                    onClick={() => toggleSort('equityPath')}
-                  >
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('equity_path')}>
                     {ui.colEquityPath}
-                    {sortKey === 'equityPath' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
+                    {sortKey === 'equity_path' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
                   </button>
                 </th>
                 <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>
-                  <button
-                    type="button"
-                    className="inline-flex cursor-pointer items-center gap-1 select-none font-medium text-text-3 hover:text-text-2"
-                    onClick={() => toggleSort('relationType')}
-                  >
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('relation_type')}>
                     {ui.colRelationType}
-                    {sortKey === 'relationType' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
+                    {sortKey === 'relation_type' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
                   </button>
                 </th>
+                <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colEntityId}</th>
+                <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colRoleLabel}</th>
+                <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>
+                  <button type="button" className="inline-flex cursor-pointer items-center gap-1 font-medium text-text-3 hover:text-text-2" onClick={() => toggleSort('invoice_count')}>
+                    {ui.colInvoiceCount}
+                    {sortKey === 'invoice_count' ? <span aria-hidden>{sortDir === 'asc' ? '↑' : '↓'}</span> : null}
+                  </button>
+                </th>
+                <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colMatchStatus}</th>
+                <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colInRoster}</th>
+                {props.onNav ? <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colActions}</th> : null}
               </tr>
             </thead>
             <tbody className="text-text-2">
-              {displayRows.map((row) => (
-                <tr key={`${row.name}-${row.snapshotYear}`} className="group">
-                  <td className={`${tdStickyLeft} px-3 py-2.5 font-medium text-text`}>{row.name}</td>
-                  <td className="border-b border-border-light px-3 py-2.5 tabular-nums group-hover:bg-[#f8fafc]">
-                    {row.snapshotYear}
-                  </td>
-                  <td
-                    className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`}
-                    title={row.mgmtPath}
-                  >
-                    {row.mgmtPath}
-                  </td>
-                  <td
-                    className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`}
-                    title={row.equityPath}
-                  >
-                    {row.equityPath}
-                  </td>
-                  <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">
-                    <span className={relationTypeClass(row.relationType)}>{row.relationType}</span>
-                  </td>
-                </tr>
-              ))}
-              {filteredRows.length === 0 ? (
+              {rows.map((row) => {
+                const subjectKw = row.subject_no || row.code || row.name
+                return (
+                  <tr key={`${row.name}-${row.snapshot_year}-${row.code}`} className="group">
+                    <td className={`${tdStickyLeft} px-3 py-2.5 font-medium text-text`}>{row.name}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 tabular-nums group-hover:bg-[#f8fafc]">{row.snapshot_year}</td>
+                    <td className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`} title={row.mgmt_path}>{row.mgmt_path}</td>
+                    <td className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`} title={row.equity_path}>{row.equity_path}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">
+                      <span className={relationTypeClass(row.relation_type)}>{row.relation_type}</span>
+                    </td>
+                    <td className="border-b border-border-light px-3 py-2.5 font-mono text-[12px] group-hover:bg-[#f8fafc]">{row.entity_id || row.code || '—'}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.role_label || '—'}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 tabular-nums group-hover:bg-[#f8fafc]">{row.invoice_count ?? '—'}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.match_status || '—'}</td>
+                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.in_roster ? ui.rosterYes : ui.rosterNo}</td>
+                    {props.onNav ? (
+                      <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">
+                        <div className="flex flex-wrap gap-1.5">
+                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => props.onNav?.('dim_audit_related_library')}>{ui.actionCoverage}</button>
+                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => navToSubjectLibrary(props.onNav!, subjectKw)}>{ui.actionSubjectLibrary}</button>
+                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => props.onNav?.('dim_enterprise_year_roster')}>{ui.actionYearRoster}</button>
+                        </div>
+                      </td>
+                    ) : null}
+                  </tr>
+                )
+              })}
+              {rows.length === 0 ? (
                 <tr>
-                  <td className="border-b border-border-light px-3 py-6 text-center text-text-3" colSpan={5}>
+                  <td className="border-b border-border-light px-3 py-6 text-center text-text-3" colSpan={props.onNav ? 11 : 10}>
                     {emptyMessage}
                   </td>
                 </tr>
@@ -273,6 +380,18 @@ export function AuditedEnterpriseRelationViewPage() {
             </tbody>
           </table>
         </div>
+        <DimTablePagination
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          loading={loading}
+          ui={ui}
+          onPageChange={setPage}
+          onPageSizeChange={(size) => {
+            setPageSize(size)
+            setPage(1)
+          }}
+        />
       </Card>
     </div>
   )

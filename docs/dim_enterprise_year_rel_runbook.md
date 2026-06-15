@@ -51,7 +51,9 @@ SELECT * FROM dim_enterprise_year_rel;
 
 `vw_audit_invoice_coverage_group_member` 中「已报送」只看 **`dim_enterprise_year_rel`** 的 `has_seller_role` / `has_buyer_role`，**不直接扫 `dwd_inv_header`**。
 
-**重算任务口径（与 Python `rebuild_dim_enterprise_year_rel` 一致）**：`dim_enterprise_year_rel` **仅写入**「当年 `dim_group_enterprise_year` 中有台账的成员」且能映射到 org 主体的 `subject_id`；目标年度为 **DWD 发票统计年度 ∪ 集团台账年度** 的并集。不在集团台账中的 org 主体不会出现在本表（即使 DWD 中有其发票）。
+**重算任务口径（与 Python `rebuild_dim_enterprise_year_rel` 一致）**：`dim_enterprise_year_rel` **仅写入**「当年 `dim_enterprise_year_roster` 花名册成员」且能映射到 org 主体的 `subject_id`；目标年度为 **DWD 发票统计年度 ∪ 花名册年度** 的并集。不在花名册中的 org 主体不会出现在本表（即使 DWD 中有其发票）。
+
+> 花名册成员范围、台账同步与人工维护合并规则见 **`docs/dim_enterprise_year_roster_policy.md`**。手工增删改或复制花名册后，须对目标年度重算本表并与覆盖视图验收。
 
 因此即使 DWD 里该企业同年既有销方行又有购方行，只要出现下面任一情况，页面仍不会进「已报送」：
 
@@ -59,7 +61,7 @@ SELECT * FROM dim_enterprise_year_rel;
 - **回填时主体关联与覆盖视图不一致**：旧版预检用 `m.subject_no = TRIM(发票税号)` 精确匹配；而主体库发票归集与覆盖视图使用 **规范化税号**（`upper` + 去空白与连字符，见 `vw_audit_invoice_coverage_group_member` 与 `ingest_dim_subject_master_from_dwd`）。发票侧为小写、带空格/短横线、与主表 `subject_no` 字面不一致时，**预检 JOIN 挂不上主体 → 年度关系表没有该行 → 页面永远不算已报送**。
 - **同一规范化税号对应多条 `org` 主体行**：覆盖视图按 `norm_no` 去重只保留 `ROW_NUMBER(... ORDER BY subject_id)=1` 的那条；若 `dim_enterprise_year_rel` 写在**另一条** `subject_id` 上，则视图左连接 `r.subject_id = m.subject_id` 对不上，购销标志仍为假。
 
-**以下 4.1 预检与加工中心重算 SQL 一致**：以 **当年集团台账成员** 为行集合，规范化税号 + org 去重后 **LEFT JOIN** `dwd_inv_header`；若你曾用「全量 org × 发票」旧版预检灌过库，请对目标年度 **DELETE 后按新预检重新 Upsert**（见 §5）。
+**以下 4.1 预检与加工中心重算 SQL 一致**：以 **当年花名册成员（dim_enterprise_year_roster）** 为行集合，规范化税号 + org 去重后 **LEFT JOIN** `dwd_inv_header`；若你曾用「全量 org × 发票」或旧版 `dim_group_enterprise_year` 预检灌过库，请对目标年度 **DELETE 后按新预检重新 Upsert**（见 §5）。
 
 ### 4.1 单年预检
 
@@ -70,7 +72,7 @@ WITH group_member_norm AS (
     SELECT DISTINCT
         CAST(stat_year AS SMALLINT) AS stat_year,
         upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\s-]+', '', 'g')) AS norm_no
-    FROM dim_group_enterprise_year
+    FROM dim_enterprise_year_roster
     WHERE stat_year = 2026
       AND trim(COALESCE(enterprise_id, '')) <> ''
       AND length(upper(regexp_replace(trim(COALESCE(enterprise_id, '')), '[\s-]+', '', 'g'))) > 0

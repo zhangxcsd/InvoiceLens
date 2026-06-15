@@ -12,7 +12,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, norm_tax
+from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, flag_detail_json, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -95,6 +95,13 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议比对合同单价、采购审批与同类采购历史价格。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    header_uuid=str(hid),
+                    mean_amount=float(mean_amt or 0),
+                    std_amount=float(std_amt or 0),
+                    sample_count=int(cnt or 0),
+                ),
             }
         )
     return flags

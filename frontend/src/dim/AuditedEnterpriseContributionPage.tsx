@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
 import {
   fetchAuditedEnterpriseContribution,
   postAuditedEnterpriseContributionBootstrapDemo,
+  postAuditedEnterpriseContributionImportExcel,
   postAuditedEnterpriseContributionRow,
   type AuditedEnterpriseContributionRow,
 } from '../config/localApi'
@@ -108,6 +109,7 @@ export function AuditedEnterpriseContributionPage() {
   const [saveError, setSaveError] = useState('')
   const [importBanner, setImportBanner] = useState('')
   const [importBusy, setImportBusy] = useState(false)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const [createSnapshotYear, setCreateSnapshotYear] = useState('2026')
   const [createUnifiedCreditCode, setCreateUnifiedCreditCode] = useState('')
@@ -234,6 +236,33 @@ export function AuditedEnterpriseContributionPage() {
     }
     setImportBanner(ui.bootstrapDemoOk)
     await load()
+  }
+
+  const runExcelImport = async (file: File) => {
+    setImportBusy(true)
+    setImportBanner('')
+    const res = await postAuditedEnterpriseContributionImportExcel(file)
+    setImportBusy(false)
+    if (!res.ok) {
+      setImportBanner(
+        (res.file_blocking ? ui.importFileBlocking : ui.importFailed) +
+          (res.error?.message ? `：${res.error.message}` : ''),
+      )
+      return
+    }
+    setImportBanner(
+      ui.importSuccess
+        .replace('{imported}', String(res.imported ?? 0))
+        .replace('{rejected}', String(res.rejected ?? 0)),
+    )
+    await load()
+  }
+
+  const onPickImportFile = () => importFileRef.current?.click()
+  const onImportFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (file) void runExcelImport(file)
   }
 
   const tableHintText = loading
@@ -580,10 +609,22 @@ export function AuditedEnterpriseContributionPage() {
               </button>
             </div>
             <div className="rounded-sm border border-dashed border-[#9fc5f5] bg-[#f8fbff] px-4 py-6 text-center">
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={onImportFileChange}
+              />
               <div className="text-il-page-desc font-medium text-text">{ui.importDropTitle}</div>
               <div className="mt-1 text-il-meta text-text-3">{ui.importDropHint}</div>
-              <button type="button" className="mt-3 rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent">
-                {ui.importPickFile}
+              <button
+                type="button"
+                disabled={importBusy}
+                className="mt-3 rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+                onClick={onPickImportFile}
+              >
+                {importBusy ? '…' : ui.importPickFile}
               </button>
               <div className="mt-4">
                 <button

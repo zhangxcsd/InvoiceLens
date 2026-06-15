@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
+import type { NavKey } from '../types'
 import {
   defaultDimTaskCode,
   readDimRunLogsCache,
@@ -8,7 +9,9 @@ import {
   writeDimRunLogsCache,
   writeDimTasksSessionCache,
 } from './dimTasksSessionCache'
-import { clearDwdDimFocusTask, readDwdDimFocusTask, SUBJECT_DIM_TASK } from './dwdDimNav'
+import { clearDwdDimFocusTask, isDwdDimFocusTask, readDwdDimFocusTask, SUBJECT_DIM_TASK } from './dwdDimNav'
+import { TaskChainPanel } from './TaskChainPanel'
+import { WriteGateButton } from '../users/useWriteGate'
 import { DIM_TASK_CATALOG, mergeDimTaskRows } from './mergeDimTasks'
 import { liveElapsedMs, useLiveElapsedTick } from './useLiveElapsed'
 import {
@@ -20,11 +23,17 @@ import {
   postDimEnterpriseMappingBuild,
   postDimEnterpriseMasterBuild,
   postDimEnterpriseProfileBuild,
+  postDimEnterpriseYearRelRebuild,
+  postDimOrgHierRebuild,
+  postEnterpriseYearRosterRebuild,
   postGroupEnterpriseYearRebuild,
   postSubjectCategoryRecompute,
   postSubjectLibraryIngestFromDwd,
   postSubjectLibraryPipeline,
   postSubjectLibraryRebuildRenameSignals,
+  postDwsRebuild,
+  postAuditRun,
+  postCompareRebuild,
   type DimActiveRunRow,
   type DimTasksResponse,
   type DimUnifiedTaskRow,
@@ -69,6 +78,12 @@ type FailedRun = {
 }
 
 const SUBJECT_TASK_CODES = new Set<string>(Object.values(SUBJECT_DIM_TASK))
+
+const CHAIN_ONLY_TASK_CODES = new Set<string>(['dim.analysis_critical_chain'])
+
+function isChainOnlyTask(taskCode: string): boolean {
+  return CHAIN_ONLY_TASK_CODES.has(taskCode)
+}
 
 function isSubjectLibraryTask(taskCode: string): boolean {
   return SUBJECT_TASK_CODES.has(taskCode)
@@ -221,7 +236,8 @@ function initialRunLogs(taskCode: string): RunLogRow[] {
   return readDimRunLogsCache(taskCode) ?? []
 }
 
-export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
+export function DwdToDimCenterPage(props: { visible?: boolean; onNav?: (k: NavKey) => void }) {
+  const { visible = true, onNav } = props
   const bootTaskCode = useMemo(() => initialActiveTaskCode(), [])
   const [tasks, setTasks] = useState<DimTask[]>(initialTasksState)
   const [activeRuns, setActiveRuns] = useState<DimActiveRunRow[]>(
@@ -403,7 +419,7 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
 
   useEffect(() => {
     const focus = readDwdDimFocusTask()
-    if (focus && SUBJECT_TASK_CODES.has(focus)) {
+    if (focus && isDwdDimFocusTask(focus)) {
       setActiveTaskCode(focus)
       clearDwdDimFocusTask()
     }
@@ -884,6 +900,64 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
               .replace('{rows}', String(r.rows_affected ?? 0))} ${scopeSuffix}`.trim(),
           )
         }
+      } else if (activeTask.taskCode === 'enterprise_year_roster_build') {
+        const r = await postEnterpriseYearRosterRebuild({ replaceYears: runMode === 'full' })
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else {
+          setSubmitMsg(
+            t.dwdToDimCenterUi.rosterRebuildSuccess
+              .replace('{rows}', String(r.rows_written ?? 0))
+              .replace('{runId}', String(r.run_id ?? '—')),
+          )
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'dim.enterprise_year_rel.rebuild') {
+        const r = await postDimEnterpriseYearRelRebuild({ trigger_source: 'dwd_to_dim_center' })
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else {
+          setSubmitMsg(
+            t.dwdToDimCenterUi.yearRelRebuildSuccess.replace('{rows}', String(r.rows_after_insert ?? 0)),
+          )
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'dws.rebuild') {
+        const r = await postDwsRebuild({})
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.dwsRebuildSuccess.replace('{rows}', String(r.total_rows ?? 0)))
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'dm.audit_flag.scan') {
+        const r = await postAuditRun({})
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.auditScanSuccess.replace('{count}', String(r.total_flag_count ?? 0)))
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'ads.scorecard.refresh') {
+        const r = await postCompareRebuild({})
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.scorecardRefreshSuccess.replace('{rows}', String(r.total_inserted ?? 0)))
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (activeTask.taskCode === 'dim.org_hier.build') {
+        const r = await postDimOrgHierRebuild({ dryRun: runMode !== 'full' })
+        if (!r.ok) {
+          setSubmitMsg(t.dwdToDimCenterUi.runSubmitFailed.replace('{message}', String(r.error?.message ?? 'unknown')))
+        } else if (r.dry_run) {
+          setSubmitMsg(t.dwdToDimCenterUi.orgHierDryRunSuccess.replace('{rows}', String(r.rows_affected ?? 0)))
+        } else {
+          setSubmitMsg(t.dwdToDimCenterUi.orgHierRebuildSuccess.replace('{rows}', String(r.rows_affected ?? 0)))
+          setRunLogRefreshSeq((n) => n + 1)
+        }
+      } else if (isChainOnlyTask(activeTask.taskCode)) {
+        setSubmitMsg(t.dwdToDimCenterUi.taskChainOnlyHint)
       } else {
         setSubmitMsg(t.dwdToDimCenterUi.runNotImplementedHint)
       }
@@ -928,6 +1002,15 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
         </div>
         <p className="text-il-page-desc leading-relaxed text-text-2">{t.dwdToDimCenterUi.pageBody}</p>
       </Card>
+
+      <TaskChainPanel
+        disabled={submitBusy}
+        onNav={onNav}
+        onRunComplete={() => {
+          setStatusRefreshSeq((n) => n + 1)
+          setRunLogRefreshSeq((n) => n + 1)
+        }}
+      />
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-4">
         <Card compact>
@@ -1301,6 +1384,11 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
                   )}
                 </div>
               </div>
+              {activeTask && isChainOnlyTask(activeTask.taskCode) ? (
+                <div className="rounded-[8px] border border-[#fde68a] bg-[#fffbeb] p-2 text-il-label text-[#92400e]">
+                  {t.dwdToDimCenterUi.taskChainOnlyHint}
+                </div>
+              ) : null}
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1314,13 +1402,14 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
                 >
                   {t.dwdToDimCenterUi.viewRuns}
                 </button>
-                <button
-                  type="button"
-                  className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:bg-accent-mid"
+                <WriteGateButton
+                  className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:bg-accent-mid disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={() => setShowRunDialog(true)}
+                  disabled={activeTask ? isChainOnlyTask(activeTask.taskCode) : false}
+                  title={activeTask && isChainOnlyTask(activeTask.taskCode) ? t.dwdToDimCenterUi.taskChainOnlyHint : undefined}
                 >
                   {t.dwdToDimCenterUi.triggerNow}
-                </button>
+                </WriteGateButton>
               </div>
             </div>
           )}
@@ -1509,8 +1598,7 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
               >
                 {t.dwdToDimCenterUi.cancel}
               </button>
-              <button
-                type="button"
+              <WriteGateButton
                 disabled={submitBusy}
                 className="rounded-[7px] bg-accent px-3 py-1.5 text-il-btn font-semibold text-white hover:bg-accent-mid disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => {
@@ -1522,7 +1610,7 @@ export function DwdToDimCenterPage({ visible = true }: { visible?: boolean }) {
                     ? t.dwdToDimCenterUi.runSubmitRunning
                     : t.dwdToDimCenterUi.runSubmitBusy
                   : t.dwdToDimCenterUi.confirmRun}
-              </button>
+              </WriteGateButton>
             </div>
           </div>
         </div>

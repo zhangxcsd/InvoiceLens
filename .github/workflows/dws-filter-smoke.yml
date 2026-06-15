@@ -1,0 +1,31 @@
+name: DWS Filter Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_dws_filter_api_smoke.py'
+      - '.github/workflows/dws-filter-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/dws_dashboard_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'scripts/test_dws_filter_api_smoke.py'
+      - '.github/workflows/dws-filter-smoke.yml'
+
+jobs:
+  dws-filter-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install duckdb
+
+      - name: Run DWS filter API smoke tests
+        run: python scripts/test_dws_filter_api_smoke.py

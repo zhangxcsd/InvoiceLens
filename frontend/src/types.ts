@@ -37,6 +37,7 @@ export type NavKey =
   // 分析看板
   | 'tax_enterprise_structure'
   | 'tax_in_out_deviation'
+  | 'tax_risk_exposure'
   | 'overview_summary'
   | 'overview_trend'
   | 'overview_tax'
@@ -71,6 +72,8 @@ export type NavKey =
 export type User = {
   username: string
   displayName: string
+  /** 角色键：admin | analyst | viewer（与后端 ROLES 对齐） */
   role: string
+  roleLabel?: string
 }
 

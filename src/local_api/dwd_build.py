@@ -20,6 +20,32 @@ from src.etl.invoice_date_parse import ODS_INVOICE_DATE_CANDIDATES
 from src.local_api.dwd_preview import _delete_rows_by_session_batched
 
 
+RETRYABLE_DWD_STEP_IDS = frozenset({"standardize", "write_dwd", "validate"})
+
+
+def _attach_build_log(out: dict[str, Any], *, run_id: str, import_batch_id: str) -> None:
+    try:
+        from src.local_api.dwd_build_log import write_dwd_build_log
+
+        log_path = write_dwd_build_log(run_id=run_id, import_batch_id=import_batch_id, payload=out)
+        if log_path:
+            out["build_run_id"] = run_id
+            out["log_file"] = log_path
+    except Exception:
+        pass
+
+
+def _http_status_for_dwd_error(err: dict[str, Any] | None) -> int:
+    if not isinstance(err, dict):
+        return 500
+    code = str(err.get("code") or "")
+    if code in {"no_ods_batch", "stat_year_required", "invalid_stat_year", "step_not_retryable", "session_not_found"}:
+        return 400
+    if code == "rel_rebuild_busy" or str(err.get("exception_type") or "") == "ConflictError":
+        return 409
+    return 500
+
+
 def _session_scope_sql(import_session_ids: list[str] | None) -> tuple[str, list[str]]:
     """返回会话筛选 SQL 片段（含旧数据 source_parquet_file 兜底）与规范化 sid 列表。"""
     if import_session_ids is None:
@@ -233,6 +259,32 @@ def _attach_enterprise_year_rel_rebuild_if_requested(
         }
 
 
+def _attach_dws_refresh_if_requested(conn: Any, out: dict[str, Any], refresh_dws_after: bool) -> None:
+    """DWD 成功后可选：按本次构建涉及年度刷新 DWS 五表（写入 out 子键）。"""
+    if not refresh_dws_after or not out.get("ok"):
+        return
+    sy = out.get("stat_years_built") or []
+    if not isinstance(sy, list) or not sy:
+        return
+    years_int: list[int] = []
+    for y in sy:
+        try:
+            years_int.append(int(y))
+        except (TypeError, ValueError):
+            continue
+    if not years_int:
+        return
+    try:
+        from src.etl.dws_build import refresh_dws_years
+
+        out["dws_refresh"] = refresh_dws_years(conn, stat_years=years_int)
+    except Exception as exc:  # noqa: BLE001
+        out["dws_refresh"] = {
+            "ok": False,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+
+
 def _mark_sessions_dwd_processed(conn: Any, import_batch_id: str, session_ids: list[str]) -> None:
     if not session_ids:
         return
@@ -393,6 +445,7 @@ def build_dwd_for_batch(
     incremental: bool = True,
     import_session_ids: list[str] | None = None,
     rebuild_enterprise_year_rel: bool = False,
+    refresh_dws: bool = False,
 ) -> dict[str, Any]:
     """
     执行 ODS→DWD 落盘。import_batch_id 与 ODS 目录「批次=」及 ods_load_log 一致。
@@ -402,27 +455,39 @@ def build_dwd_for_batch(
     - incremental=False：对该批次全量会话跑清洗（不按水位跳过），成功后为**本批次全部会话**写入水位；`import_session_ids` 忽略。
     - stat_year 可选。省略时：在筛选范围内枚举可解析开票年度，按年依次 run_cleaner。
     - rebuild_enterprise_year_rel=True：在**本次构建成功**且 `stat_years_built` 非空时，按
-      **本次构建年度 ∪ dim_group_enterprise_year 中出现的年度** 重算 `dim_enterprise_year_rel`
+      **本次构建年度 ∪ dim_enterprise_year_roster 中出现的年度** 重算 `dim_enterprise_year_rel`
       （仅集团台账成员行；结果置于返回 JSON 的 `enterprise_year_rel_rebuild`）。
+    - refresh_dws=True：在**本次构建成功**且 `stat_years_built` 非空时，按相同年度刷新五张 DWS 表（`dws_refresh`）。
 
     正常增量构建**不会**删除或回滚已落盘 DWD；运维「强制重洗」请使用 `force_rebuild_dwd_session`。
     """
+    from src.local_api.dwd_build_log import new_dwd_run_id
+
     bid = (import_batch_id or "").strip()
+    run_id = new_dwd_run_id(import_batch_id=bid or "unknown")
+
+    def _finish(out: dict[str, Any]) -> dict[str, Any]:
+        if bid:
+            _attach_build_log(out, run_id=run_id, import_batch_id=bid)
+        return out
+
     if not bid:
-        return {"ok": False, "error": {"message": "import_batch_id 不能为空"}}
+        return _finish({"ok": False, "error": {"message": "import_batch_id 不能为空"}})
 
     conn = get_conn()
     init_all_tables(conn)
     ensure_ods_inv_views_materialized(conn)
 
     if not batch_has_ods_data(conn, bid):
-        return {
-            "ok": False,
-            "error": {
-                "message": "ods_load_log 中无该批次记录，请先完成 Excel→ODS 导入",
-                "code": "no_ods_batch",
-            },
-        }
+        return _finish(
+            {
+                "ok": False,
+                "error": {
+                    "message": "ods_load_log 中无该批次记录，请先完成 Excel→ODS 导入",
+                    "code": "no_ods_batch",
+                },
+            }
+        )
 
     if incremental:
         pending = _pending_dwd_sessions(conn, bid)
@@ -433,18 +498,20 @@ def build_dwd_for_batch(
             else:
                 pending = [s for s in pending if s in want]
         if not pending:
-            return {
-                "ok": True,
-                "import_batch_id": bid,
-                "incremental": True,
-                "stat_years_built": [],
-                "stat_year_source": "skipped_incremental_empty",
-                "message": "本批次无待增量处理的 import_session（均已记录 dwd_session_processed_at）",
-                "cleaner": {"status": "skipped", "rows_rejected": 0},
-                "cleaner_by_year": [],
-                "steps": _build_step_summary({"status": "success", "rows_rejected": 0}),
-                "dwd_row_estimate": 0,
-            }
+            return _finish(
+                {
+                    "ok": True,
+                    "import_batch_id": bid,
+                    "incremental": True,
+                    "stat_years_built": [],
+                    "stat_year_source": "skipped_incremental_empty",
+                    "message": "本批次无待增量处理的 import_session（均已记录 dwd_session_processed_at）",
+                    "cleaner": {"status": "skipped", "rows_rejected": 0},
+                    "cleaner_by_year": [],
+                    "steps": _build_step_summary({"status": "success", "rows_rejected": 0}),
+                    "dwd_row_estimate": 0,
+                }
+            )
         out = _dwd_build_loop(
             conn,
             import_batch_id=bid,
@@ -455,7 +522,8 @@ def build_dwd_for_batch(
         if out.get("ok"):
             out["incremental"] = True
             _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
-        return out
+            _attach_dws_refresh_if_requested(conn, out, refresh_dws)
+        return _finish(out)
 
     all_sess = _all_sessions_in_batch(conn, bid)
     out = _dwd_build_loop(
@@ -468,7 +536,34 @@ def build_dwd_for_batch(
     if out.get("ok"):
         out["incremental"] = False
         _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
-    return out
+        _attach_dws_refresh_if_requested(conn, out, refresh_dws)
+    return _finish(out)
+
+
+def rollback_dwd_batch(*, import_batch_id: str) -> dict[str, Any]:
+    """运维回滚：删除批次全部 DWD 行并重置 ods_load_log 水位（不删 ODS、不重跑清洗）。"""
+    bid = (import_batch_id or "").strip()
+    if not bid:
+        return {"ok": False, "error": {"message": "import_batch_id 不能为空"}}
+
+    conn = get_conn()
+    init_all_tables(conn)
+    try:
+        from src.local_api.dwd_preview import delete_dwd_load_batch
+
+        out = delete_dwd_load_batch(conn, batch_id=bid)
+        if out.get("ok"):
+            out["rollback"] = True
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "error": {
+                "message": f"DWD 批次回滚失败：{type(exc).__name__}: {exc}",
+                "exception_type": type(exc).__name__,
+                "detail": str(exc),
+            },
+        }
 
 
 def force_rebuild_dwd_session(
@@ -477,6 +572,7 @@ def force_rebuild_dwd_session(
     import_session_id: str,
     stat_year: int | None = None,
     rebuild_enterprise_year_rel: bool = False,
+    refresh_dws: bool = False,
 ) -> dict[str, Any]:
     """
     运维「强制重洗」：删除该会话曾写入的 DWD 行，重置 ods_load_log 水位后按年重跑清洗。
@@ -544,6 +640,50 @@ def force_rebuild_dwd_session(
         out["force_rebuild"] = True
         out["import_session_id"] = sid
         _attach_enterprise_year_rel_rebuild_if_requested(conn, out, rebuild_enterprise_year_rel)
+        _attach_dws_refresh_if_requested(conn, out, refresh_dws)
+    from src.local_api.dwd_build_log import new_dwd_run_id
+
+    run_id = new_dwd_run_id(import_batch_id=bid, prefix="dwd_force")
+    _attach_build_log(out, run_id=run_id, import_batch_id=bid)
+    return out
+
+
+def retry_dwd_build_step(
+    *,
+    import_batch_id: str,
+    step_id: str,
+    stat_year: int | None = None,
+    import_session_ids: list[str] | None = None,
+    rebuild_enterprise_year_rel: bool = False,
+    refresh_dws: bool = False,
+) -> dict[str, Any]:
+    """
+    ODS→DWD 单步重跑：cleaner 相关步骤（standardize / write_dwd / validate）均映射为重新执行 run_cleaner。
+    与任务链 retry-step 的 single_step_only 语义对齐，仅重跑指定 cleaner 阶段，不触发后续 DIM 链。
+    """
+    sid = (step_id or "").strip()
+    if sid not in RETRYABLE_DWD_STEP_IDS:
+        return {
+            "ok": False,
+            "error": {
+                "message": (
+                    f"步骤「{sid or '—'}」不支持单步重跑。"
+                    "可重跑 cleaner 步骤：standardize（清洗）、write_dwd（写入 DWD）、validate（质量校验）。"
+                    "读取 ODS / 去重 / 维度关联为 cleaner 内部阶段，请重跑上述步骤之一。"
+                ),
+                "code": "step_not_retryable",
+            },
+        }
+    out = build_dwd_for_batch(
+        import_batch_id=import_batch_id,
+        stat_year=stat_year,
+        incremental=True,
+        import_session_ids=import_session_ids,
+        rebuild_enterprise_year_rel=rebuild_enterprise_year_rel,
+        refresh_dws=refresh_dws,
+    )
+    out["retry_step_id"] = sid
+    out["single_step_only"] = True
     return out
 
 

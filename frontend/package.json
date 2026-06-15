@@ -11,7 +11,11 @@
     "preview": "vite preview",
     "test:tree-regression": "playwright test tests/tree-regression.spec.ts",
     "test:tree-regression:update": "playwright test tests/tree-regression.spec.ts --update-snapshots",
-    "test:tree-regression:report": "playwright show-report playwright-report/tree-regression"
+    "test:tree-regression:report": "playwright show-report playwright-report/tree-regression",
+    "test:nav-walkthrough": "playwright test tests/nav-walkthrough.spec.ts",
+    "test:rbac-nav": "playwright test tests/rbac-nav.spec.ts -c playwright.rbac.config.ts",
+    "test:deep-link-audit-flag": "playwright test tests/deep-link-audit-flag.spec.ts",
+    "test:compare-charts-drill": "playwright test tests/compare-charts-drill.spec.ts"
   },
   "dependencies": {
     "jszip": "^3.10.1",

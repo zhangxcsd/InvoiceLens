@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
-import { fetchAuditMeta, fetchAuditRelatedShell, postAuditRun, type ShellCoRow } from '../config/localApi'
+import { fetchAuditRelatedShell, postAuditRun, type ShellCoRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { navigateToFlagsList, navigateWithQuery } from '../utils/navHelpers'
+import { DwsFilterBar } from '../dws/DwsFilterBar'
+import { useDwsFilters } from '../dws/useDwsFilters'
+import type { NavKey } from '../types'
+import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { useDimDictDomain } from '../dim/useDimDict'
 
-export function RelatedShellPage() {
+type Props = { onNav?: (key: NavKey) => void }
+
+export function RelatedShellPage({ onNav }: Props) {
   const ui = t.relatedShellUi
+  const dash = t.dwsDashboardUi
   const pagUi = t.dimDataTableUi
-  const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
+  const riskLevelDict = useDimDictDomain('audit_risk_level')
+  const f = useDwsFilters(false, { entityPool: 'analysis', initFromUrl: true })
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -20,32 +29,17 @@ export function RelatedShellPage() {
   const [scanBusy, setScanBusy] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
 
-  const effectiveYear = useMemo(() => {
-    const y = statYear.trim()
-    if (y && statYears.includes(y)) return y
-    return statYears[0] ?? y
-  }, [statYear, statYears])
-
-  useEffect(() => {
-    const ac = new AbortController()
-    void fetchAuditMeta(ac.signal).then((res) => {
-      if (res.ok && res.stat_years?.length) {
-        setStatYears(res.stat_years)
-        const cy = String(new Date().getFullYear())
-        setStatYear((prev) => (res.stat_years!.includes(prev) ? prev : res.stat_years!.includes(cy) ? cy : res.stat_years![0]))
-      }
-    })
-    return () => ac.abort()
-  }, [])
+  const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
+  const caliberHint = dash.analysisSubjectCaliberHint.replace('{n}', String(effectiveN))
 
   const load = useCallback(async (signal?: AbortSignal) => {
-    if (!effectiveYear) return
+    if (!f.effectiveYear) return
     setLoading(true)
     setErr(null)
     try {
       const res = await fetchAuditRelatedShell(
         {
-          statYear: effectiveYear,
+          statYear: f.effectiveYear,
           keyword: keyword.trim() || undefined,
           limit: pageSize,
           offset: (page - 1) * pageSize,
@@ -66,7 +60,7 @@ export function RelatedShellPage() {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, keyword, page, pageSize, ui.loadFailed, ui.emptyHint])
+  }, [f.effectiveYear, keyword, page, pageSize, ui.loadFailed, ui.emptyHint])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -76,12 +70,12 @@ export function RelatedShellPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [effectiveYear, keyword, pageSize])
+  }, [f.effectiveYear, keyword, pageSize])
 
   const onScan = async () => {
     setScanBusy(true)
     try {
-      await postAuditRun({ statYear: effectiveYear })
+      await postAuditRun({ statYear: f.effectiveYear })
       await load()
     } finally {
       setScanBusy(false)
@@ -89,35 +83,34 @@ export function RelatedShellPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+    <div className="space-y-4 px-5 py-6">
+      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" />
       {hint ? <div className="rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">{hint}</div> : null}
 
       <Card title={ui.filterTitle}>
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-il-meta text-text-2">
-            <span>{ui.statYearLabel}</span>
-            <select
-              className="h-9 min-w-[120px] rounded-sm border border-border-light bg-white px-2"
-              value={effectiveYear}
-              onChange={(e) => setStatYear(e.target.value)}
-            >
-              {statYears.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-il-meta text-text-2">
-            <span>{ui.keywordLabel}</span>
-            <input
-              className="h-9 min-w-[200px] rounded-sm border border-border-light bg-white px-2"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder={ui.keywordPlaceholder}
-            />
-          </label>
+        <DwsFilterBar
+          effectiveYear={f.effectiveYear}
+          yearOptions={f.yearOptions}
+          onYearChange={f.setStatYear}
+          entityId=""
+          onEntityChange={() => {}}
+          entityOptions={[]}
+          showEntity={false}
+          showMinInvoiceCount
+          minInvoiceCount={effectiveN}
+          onMinInvoiceCountChange={f.setMinInvoiceCount}
+        />
+        <label className="mt-3 flex flex-col gap-1 text-il-meta text-text-2">
+          <span>{ui.keywordLabel}</span>
+          <input
+            className="h-9 max-w-md rounded-sm border border-border-light bg-white px-2"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder={ui.keywordPlaceholder}
+          />
+        </label>
+        <p className="mt-2 text-il-meta text-text-3">{caliberHint}</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
             className="h-9 rounded-sm bg-accent px-4 text-il-meta font-medium text-white disabled:opacity-50"
@@ -126,6 +119,24 @@ export function RelatedShellPage() {
           >
             {scanBusy ? ui.scanBusy : ui.scanBtn}
           </button>
+          {onNav ? (
+            <>
+              <button
+                type="button"
+                className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
+                onClick={() => navigateWithQuery(onNav, 'flags_rules', { stat_year: f.effectiveYear })}
+              >
+                {ui.rulesLink}
+              </button>
+              <button
+                type="button"
+                className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
+                onClick={() => navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-SHELL' })}
+              >
+                {ui.flagsLink}
+              </button>
+            </>
+          ) : null}
         </div>
       </Card>
 
@@ -154,7 +165,15 @@ export function RelatedShellPage() {
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_in.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_out.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{(row.passthrough_ratio * 100).toFixed(1)}%</td>
-                  <td className="py-2">{row.risk_level}</td>
+                  <td className="py-2">
+                    {row.risk_level ? (
+                      <span className={`rounded px-1.5 py-0.5 ${auditRiskLevelBadgeClass(row.risk_level)}`}>
+                        {riskLevelDict.getLabel(row.risk_level)}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

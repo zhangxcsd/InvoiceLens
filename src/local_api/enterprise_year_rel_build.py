@@ -2,12 +2,12 @@
 企业-年度关系 dim_enterprise_year_rel 从 dwd_inv_header 按年重算。
 
 口径（与 `vw_audit_invoice_coverage_group_member` 对齐）：
-- **行范围**：仅「当年在 dim_group_enterprise_year 中有台账的成员」且能映射到
+- **行范围**：仅「当年在 dim_enterprise_year_roster（花名册）中有成员记录」且能映射到
   `dim_subject_master`（subject_category='org'、规范化税号命中）的 subject_id；
-  不在集团年度成员中的 org 主体**不写**本表（与报送覆盖分母一致）。
+  不在花名册中的 org 主体**不写**本表（与报送覆盖分母一致）。
 - **购销标志**：在上述成员集合上，按 stat_year 将 dwd_inv_header 销方/购方与成员 norm_no 对齐后聚合。
 - **重算年度**：请求未指定 stat_years 时，取 **dwd_inv_header 中出现的 stat_year ∪
-  dim_group_enterprise_year 中出现的 stat_year** 并去重，以便「仅有集团台账年、或仅有发票年」
+  dim_enterprise_year_roster 中出现的 stat_year** 并去重，以便「仅有花名册年、或仅有发票年」
   都能逐年落一行（无票年购销标志为假、计数为 0）。
 
 自动化编排可引用：
@@ -21,16 +21,85 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
-
-from db.schema_sqlfiles import init_all_tables
 
 logger = logging.getLogger(__name__)
 
 AUTOMATION_TASK_CODE = "dim.enterprise_year_rel.rebuild"
 TASK_DISPLAY_NAME = "企业年度购销标志重算"
+REL_REBUILD_BUSY_CODE = "rel_rebuild_busy"
+REL_REBUILD_BUSY_EXCEPTION = "ConflictError"
+
+_rel_rebuild_lock = threading.RLock()
+_active_rel_rebuild: dict[str, Any] | None = None
+
+
+def rel_rebuild_busy_message(*, exclude_run_id: str | None = None) -> str | None:
+    """并发重算检测：进程内锁 + ads_etl_task_run_log 中 running 台账。"""
+    with _rel_rebuild_lock:
+        if _active_rel_rebuild:
+            rid = str(_active_rel_rebuild.get("run_id") or "")
+            if rid and rid != exclude_run_id:
+                src = str(_active_rel_rebuild.get("trigger_source") or "unknown")
+                return (
+                    f"企业年度购销关系重算正在执行（run_id={rid}，来源={src}），"
+                    "请稍后再试或等待当前任务完成"
+                )
+    try:
+        from src.local_api.dwd_to_dim_build import summarize_dim_task_status
+
+        summary = summarize_dim_task_status(task_codes=[AUTOMATION_TASK_CODE])
+        running = [t for t in summary.get("tasks") or [] if t.get("status") == "running"]
+        if running:
+            rid = str(running[0].get("run_id") or "")
+            if rid and rid != exclude_run_id:
+                return f"企业年度购销关系重算仍在台账中运行（run_id={rid}），请稍后再试"
+    except Exception:
+        pass
+    return None
+
+
+def _try_begin_rel_rebuild(*, run_id: str, trigger_source: str) -> dict[str, Any] | None:
+    busy = rel_rebuild_busy_message(exclude_run_id=run_id)
+    if busy:
+        return {
+            "ok": False,
+            "automation_task_code": AUTOMATION_TASK_CODE,
+            "error": {
+                "message": busy,
+                "exception_type": REL_REBUILD_BUSY_EXCEPTION,
+                "code": REL_REBUILD_BUSY_CODE,
+            },
+        }
+    with _rel_rebuild_lock:
+        busy2 = rel_rebuild_busy_message(exclude_run_id=run_id)
+        if busy2:
+            return {
+                "ok": False,
+                "automation_task_code": AUTOMATION_TASK_CODE,
+                "error": {
+                    "message": busy2,
+                    "exception_type": REL_REBUILD_BUSY_EXCEPTION,
+                    "code": REL_REBUILD_BUSY_CODE,
+                },
+            }
+        global _active_rel_rebuild
+        _active_rel_rebuild = {
+            "run_id": run_id,
+            "trigger_source": trigger_source,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return None
+
+
+def _end_rel_rebuild(*, run_id: str) -> None:
+    with _rel_rebuild_lock:
+        global _active_rel_rebuild
+        if _active_rel_rebuild and str(_active_rel_rebuild.get("run_id") or "") == run_id:
+            _active_rel_rebuild = None
 
 _YEAR_RE = re.compile(r"^\d{4}$")
 
@@ -118,7 +187,7 @@ def _distinct_stat_years_from_dwd(conn: Any) -> list[int]:
 
 
 def _distinct_stat_years_from_group(conn: Any) -> list[int]:
-    """dim_group_enterprise_year 中出现的统计年度（集团台账年度）。"""
+    """dim_enterprise_year_roster 中出现的统计年度（花名册/成员清单年度）。"""
     try:
         rows = conn.execute(
             """
@@ -129,7 +198,7 @@ def _distinct_stat_years_from_group(conn: Any) -> list[int]:
             """
         ).fetchall()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("读取 dim_group_enterprise_year 统计年度失败: %s", exc)
+        logger.warning("读取 dim_enterprise_year_roster 统计年度失败: %s", exc)
         return []
     out: list[int] = []
     for (yv,) in rows or []:
@@ -412,14 +481,16 @@ def rebuild_dim_enterprise_year_rel(
     """
     按年度重算 dim_enterprise_year_rel（先删目标年再插入）。
 
-    - **行范围**：仅当年 `dim_group_enterprise_year` 台账成员且能映射到 org 主体的 subject_id。
-    - stat_years 为 None 或空列表：目标年度 = **dwd_inv_header 中的 stat_year ∪ dim_group_enterprise_year 中的 stat_year**（去重）。
+    - **行范围**：仅当年 `dim_enterprise_year_roster` 花名册成员且能映射到 org 主体的 subject_id。
+    - stat_years 为 None 或空列表：目标年度 = **dwd_inv_header 中的 stat_year ∪ dim_enterprise_year_roster 中的 stat_year**（去重）。
     - dry_run：只统计将写入的行数，不删不插。
     - trigger_source：写入 ads_etl_task_run_log，便于加工中心查看来源（如 dwd_build_chain、manual_api）。
     """
     ts = (trigger_source or "").strip() or "manual_api"
 
     try:
+        from db.schema_sqlfiles import init_all_tables
+
         init_all_tables(conn)
     except Exception as exc:  # noqa: BLE001
         err = {
@@ -481,7 +552,7 @@ def rebuild_dim_enterprise_year_rel(
             "ok": True,
             "skipped": True,
             "automation_task_code": AUTOMATION_TASK_CODE,
-            "message": "无目标统计年度（未传 stat_years 且 dwd_inv_header 与 dim_group_enterprise_year 均无 stat_year）。",
+            "message": "无目标统计年度（未传 stat_years 且 dwd_inv_header 与 dim_enterprise_year_roster 均无 stat_year）。",
             "stat_years": [],
             "dry_run": dry_run,
         }
@@ -547,6 +618,11 @@ def rebuild_dim_enterprise_year_rel(
             "rows_that_would_insert": agg_rows,
         }
 
+    busy_err = _try_begin_rel_rebuild(run_id=rid, trigger_source=ts)
+    if busy_err:
+        busy_err["stat_years"] = years
+        return busy_err
+
     t0 = time.time()
     _safe_record_dim_task_running(
         run_id=rid,
@@ -559,101 +635,99 @@ def rebuild_dim_enterprise_year_rel(
     )
 
     try:
-        prev_row = conn.execute(
-            f"SELECT COUNT(*)::BIGINT FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})",
-            years,
-        ).fetchone()
-        rows_before = int((prev_row[0] if prev_row else 0) or 0)
-    except Exception as exc:  # noqa: BLE001
-        err = {
-            "ok": False,
-            "automation_task_code": AUTOMATION_TASK_CODE,
-            "stat_years": years,
-            "error": {"message": f"读取旧行数失败: {exc}", "exception_type": type(exc).__name__},
-        }
-        _safe_record_dim_task_run(
-            run_id=rid,
-            task_code=AUTOMATION_TASK_CODE,
-            task_name=TASK_DISPLAY_NAME,
-            status="failed",
-            trigger_source=ts,
-            run_mode="by_year",
-            params={"stat_years": years, "stage": "count_before_delete"},
-            result=err,
-            rows_affected=0,
-            error_message=str(exc),
-            started_at_ts=t0,
-        )
-        return err
+        try:
+            prev_row = conn.execute(
+                f"SELECT COUNT(*)::BIGINT FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})",
+                years,
+            ).fetchone()
+            rows_before = int((prev_row[0] if prev_row else 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            err = {
+                "ok": False,
+                "automation_task_code": AUTOMATION_TASK_CODE,
+                "stat_years": years,
+                "error": {"message": f"读取旧行数失败: {exc}", "exception_type": type(exc).__name__},
+            }
+            _safe_record_dim_task_run(
+                run_id=rid,
+                task_code=AUTOMATION_TASK_CODE,
+                task_name=TASK_DISPLAY_NAME,
+                status="failed",
+                trigger_source=ts,
+                run_mode="by_year",
+                params={"stat_years": years, "stage": "count_before_delete"},
+                result=err,
+                rows_affected=0,
+                error_message=str(exc),
+                started_at_ts=t0,
+            )
+            return err
 
-    try:
-        conn.execute(f"DELETE FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})", years)
-        conn.execute(_year_agg_insert_sql(ph), [*bind, rid, snap])
-        post_row = conn.execute(
-            f"SELECT COUNT(*)::BIGINT FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})",
-            years,
-        ).fetchone()
-        rows_after = int((post_row[0] if post_row else 0) or 0)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("enterprise_year_rel 写入失败")
-        err = {
-            "ok": False,
+        try:
+            conn.execute(f"DELETE FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})", years)
+            conn.execute(_year_agg_insert_sql(ph), [*bind, rid, snap])
+            post_row = conn.execute(
+                f"SELECT COUNT(*)::BIGINT FROM dim_enterprise_year_rel WHERE stat_year IN ({ph})",
+                years,
+            ).fetchone()
+            rows_after = int((post_row[0] if post_row else 0) or 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("enterprise_year_rel 写入失败")
+            err = {
+                "ok": False,
+                "automation_task_code": AUTOMATION_TASK_CODE,
+                "stat_years": years,
+                "relation_build_run_id": rid,
+                "relation_snapshot_id": snap,
+                "rows_before_delete": rows_before,
+                "error": {"message": str(exc), "exception_type": type(exc).__name__},
+            }
+            _safe_record_dim_task_run(
+                run_id=rid,
+                task_code=AUTOMATION_TASK_CODE,
+                task_name=TASK_DISPLAY_NAME,
+                status="failed",
+                trigger_source=ts,
+                run_mode="by_year",
+                params={"stat_years": years},
+                result=err,
+                rows_affected=0,
+                error_message=str(exc),
+                started_at_ts=t0,
+            )
+            return err
+
+        ok_out = {
+            "ok": True,
+            "dry_run": False,
             "automation_task_code": AUTOMATION_TASK_CODE,
             "stat_years": years,
             "relation_build_run_id": rid,
             "relation_snapshot_id": snap,
             "rows_before_delete": rows_before,
-            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+            "rows_after_insert": rows_after,
+            "aggregated_subject_year_rows": agg_rows,
         }
         _safe_record_dim_task_run(
             run_id=rid,
             task_code=AUTOMATION_TASK_CODE,
             task_name=TASK_DISPLAY_NAME,
-            status="failed",
+            status="success",
             trigger_source=ts,
             run_mode="by_year",
             params={"stat_years": years},
-            result=err,
-            rows_affected=0,
-            error_message=str(exc),
+            result=ok_out,
+            rows_affected=rows_after,
+            error_message=None,
             started_at_ts=t0,
         )
-        return err
-
-    ok_out = {
-        "ok": True,
-        "dry_run": False,
-        "automation_task_code": AUTOMATION_TASK_CODE,
-        "stat_years": years,
-        "relation_build_run_id": rid,
-        "relation_snapshot_id": snap,
-        "rows_before_delete": rows_before,
-        "rows_after_insert": rows_after,
-        "aggregated_subject_year_rows": agg_rows,
-    }
-    _safe_record_dim_task_run(
-        run_id=rid,
-        task_code=AUTOMATION_TASK_CODE,
-        task_name=TASK_DISPLAY_NAME,
-        status="success",
-        trigger_source=ts,
-        run_mode="by_year",
-        params={"stat_years": years},
-        result=ok_out,
-        rows_affected=rows_after,
-        error_message=None,
-        started_at_ts=t0,
-    )
-    return ok_out
+        return ok_out
+    finally:
+        _end_rel_rebuild(run_id=rid)
 
 
 def api_dim_enterprise_year_rel_meta(conn: Any) -> dict[str, Any]:
-    """GET：返回 DWD / 集团台账年度、合并年度及 dim 表行数（只读）。"""
-    try:
-        init_all_tables(conn)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
-
+    """GET：返回 DWD / 花名册年度、合并年度及 dim 表行数（只读）。调用方须先 ensure/init schema。"""
     dwd_years: list[int] = []
     group_years: list[int] = []
     dim_counts: dict[str, int] = {}
@@ -686,11 +760,13 @@ def api_dim_enterprise_year_rel_meta(conn: Any) -> dict[str, Any]:
 
     union_sorted = sorted({*dwd_years, *group_years})
 
+    roster_years = [str(y) for y in group_years]
     return {
         "ok": True,
         "automation_task_code": AUTOMATION_TASK_CODE,
         "dwd_stat_years": [str(y) for y in dwd_years],
-        "group_stat_years": [str(y) for y in group_years],
+        "roster_stat_years": roster_years,
+        "group_stat_years": roster_years,
         "rel_rebuild_union_stat_years": [str(y) for y in union_sorted],
         "dim_enterprise_year_rel_row_counts_by_year": dim_counts,
     }

@@ -12,6 +12,41 @@ export type ImportRunSnapshot = {
   events: ImportEvent[]
   failures: ImportFailureRecord[]
   runQueue: PickedExcel[]
+  importSessionId?: string
+  fieldMappingTemplate?: {
+    template_id: string
+    template_name: string
+    template_updated_at?: string
+  }
+}
+
+export type ImportFieldMappingTemplateMeta = NonNullable<ImportRunSnapshot['fieldMappingTemplate']>
+
+export function extractImportSessionMeta(events: ImportEvent[]): {
+  importSessionId?: string
+  fieldMappingTemplate?: ImportFieldMappingTemplateMeta
+} {
+  let importSessionId: string | undefined
+  let fieldMappingTemplate: ImportFieldMappingTemplateMeta | undefined
+  for (const ev of events) {
+    if (ev.type !== 'session_start' && ev.type !== 'session_end') continue
+    const p = ev.payload as Record<string, unknown>
+    const sid = String(p.import_session_id ?? ev.import_session_id ?? '').trim()
+    if (sid) importSessionId = sid
+    const raw = p.field_mapping_template
+    if (raw && typeof raw === 'object') {
+      const o = raw as Record<string, unknown>
+      const template_id = String(o.template_id ?? '').trim()
+      if (template_id) {
+        fieldMappingTemplate = {
+          template_id,
+          template_name: String(o.template_name ?? '').trim() || template_id,
+          template_updated_at: String(o.template_updated_at ?? '').trim() || undefined,
+        }
+      }
+    }
+  }
+  return { importSessionId, fieldMappingTemplate }
 }
 
 function escapeCsvCell(v: unknown): string {
@@ -41,10 +76,13 @@ export function collectRejectRowsForExport(events: ImportEvent[]): Array<Record<
 
 export function buildExportJson(snapshot: ImportRunSnapshot): string {
   const reject_rows = collectRejectRowsForExport(snapshot.events)
+  const meta = extractImportSessionMeta(snapshot.events)
   return JSON.stringify(
     {
       exported_at: new Date().toISOString(),
       batch_date: snapshot.batchDate,
+      import_session_id: snapshot.importSessionId ?? meta.importSessionId ?? null,
+      field_mapping_template: snapshot.fieldMappingTemplate ?? meta.fieldMappingTemplate ?? null,
       source: snapshot.source,
       summary: {
         success_files: snapshot.success,

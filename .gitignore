@@ -25,7 +25,9 @@ output/*
 !data/tmp/.gitkeep
 !output/.gitkeep
 
-# OS / IDE
+# License signing (private key only; public key lives in config/)
+scripts/.license_private.pem
+
 .DS_Store
 Thumbs.db
 

@@ -288,6 +288,15 @@ def _snapshot_active_pipeline_jobs() -> list[dict[str, Any]]:
         return []
 
 
+def _snapshot_active_chain_jobs() -> list[dict[str, Any]]:
+    try:
+        from src.local_api.dim_task_chain import snapshot_active_chain_jobs
+
+        return snapshot_active_chain_jobs()
+    except Exception:
+        return []
+
+
 def _append_memory_active_run(
     active_runs: list[dict[str, Any]],
     running_by_code: dict[str, dict[str, Any]],
@@ -334,7 +343,17 @@ def list_dim_task_runs(
     limit: int = 20,
 ) -> dict[str, Any]:
     conn = get_conn()
-    init_all_tables(conn)
+    try:
+        init_all_tables(conn)
+    except Exception as exc:
+        from db.schema_sqlfiles import is_core_schema_ready
+
+        if not is_core_schema_ready(conn):
+            return {
+                "ok": False,
+                "runs": [],
+                "error": {"message": str(exc), "exception_type": type(exc).__name__},
+            }
     lim = max(1, min(int(limit or 20), 100))
     if task_code:
         rows = conn.execute(
@@ -465,7 +484,7 @@ def summarize_dim_task_status(*, task_codes: list[str] | None = None) -> dict[st
         pass
 
     rename_by_code: dict[str, dict[str, Any]] = {}
-    for job in _snapshot_active_rename_jobs() + _snapshot_active_pipeline_jobs():
+    for job in _snapshot_active_rename_jobs() + _snapshot_active_pipeline_jobs() + _snapshot_active_chain_jobs():
         code = str(job.get("task_code") or "").strip()
         if code:
             rename_by_code[code] = job

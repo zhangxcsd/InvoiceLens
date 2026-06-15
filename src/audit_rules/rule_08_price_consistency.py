@@ -12,7 +12,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import entity_filter, norm_tax
+from src.audit_rules._sql_common import entity_filter, flag_detail_json, norm_tax
 
 
 def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
@@ -34,9 +34,9 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
         WITH lines AS (
             SELECT
                 {norm_tax('d.gfsbh')} AS buyer_id,
-                max(trim(COALESCE(d.gfmc, ''))) AS buyer_name,
+                trim(COALESCE(d.gfmc, '')) AS buyer_name,
                 {norm_tax('d.xfsbh')} AS seller_id,
-                max(trim(COALESCE(d.xfmc, ''))) AS seller_name,
+                trim(COALESCE(d.xfmc, '')) AS seller_name,
                 lower(trim(coalesce(d.hwlwmc, ''))) AS goods_key,
                 ((d.stat_month - 1) / 3 + 1)::INT AS quarter,
                 CASE WHEN coalesce(d.sl, 0) > 0 THEN abs(coalesce(d.je, 0)) / d.sl ELSE NULL END AS unit_price,
@@ -113,6 +113,13 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议开展同品类询比价复核，关注高价供应商采购审批与合同条款。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    seller_tax_no=seller_id,
+                    goods_key=goods_key,
+                    quarter=int(quarter or 0) or None,
+                    dispersion=float(disp or 0),
+                    supplier_count=int(sup_cnt or 0),
+                ),
             }
         )
     return flags

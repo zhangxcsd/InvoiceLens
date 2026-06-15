@@ -31,8 +31,8 @@ def _insert_flags(conn: Any, flags: list[AuditFlagRow]) -> int:
         INSERT INTO dm_audit_flag (
             flag_id, rule_id, risk_level, flag_type, group_id,
             entity_id, entity_name, seller_name, seller_tax_no,
-            amount, invoice_list, description, suggestion, analysis_batch
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            amount, invoice_list, description, suggestion, analysis_batch, detail_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (flag_id) DO UPDATE SET
             risk_level = excluded.risk_level,
             flag_type = excluded.flag_type,
@@ -43,7 +43,8 @@ def _insert_flags(conn: Any, flags: list[AuditFlagRow]) -> int:
             invoice_list = excluded.invoice_list,
             description = excluded.description,
             suggestion = excluded.suggestion,
-            analysis_batch = excluded.analysis_batch
+            analysis_batch = excluded.analysis_batch,
+            detail_json = excluded.detail_json
         """,
         [
             (
@@ -61,6 +62,7 @@ def _insert_flags(conn: Any, flags: list[AuditFlagRow]) -> int:
                 f.get("description"),
                 f.get("suggestion"),
                 f["analysis_batch"],
+                f.get("detail_json"),
             )
             for f in flags
         ],

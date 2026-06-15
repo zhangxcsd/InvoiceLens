@@ -13,7 +13,7 @@ from typing import Any
 
 from src.audit.config_loader import rule_config
 from src.audit.types import AuditFlagRow, RuleContext
-from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, norm_tax
+from src.audit_rules._sql_common import ABS_NET, FPZT_NORMAL, IS_POSITIVE, entity_filter, flag_detail_json, norm_tax
 
 
 def _risk_for_ratio(ratio: float, cfg: dict[str, Any]) -> str:
@@ -122,6 +122,17 @@ def run_rule(conn: Any, context: RuleContext) -> list[AuditFlagRow]:
                 ),
                 "suggestion": "建议核查双方合同、物流与资金流水，确认是否存在循环贸易或虚增收入/成本。",
                 "analysis_batch": batch,
+                "detail_json": flag_detail_json(
+                    stat_year=stat_year,
+                    entity_id=a_tax,
+                    party_a_tax=a_tax,
+                    party_b_tax=b_tax,
+                    counterparty_id=b_tax,
+                    counterparty_tax_no=b_tax,
+                    amount_a_to_b=amt_ab_f,
+                    amount_b_to_a=amt_ba_f,
+                    circular_ratio=ratio,
+                ),
             }
         )
 

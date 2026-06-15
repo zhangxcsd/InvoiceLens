@@ -103,3 +103,53 @@ rules:
     min_amount: 500000
     passthrough_ratio: 0.6
     risk_level: 中风险
+
+  # 财务账票核对差异（由「差异分析」页 sync-flags 同步，非 SQL 扫描规则）
+  # 审计含义：比对 dm_finance_ledger 与 DWD 发票净额，按 A/B/C/D 分层写入疑点跟踪
+  RULE-FIN-DIFF:
+    enabled: true
+    name: 账票金额不一致
+    risk_level: 中风险
+
+  RULE-FIN-LEDGER-ONLY:
+    enabled: true
+    name: 账面有票面无
+    risk_level: 中风险
+
+  RULE-FIN-INVOICE-ONLY:
+    enabled: true
+    name: 票面有账面无
+    risk_level: 中风险
+
+  RULE-FIN-OTHER:
+    enabled: true
+    name: 账票核对待分类
+    risk_level: 低风险
+
+  # 数据质量 · 语义与专项覆盖（由质量域 sync-flags 同步，非 SQL 扫描规则）
+  # 审计含义：明细有正行但专项 sheet 正行为 0，疑似漏导专项表
+  RULE-DQ-MISSING-SPC:
+    enabled: true
+    name: 疑似缺专项 sheet
+    risk_level: 中风险
+
+  # 审计含义：logic_line_no=0 汇总参考行，需人工确认是否为「详见销货清单」类占位行
+  RULE-DQ-SUMMARY-LINE:
+    enabled: true
+    name: 汇总参考行异常
+    risk_level: 低风险
+
+  # 税收分类编码结构分析（由税码分析页 sync-flags 同步）
+  # 审计含义：分析主体企业票面 ssflbm 无法在 dim_tax_code 命中或格式异常
+  RULE-TAX-UNMATCH:
+    enabled: true
+    name: 税收分类编码未匹配维表
+    risk_level: 中风险
+    min_line_count: 5
+
+  # 审计含义：企业明细中 audit_risk_label=HIGH 的税额集中超过阈值
+  RULE-TAX-HIGH-CODE:
+    enabled: true
+    name: 高风险税收分类编码集中
+    risk_level: 中风险
+    min_high_risk_amount: 10000

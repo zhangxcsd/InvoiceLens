@@ -11,6 +11,7 @@ import {
   type DimTaskRunLogRow,
   type EnterpriseYearRelMetaResult,
 } from '../config/localApi'
+import { TaskChainPanel } from './TaskChainPanel'
 
 function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return '—'
@@ -43,13 +44,16 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
   const [lastJson, setLastJson] = useState<string | null>(null)
 
   const dwdYears = useMemo(() => meta?.dwd_stat_years ?? [], [meta])
-  const groupYears = useMemo(() => meta?.group_stat_years ?? [], [meta])
+  const rosterYears = useMemo(
+    () => meta?.roster_stat_years ?? meta?.group_stat_years ?? [],
+    [meta],
+  )
   const unionYears = useMemo(() => {
     const u = meta?.rel_rebuild_union_stat_years
     if (u && u.length) return u
-    const s = new Set<string>([...dwdYears, ...groupYears])
+    const s = new Set<string>([...dwdYears, ...rosterYears])
     return [...s].sort((a, b) => Number(b) - Number(a))
-  }, [meta, dwdYears, groupYears])
+  }, [meta, dwdYears, rosterYears])
 
   const loadMeta = useCallback(async () => {
     setMetaBusy(true)
@@ -135,6 +139,17 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
         <div className="rounded-md border border-danger/30 bg-[#fff5f5] px-3 py-2 text-sm text-danger">{err}</div>
       ) : null}
 
+      <TaskChainPanel
+        disabled={rebuildBusy}
+        statYears={selectedYears.size > 0 ? [...selectedYears].map((x) => Number(x)).sort((a, b) => a - b) : null}
+        onNav={props.onNav}
+        onRunComplete={() => {
+          void loadMeta()
+          void loadRuns()
+        }}
+        compact
+      />
+
       <Card title={ui.taskRegistryTitle}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] border-collapse text-left text-sm">
@@ -149,6 +164,13 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
             </thead>
             <tbody>
               <tr className="border-b border-line/80 align-top">
+                <td className="py-2 pr-3 font-medium text-text">{ui.enterpriseYearRosterName}</td>
+                <td className="py-2 pr-3 font-mono text-xs text-text-2">{ui.enterpriseYearRosterCode}</td>
+                <td className="py-2 pr-3 text-text-2">{ui.enterpriseYearRosterDepends}</td>
+                <td className="py-2 pr-3 font-mono text-xs text-text-2">{ui.enterpriseYearRosterOutput}</td>
+                <td className="py-2 text-text-2">{ui.enterpriseYearRosterTriggers}</td>
+              </tr>
+              <tr className="border-b border-line/80 align-top">
                 <td className="py-2 pr-3 font-medium text-text">{ui.enterpriseYearRelName}</td>
                 <td className="py-2 pr-3 font-mono text-xs text-text-2">{ui.enterpriseYearRelCode}</td>
                 <td className="py-2 pr-3 text-text-2">{ui.enterpriseYearRelDepends}</td>
@@ -158,7 +180,8 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
             </tbody>
           </table>
         </div>
-        <p className="mt-3 text-xs leading-relaxed text-text-3">{ui.enterpriseYearRelWhy}</p>
+        <p className="mt-3 text-xs leading-relaxed text-text-3">{ui.enterpriseYearRosterWhy}</p>
+        <p className="mt-2 text-xs leading-relaxed text-text-3">{ui.enterpriseYearRelWhy}</p>
       </Card>
 
       <Card title={ui.metaCardTitle}>
@@ -173,9 +196,9 @@ export function ProcessingDerivedDimTasksPage(props: { onNav?: (k: NavKey) => vo
               </div>
             </div>
             <div>
-              <div className="mb-1 text-xs font-medium text-text-3">{ui.metaGroupYears}</div>
+              <div className="mb-1 text-xs font-medium text-text-3">{ui.metaRosterYears}</div>
               <div className="text-sm text-text">
-                {groupYears.length ? groupYears.join('、') : ui.metaEmpty}
+                {rosterYears.length ? rosterYears.join('、') : ui.metaEmpty}
               </div>
             </div>
             <div>

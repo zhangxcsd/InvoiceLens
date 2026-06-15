@@ -1,38 +1,60 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
+import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
 import {
+  fetchAllAuditFlagsList,
   fetchAuditFlagsList,
   fetchAuditMeta,
   postAuditFlagConfirm,
   type AuditFlagRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-
+import type { NavKey } from '../types'
+import {
+  navigateToFlagsList,
+  navigateToReportConfig,
+  readFlagsTrackTab,
+  readNavQueryParams,
+  writeNavQueryParams,
+} from '../utils/navHelpers'
+import { FlagActionButtons } from './FlagActionButtons'
+import { reportChaptersForRule } from './flagActionHelpers'
+import { downloadAuditFlagsCsv } from './flagsExport'
+import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { useDimDictDomain } from '../dim/useDimDict'
+import { useLicense } from '../settings/useLicense'
+import { WriteGateButton } from '../users/useWriteGate'
 type TrackTab = 'pending' | 'confirmed' | 'all'
-type RiskTab = 'all' | '高风险' | '中风险' | '低风险'
+type RiskTab = 'all' | string
+
+type Props = { onNav?: (key: NavKey) => void }
 
 function riskBadgeClass(level: string): string {
-  if (level === '高风险') return 'bg-danger/10 text-danger'
-  if (level === '中风险') return 'bg-warn/10 text-warn'
-  return 'bg-text-3/10 text-text-2'
+  return auditRiskLevelBadgeClass(level)
 }
 
 function trackTabToStatus(tab: TrackTab): 'pending' | 'confirmed' | 'all' {
   return tab
 }
 
-export function FlagsTrackPage() {
+export function FlagsTrackPage({ onNav }: Props) {
   const ui = t.auditTrackUi
+  const license = useLicense()
+  const initialQuery = useMemo(() => readNavQueryParams(), [])
   const pagUi = t.dimDataTableUi
+  const riskLevelDict = useDimDictDomain('audit_risk_level')
   const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
+  const [rules, setRules] = useState<{ rule_id: string; name: string; enabled: boolean }[]>([])
+  const [statYear, setStatYear] = useState(() => initialQuery.stat_year ?? String(new Date().getFullYear()))
   const [metaHint, setMetaHint] = useState<string | null>(null)
-  const [trackTab, setTrackTab] = useState<TrackTab>('pending')
+  const [trackTab, setTrackTab] = useState<TrackTab>(() => readFlagsTrackTab())
   const [riskTab, setRiskTab] = useState<RiskTab>('all')
-  const [keyword, setKeyword] = useState('')
+  const [ruleFilter, setRuleFilter] = useState(initialQuery.rule_id ?? 'all')
+  const [keyword, setKeyword] = useState(initialQuery.entity_id ?? '')
   const [loading, setLoading] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [rows, setRows] = useState<AuditFlagRow[]>([])
   const [total, setTotal] = useState(0)
@@ -51,6 +73,16 @@ export function FlagsTrackPage() {
     return statYears[0] ?? y
   }, [statYear, statYears])
 
+  useEffect(() => {
+    writeNavQueryParams({
+      stat_year: effectiveYear,
+      track_tab: trackTab,
+      track_status: trackTab,
+      rule_id: ruleFilter === 'all' ? undefined : ruleFilter,
+      entity_id: keyword.trim() || undefined,
+    })
+  }, [effectiveYear, trackTab, ruleFilter, keyword])
+
   const loadMeta = useCallback(async (signal?: AbortSignal) => {
     const res = await fetchAuditMeta(signal)
     if (signal?.aborted || res.aborted) return
@@ -60,6 +92,7 @@ export function FlagsTrackPage() {
     }
     const years = res.stat_years ?? []
     setStatYears(years)
+    setRules(res.rules ?? [])
     if (years.length) {
       const cy = String(new Date().getFullYear())
       setStatYear((prev) => (years.includes(prev) ? prev : years.includes(cy) ? cy : years[0]))
@@ -67,20 +100,24 @@ export function FlagsTrackPage() {
     setMetaHint(res.hint ?? null)
   }, [ui.loadFailed])
 
+  const listParams = useMemo(
+    () => ({
+      statYear: effectiveYear,
+      riskLevel: riskTab === 'all' ? undefined : riskTab,
+      ruleId: ruleFilter === 'all' ? undefined : ruleFilter,
+      keyword: keyword.trim() || undefined,
+      trackStatus: trackTabToStatus(trackTab),
+    }),
+    [effectiveYear, riskTab, ruleFilter, keyword, trackTab],
+  )
+
   const loadList = useCallback(async (signal?: AbortSignal) => {
     if (!effectiveYear) return
     setLoading(true)
     setErr(null)
     try {
       const res = await fetchAuditFlagsList(
-        {
-          statYear: effectiveYear,
-          riskLevel: riskTab === 'all' ? undefined : riskTab,
-          keyword: keyword.trim() || undefined,
-          trackStatus: trackTabToStatus(trackTab),
-          limit: pageSize,
-          offset: (page - 1) * pageSize,
-        },
+        { ...listParams, limit: pageSize, offset: (page - 1) * pageSize },
         signal,
       )
       if (signal?.aborted || res.aborted) return
@@ -102,7 +139,7 @@ export function FlagsTrackPage() {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, riskTab, keyword, trackTab, page, pageSize, ui.loadFailed])
+  }, [effectiveYear, listParams, page, pageSize, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -118,7 +155,7 @@ export function FlagsTrackPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [effectiveYear, trackTab, riskTab, keyword, pageSize])
+  }, [effectiveYear, trackTab, riskTab, ruleFilter, keyword, pageSize])
 
   const toggleSelect = (flagId: string) => {
     setSelected((prev) => {
@@ -160,6 +197,24 @@ export function FlagsTrackPage() {
     }
   }
 
+  const onBatchReject = async () => {
+    const ids = [...selected]
+    if (!ids.length) return
+    setActionBusy(true)
+    setActionMsg(null)
+    try {
+      const res = await postAuditFlagConfirm({ flagIds: ids, isConfirmed: false })
+      if (!res.ok) {
+        setActionMsg(res.error?.message ?? ui.rejectFailed)
+        return
+      }
+      setActionMsg(res.message ?? ui.rejectSuccess.replace('{count}', String(ids.length)))
+      await loadList()
+    } finally {
+      setActionBusy(false)
+    }
+  }
+
   const onUnconfirm = async (flagIds: string[]) => {
     if (!flagIds.length) return
     setActionBusy(true)
@@ -177,22 +232,110 @@ export function FlagsTrackPage() {
     }
   }
 
+  const exportCsv = async () => {
+    if (!license.exportAllowed) {
+      setErr(license.trialHint ?? ui.exportLicenseDenied)
+      return
+    }
+    setExporting(true)
+    setErr(null)
+    try {
+      const res = await fetchAllAuditFlagsList(listParams)
+      if (!res.ok) {
+        setErr(res.error?.message ?? ui.loadFailed)
+        return
+      }
+      if (res.rows.length === 0) {
+        setErr(ui.exportEmpty)
+        return
+      }
+      downloadAuditFlagsCsv(res.rows, { statYear: effectiveYear, fileStem: '疑点跟踪' })
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const riskTabs = useMemo(
+    () => [
+      { id: 'all', label: ui.riskTabAll },
+      ...riskLevelDict.options.map((o) => ({ id: o.code, label: o.label })),
+    ],
+    [riskLevelDict.options, ui.riskTabAll],
+  )
+
   const trackTabs: { id: TrackTab; label: string }[] = [
     { id: 'pending', label: ui.tabPending },
     { id: 'confirmed', label: ui.tabConfirmed },
     { id: 'all', label: ui.tabAll },
   ]
 
-  const riskTabs: { id: RiskTab; label: string }[] = [
-    { id: 'all', label: ui.riskTabAll },
-    { id: '高风险', label: ui.riskTabHigh },
-    { id: '中风险', label: ui.riskTabMedium },
-    { id: '低风险', label: ui.riskTabLow },
-  ]
+  const renderRowActions = (row: AuditFlagRow) => (
+    <FlagActionButtons
+      row={row}
+      statYear={effectiveYear}
+      onNav={onNav}
+      showReport={false}
+      extraBefore={
+        <>
+          <button
+            type="button"
+            className="text-il-meta text-accent hover:underline"
+            onClick={() => setExpandedId((id) => (id === row.flag_id ? null : row.flag_id))}
+          >
+            {expandedId === row.flag_id ? ui.collapseBtn : ui.expandBtn}
+          </button>
+          {row.is_confirmed ? (
+            <WriteGateButton
+              requires="audit_flags"
+              className="text-il-meta text-text-3 hover:text-text-2 disabled:opacity-50"
+              disabled={actionBusy}
+              onClick={() => void onUnconfirm([row.flag_id])}
+            >
+              {ui.unconfirmBtn}
+            </WriteGateButton>
+          ) : null}
+        </>
+      }
+      extraAfter={
+        onNav ? (
+          <>
+            <button
+              type="button"
+              className="text-il-meta text-accent hover:underline"
+              onClick={() =>
+                navigateToReportConfig(onNav, {
+                  statYear: effectiveYear,
+                  entityId: row.entity_id ?? undefined,
+                  chapters: reportChaptersForRule(row.rule_id),
+                })
+              }
+            >
+              {ui.genReportBtn}
+            </button>
+            <button
+              type="button"
+              className="text-il-meta text-accent hover:underline"
+              onClick={() =>
+                navigateToFlagsList(onNav, {
+                  statYear: effectiveYear,
+                  ruleId: row.rule_id,
+                  entityId: row.entity_id ?? undefined,
+                })
+              }
+            >
+              {ui.viewFlagsListBtn}
+            </button>
+          </>
+        ) : null
+      }
+      className="flex flex-wrap gap-2"
+    />
+  )
 
   return (
     <div className="space-y-4">
       <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+      <LicenseGateBanner hint={license.trialHint} />
 
       {metaHint ? (
         <div className="rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">{metaHint}</div>
@@ -230,6 +373,21 @@ export function FlagsTrackPage() {
             </select>
           </label>
           <label className="flex flex-col gap-1 text-il-meta text-text-2">
+            <span>{ui.ruleFilterLabel}</span>
+            <select
+              className="h-9 min-w-[180px] rounded-sm border border-border-light bg-white px-2 text-il-body text-text"
+              value={ruleFilter}
+              onChange={(e) => setRuleFilter(e.target.value)}
+            >
+              <option value="all">{ui.ruleFilterAll}</option>
+              {rules.map((r) => (
+                <option key={r.rule_id} value={r.rule_id}>
+                  {r.rule_id} · {r.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-il-meta text-text-2">
             <span>{ui.keywordLabel}</span>
             <input
               className="h-9 min-w-[200px] rounded-sm border border-border-light bg-white px-2 text-il-body text-text outline-none focus:border-accent"
@@ -238,6 +396,20 @@ export function FlagsTrackPage() {
               onChange={(e) => setKeyword(e.target.value)}
             />
           </label>
+          {onNav ? (
+            <button
+              type="button"
+              className="mt-3 text-il-meta text-accent hover:underline"
+              onClick={() =>
+                navigateToReportConfig(onNav, {
+                  statYear: effectiveYear,
+                  chapters: ['flags_track', 'audit_flags', 'related'],
+                })
+              }
+            >
+              {ui.reportLink}
+            </button>
+          ) : null}
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
@@ -277,36 +449,64 @@ export function FlagsTrackPage() {
         </div>
       </Card>
 
-      {trackTab === 'pending' && selected.size > 0 ? (
-        <Card title={ui.batchConfirmTitle.replace('{count}', String(selected.size))}>
+      {(trackTab === 'pending' || trackTab === 'confirmed') && selected.size > 0 ? (
+        <Card
+          title={
+            trackTab === 'pending'
+              ? ui.batchConfirmTitle.replace('{count}', String(selected.size))
+              : ui.batchRejectTitle.replace('{count}', String(selected.size))
+          }
+        >
           <div className="flex flex-wrap items-end gap-3">
-            <label className="flex min-w-[280px] flex-1 flex-col gap-1 text-il-meta text-text-2">
-              <span>{ui.confirmNoteLabel}</span>
-              <textarea
-                className="min-h-[72px] rounded-sm border border-border-light bg-white px-2 py-1.5 text-il-body text-text outline-none focus:border-accent"
-                value={noteDraft}
-                placeholder={ui.confirmNotePlaceholder}
-                onChange={(e) => setNoteDraft(e.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              disabled={actionBusy || !noteDraft.trim()}
-              className="h-9 rounded-sm bg-accent px-4 text-il-body text-white disabled:opacity-50"
-              onClick={() => void onConfirm()}
+            {trackTab === 'pending' ? (
+              <label className="flex min-w-[280px] flex-1 flex-col gap-1 text-il-meta text-text-2">
+                <span>{ui.confirmNoteLabel}</span>
+                <textarea
+                  className="min-h-[72px] rounded-sm border border-border-light bg-white px-2 py-1.5 text-il-body text-text outline-none focus:border-accent"
+                  value={noteDraft}
+                  placeholder={ui.confirmNotePlaceholder}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                />
+              </label>
+            ) : null}
+            {trackTab === 'pending' ? (
+              <WriteGateButton
+                requires="audit_flags"
+                className="h-9 rounded-sm bg-accent px-4 text-il-body text-white disabled:opacity-50"
+                disabled={actionBusy || !noteDraft.trim()}
+                onClick={() => void onConfirm()}
+              >
+                {actionBusy ? ui.confirmBusy : ui.confirmBtn}
+              </WriteGateButton>
+            ) : null}
+            <WriteGateButton
+              requires="audit_flags"
+              className="h-9 rounded-sm border border-danger bg-white px-4 text-il-body text-danger hover:bg-danger/5 disabled:opacity-50"
+              disabled={actionBusy}
+              onClick={() => void onBatchReject()}
             >
-              {actionBusy ? ui.confirmBusy : ui.confirmBtn}
-            </button>
+              {actionBusy ? ui.rejectBusy : ui.rejectBtn}
+            </WriteGateButton>
           </div>
           {actionMsg ? <p className="mt-2 text-il-meta text-text-2">{actionMsg}</p> : null}
         </Card>
       ) : null}
 
-      {actionMsg && trackTab !== 'pending' ? (
+      {actionMsg && trackTab !== 'pending' && trackTab !== 'confirmed' ? (
         <div className="rounded-sm border border-accent/30 bg-accent/5 px-3 py-2 text-il-meta text-text-2">{actionMsg}</div>
       ) : null}
 
       <Card title={ui.listTitle.replace('{count}', String(total))}>
+        <div className="mb-3 flex justify-end">
+          <button
+            type="button"
+            disabled={loading || exporting || !license.exportAllowed}
+            className="rounded-sm border border-border-light bg-white px-3 py-1.5 text-il-meta text-text-2 hover:border-accent hover:text-accent disabled:opacity-50"
+            onClick={() => void exportCsv()}
+          >
+            {exporting ? ui.exportBusy : ui.exportCsv}
+          </button>
+        </div>
         {loading ? (
           <p className="text-il-meta text-text-3">{ui.loading}</p>
         ) : err ? (
@@ -319,7 +519,7 @@ export function FlagsTrackPage() {
               <table className="w-full min-w-[880px] border-collapse text-il-body">
                 <thead>
                   <tr className="border-b border-border-light text-left text-il-meta text-text-3">
-                    {trackTab === 'pending' ? (
+                    {trackTab === 'pending' || trackTab === 'confirmed' ? (
                       <th className="w-8 py-2 pr-2">
                         <input
                           type="checkbox"
@@ -330,6 +530,7 @@ export function FlagsTrackPage() {
                       </th>
                     ) : null}
                     <th className="py-2 pr-3">{ui.colFlagId}</th>
+                    <th className="py-2 pr-3">{ui.colRule}</th>
                     <th className="py-2 pr-3">{ui.colRisk}</th>
                     <th className="py-2 pr-3">{ui.colType}</th>
                     <th className="py-2 pr-3">{ui.colEntity}</th>
@@ -342,7 +543,7 @@ export function FlagsTrackPage() {
                   {rows.map((row) => (
                     <Fragment key={row.flag_id}>
                       <tr className="border-b border-border-light/70 hover:bg-bg-2/40">
-                        {trackTab === 'pending' ? (
+                        {trackTab === 'pending' || trackTab === 'confirmed' ? (
                           <td className="py-2 pr-2">
                             <input
                               type="checkbox"
@@ -353,9 +554,10 @@ export function FlagsTrackPage() {
                           </td>
                         ) : null}
                         <td className="py-2 pr-3 font-mono text-il-soon text-text-2">{row.flag_id}</td>
+                        <td className="py-2 pr-3 font-mono text-il-soon text-text-2">{row.rule_id}</td>
                         <td className="py-2 pr-3">
                           <span className={`rounded px-1.5 py-0.5 text-il-soon ${riskBadgeClass(row.risk_level)}`}>
-                            {row.risk_level}
+                            {riskLevelDict.getLabel(row.risk_level)}
                           </span>
                         </td>
                         <td className="py-2 pr-3 text-text-2">{row.flag_type}</td>
@@ -370,31 +572,14 @@ export function FlagsTrackPage() {
                             <span className="text-warn">{ui.statusPending}</span>
                           )}
                         </td>
-                        <td className="py-2">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              className="text-il-meta text-accent hover:underline"
-                              onClick={() => setExpandedId((id) => (id === row.flag_id ? null : row.flag_id))}
-                            >
-                              {expandedId === row.flag_id ? ui.collapseBtn : ui.expandBtn}
-                            </button>
-                            {row.is_confirmed ? (
-                              <button
-                                type="button"
-                                disabled={actionBusy}
-                                className="text-il-meta text-text-3 hover:text-text-2 disabled:opacity-50"
-                                onClick={() => void onUnconfirm([row.flag_id])}
-                              >
-                                {ui.unconfirmBtn}
-                              </button>
-                            ) : null}
-                          </div>
-                        </td>
+                        <td className="py-2">{renderRowActions(row)}</td>
                       </tr>
                       {expandedId === row.flag_id ? (
                         <tr className="border-b border-border-light bg-bg-2/30">
-                          <td colSpan={trackTab === 'pending' ? 8 : 7} className="px-3 py-3 text-il-meta text-text-2">
+                          <td
+                            colSpan={trackTab === 'pending' || trackTab === 'confirmed' ? 9 : 8}
+                            className="px-3 py-3 text-il-meta text-text-2"
+                          >
                             <p>
                               <span className="font-medium text-text">{ui.descLabel}：</span>
                               {row.description || '—'}

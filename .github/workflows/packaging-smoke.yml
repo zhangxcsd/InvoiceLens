@@ -1,0 +1,114 @@
+name: Packaging Smoke
+
+on:
+  push:
+    paths:
+      - 'invoicelens.spec'
+      - 'scripts/run_packaged_app.py'
+      - 'scripts/test_packaging_smoke.py'
+      - 'scripts/test_stage5_license_users_smoke.py'
+      - 'scripts/test_license_gate_smoke.py'
+      - 'scripts/test_rbac_smoke.py'
+      - 'scripts/gen_license_keys.py'
+      - 'scripts/sign_license.py'
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/auth_session.py'
+      - 'src/local_api/startup_log.py'
+      - 'src/local_api/compare_dashboard_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'src/local_api/bundle_paths.py'
+      - 'src/local_api/static_ui.py'
+      - 'config/build_meta.py'
+      - 'config/license_public.pem'
+      - 'frontend/**'
+      - '.github/workflows/packaging-smoke.yml'
+  pull_request:
+    paths:
+      - 'invoicelens.spec'
+      - 'scripts/run_packaged_app.py'
+      - 'scripts/test_packaging_smoke.py'
+      - 'scripts/test_stage5_license_users_smoke.py'
+      - 'scripts/test_license_gate_smoke.py'
+      - 'scripts/test_rbac_smoke.py'
+      - 'scripts/gen_license_keys.py'
+      - 'scripts/sign_license.py'
+      - 'src/local_api/license_gate.py'
+      - 'src/local_api/auth_session.py'
+      - 'src/local_api/startup_log.py'
+      - 'src/local_api/compare_dashboard_api.py'
+      - 'src/local_api/sheet_mapping_server.py'
+      - 'src/local_api/bundle_paths.py'
+      - 'src/local_api/static_ui.py'
+      - 'config/build_meta.py'
+      - 'config/license_public.pem'
+      - 'frontend/**'
+      - '.github/workflows/packaging-smoke.yml'
+
+jobs:
+  packaging-smoke-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm ci && npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: License and RBAC smoke
+        run: |
+          python scripts/test_license_gate_smoke.py
+          python scripts/test_rbac_smoke.py
+
+      - name: Run Stage 5 license/users smoke
+        run: python scripts/test_stage5_license_users_smoke.py
+
+      - name: PyInstaller build
+        run: pyinstaller invoicelens.spec --noconfirm
+
+      - name: Packaging smoke (artifacts + optional binary)
+        run: python scripts/test_packaging_smoke.py --require-binary
+
+  packaging-smoke-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        shell: pwsh
+        run: npm ci; npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: PyInstaller build (Windows)
+        shell: pwsh
+        run: pyinstaller invoicelens.spec --noconfirm
+
+      - name: Packaging smoke (Windows binary)
+        shell: pwsh
+        run: python scripts/test_packaging_smoke.py --require-binary

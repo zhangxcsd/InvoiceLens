@@ -7,9 +7,19 @@ import { sheetMappingOptionsFallback } from './config/sheetMappingOptions'
 import {
   createImportSessionUpload,
   fetchFieldMapping,
+  fetchFieldMappingTemplates,
   fetchImportLimits,
   fetchImportSessionEvents,
   fetchSheetMappingOptions,
+  fetchAuditPendingCount,
+  fetchAuditRelatedNavCount,
+  fetchLicenseInfo,
+  fetchAuthMe,
+  getSessionToken,
+  postAuthLogin,
+  postAuthLogout,
+  setAuthExpiredHandler,
+  setSessionToken,
   type ApiImportEvent,
 } from './config/localApi'
 import { runSimulatedImport } from './import/simulator'
@@ -41,16 +51,27 @@ import { SupplierNewPage } from './dws/SupplierNewPage'
 import { SupplierTopPage } from './dws/SupplierTopPage'
 import { TradeRelationshipsPage } from './dws/TradeRelationshipsPage'
 import { TaxInOutDeviationPage } from './dws/TaxInOutDeviationPage'
+import { TaxRiskExposurePage } from './dws/TaxRiskExposurePage'
 import { FlagsListPage } from './dm/FlagsListPage'
 import { FlagsTrackPage } from './dm/FlagsTrackPage'
 import { FlagsRulesPage } from './dm/FlagsRulesPage'
 import { RelatedPairsPage } from './dm/RelatedPairsPage'
 import { RelatedShellPage } from './dm/RelatedShellPage'
+import { RelatedGraphPage } from './dm/RelatedGraphPage'
 import { CompareRankPage } from './ads/CompareRankPage'
 import { CompareChartsPage } from './ads/CompareChartsPage'
 import { ReportConfigPage } from './report/ReportConfigPage'
+import { ReportArchivePage } from './report/ReportArchivePage'
 import { ReportTemplatesPage } from './report/ReportTemplatesPage'
+import { InvoiceExportPage } from './import/InvoiceExportPage'
+import { FinanceReconcilePage } from './finance/FinanceReconcilePage'
+import { FinanceDiffPage } from './finance/FinanceDiffPage'
 import { SettingsThresholdsPage } from './settings/SettingsThresholdsPage'
+import { SettingsLicensePage } from './settings/SettingsLicensePage'
+import { SettingsInstancePage } from './settings/SettingsInstancePage'
+import { UsersListPage } from './users/UsersListPage'
+import { UsersRolesPage } from './users/UsersRolesPage'
+import { UsersAuditPage } from './users/UsersAuditPage'
 import { AuditRelatedEnterprisePage } from './dim/AuditRelatedEnterprisePage'
 import { EnterpriseYearRosterPage } from './dim/EnterpriseYearRosterPage'
 import { Level1EnterpriseYearPage } from './dim/Level1EnterpriseYearPage'
@@ -64,6 +85,7 @@ import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPa
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
 import { TaxCodeRiskDefinePage } from './dim/TaxCodeRiskDefinePage'
 import { DimVersionPage } from './dim/DimVersionPage'
+import { DimDictPage } from './dim/DimDictPage'
 import { SubjectCategoryPage } from './dim/SubjectCategoryPage'
 import type { ImportEvent, ImportFailureRecord } from './import/eventTypes'
 import { MAX_IMPORT_FILE_MB } from './config/importLimits'
@@ -71,9 +93,11 @@ import {
   collectRejectRowsForExport,
   downloadJson,
   downloadRejectRowsCsv,
+  extractImportSessionMeta,
   getFailedQueueRows,
   type ImportRunSnapshot,
 } from './import/importResultHelpers'
+import { navigateToQualityPage } from './quality/qualityNav'
 import {
   IconAlert,
   IconChartBars,
@@ -91,6 +115,8 @@ import {
   IconUpload,
   IconUser,
 } from './design/navIcons'
+import { canAccessNav, defaultNavForRole, isAdmin } from './users/rbacNav'
+import { RbacProvider } from './users/rbacContext'
 
 function formatCheckProgressHint(done: number, total: number) {
   return t.importUpload.formatCheckingWithProgress
@@ -124,35 +150,41 @@ type AppState =
   | { kind: 'logged_out' }
   | { kind: 'logged_in'; user: User; nav: NavKey; importHandoff: ImportWizardHandoff | null }
 
-function LoginScreen(props: { onLogin: (user: User) => void }) {
+function LoginScreen(props: { onLogin: (user: User) => void; sessionExpired?: boolean }) {
   const demoBlankLogin = t.login.demoUsername === '' && t.login.demoPassword === ''
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   /** 演示空账号登录时默认关闭「记住我」，减少浏览器自动填充 admin 等已存密码 */
   const [remember, setRemember] = useState(!demoBlankLogin)
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const doLogin = async (u: string, p: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await postAuthLogin({ username: u, password: p, remember })
+      if (!res.ok || !res.user) {
+        setError(res.error?.message ?? t.login.errorInvalid)
+        return
+      }
+      props.onLogin({
+        username: res.user.username,
+        displayName: res.user.displayName,
+        role: res.user.role,
+        roleLabel: res.user.roleLabel,
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const loginAsDemo = () => {
-    setError(null)
-    props.onLogin({
-      username: t.login.demoUsername,
-      displayName: t.login.demoDisplayName,
-      role: t.login.demoRole,
-    })
+    void doLogin('', '')
   }
 
   const submit = () => {
-    const u = username.trim()
-    const p = password
-    if (u === t.login.demoUsername && p === t.login.demoPassword) {
-      props.onLogin({
-        username: t.login.demoUsername,
-        displayName: t.login.demoDisplayName,
-        role: t.login.demoRole,
-      })
-      return
-    }
-    setError(t.login.errorInvalid)
+    void doLogin(username.trim(), password)
   }
 
   return (
@@ -186,6 +218,12 @@ function LoginScreen(props: { onLogin: (user: User) => void }) {
           {t.login.sep}
         </div>
 
+        {props.sessionExpired ? (
+          <p className="mb-4 rounded border border-warn/40 bg-[#fff9e9] px-3 py-2 text-il-page-desc text-[#8a6d00]">
+            {t.common.sessionExpired}
+          </p>
+        ) : null}
+
         {/* demo tip */}
         <div className="mb-4 rounded-md border border-[#c8dff7] bg-[#f0f7ff] px-[13px] py-[9px] text-il-page-desc text-accent-mid">
           {t.login.demoTip}
@@ -195,7 +233,8 @@ function LoginScreen(props: { onLogin: (user: User) => void }) {
           <button
             type="button"
             className="mb-4 w-full rounded-[7px] border border-accent bg-white py-2.5 text-il-page-desc font-medium text-accent transition-colors hover:bg-[#f0f7ff]"
-            onClick={loginAsDemo}
+            disabled={busy}
+          onClick={loginAsDemo}
           >
             {t.login.demoOneClick}
           </button>
@@ -250,6 +289,7 @@ function LoginScreen(props: { onLogin: (user: User) => void }) {
         {error ? <div className="mb-3 text-il-page-desc text-danger">{error}</div> : null}
         <button
           className="w-full rounded-[7px] bg-[linear-gradient(135deg,#0088ff,#0055cc)] py-[11px] text-[15px] font-semibold text-white transition-opacity duration-150 hover:opacity-90"
+          disabled={busy}
           onClick={submit}
         >
           {t.login.submit}
@@ -270,6 +310,8 @@ function Sidebar(props: {
   onLogout: () => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
+  const [pendingFlagCount, setPendingFlagCount] = useState<number | null>(null)
+  const [relatedNavCount, setRelatedNavCount] = useState<number | null>(null)
   const [openParents, setOpenParents] = useState<Record<string, boolean>>({
     import: true,
     dim: false,
@@ -344,11 +386,12 @@ function Sidebar(props: {
       props.nav !== 'dim_tax_result' &&
       props.nav !== 'dim_tax_quality' &&
       props.nav !== 'dim_subject_category' &&
+      props.nav !== 'dim_dict' &&
       props.nav !== 'dim_version'
     )
       return
     setOpenParents((p) => ({ ...p, dim: true }))
-    if (props.nav === 'dim_subject_category') {
+    if (props.nav === 'dim_subject_category' || props.nav === 'dim_dict') {
       setOpenChildren((c) => ({ ...c, dict: true }))
       return
     }
@@ -357,8 +400,52 @@ function Sidebar(props: {
   }, [props.nav])
 
   useEffect(() => {
-    if (props.nav !== 'tax_enterprise_structure' && props.nav !== 'tax_in_out_deviation') return
+    if (props.nav !== 'tax_enterprise_structure' && props.nav !== 'tax_in_out_deviation' && props.nav !== 'tax_risk_exposure') return
     setOpenParents((p) => ({ ...p, tax_analysis: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'related_graph' && props.nav !== 'related_pairs' && props.nav !== 'related_shell') return
+    setOpenParents((p) => ({ ...p, related: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void fetchAuditPendingCount(undefined, ac.signal).then((res) => {
+      if (ac.signal.aborted || !res.ok) return
+      setPendingFlagCount(res.pending ?? 0)
+    })
+    return () => ac.abort()
+  }, [props.nav])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    const year = String(new Date().getFullYear())
+    void fetchAuditRelatedNavCount(year, ac.signal).then((res) => {
+      if (ac.signal.aborted || !res.ok) return
+      setRelatedNavCount(res.total ?? 0)
+    })
+    return () => ac.abort()
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'flags_list' &&
+      props.nav !== 'flags_rules' &&
+      props.nav !== 'flags_track'
+    )
+      return
+    setOpenParents((p) => ({ ...p, flags: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'import_invoice_export') return
+    setOpenParents((p) => ({ ...p, import: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'report_config' && props.nav !== 'report_archive' && props.nav !== 'report_templates') return
+    setOpenParents((p) => ({ ...p, report: true }))
   }, [props.nav])
 
   useEffect(() => {
@@ -370,11 +457,6 @@ function Sidebar(props: {
     )
       return
     setOpenParents((p) => ({ ...p, supplier: true }))
-  }, [props.nav])
-
-  useEffect(() => {
-    if (props.nav !== 'related_pairs' && props.nav !== 'related_shell') return
-    setOpenParents((p) => ({ ...p, related: true }))
   }, [props.nav])
 
   useEffect(() => {
@@ -428,6 +510,7 @@ function Sidebar(props: {
   }
 
   const navStandalone = (key: NavKey, label: string, icon: React.ReactNode) => {
+    if (!canAccessNav(props.user.role, key)) return null
     const active = props.nav === key
     return (
       <div
@@ -450,6 +533,40 @@ function Sidebar(props: {
         </span>
       </div>
     )
+  }
+
+  const navChildNav = (
+    navKey: NavKey,
+    slug: string,
+    label: string,
+    icon: React.ReactNode,
+    opts?: {
+      soon?: boolean
+      active?: boolean
+    },
+  ) => {
+    if (!canAccessNav(props.user.role, navKey)) return null
+    return navChild(slug, label, icon, {
+      ...opts,
+      onClick: () => props.onNav(navKey),
+    })
+  }
+
+  const navChildDeepNav = (
+    navKey: NavKey,
+    slug: string,
+    label: string,
+    icon: React.ReactNode,
+    opts?: {
+      soon?: boolean
+      active?: boolean
+    },
+  ) => {
+    if (!canAccessNav(props.user.role, navKey)) return null
+    return navChildDeep(slug, label, icon, {
+      ...opts,
+      onClick: () => props.onNav(navKey),
+    })
   }
 
   const navChild = (
@@ -568,6 +685,7 @@ function Sidebar(props: {
       tier?: 'default' | 'great'
     },
   ) => {
+    if (!canAccessNav(props.user.role, key)) return null
     const active = !!opts?.active
     const soon = !!opts?.soon
     const inProgress = !!opts?.inProgress && !soon
@@ -692,9 +810,7 @@ function Sidebar(props: {
               active: props.nav === 'processing_derived_dim_tasks',
             })}
           </div>
-          {navChild('history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />, {
-            onClick: () => props.onNav('import_history'),
-          })}
+          {navChildNav('import_history', 'history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />)}
           {navChild(
             'quality',
             t.sidebar.qualityReport,
@@ -712,10 +828,7 @@ function Sidebar(props: {
               active: props.nav === 'import_quality_trend',
             })}
           </div>
-          {navChild('export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />, {
-            onClick: () => props.onNav('import_invoice_export'),
-            soon: true,
-          })}
+          {navChildNav('import_invoice_export', 'export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />)}
         </div>
 
         {navParent(
@@ -769,23 +882,19 @@ function Sidebar(props: {
                 tier: 'great',
               })}
             </div>
-            {navChildDeep(
+            {navChildDeepNav(
+              'dim_audit_related_library',
               'audit_related_coverage',
               t.sidebar.dimAuditRelatedLibrary,
               <IconCompare className="h-[11px] w-[11px]" />,
-              {
-                onClick: () => props.onNav('dim_audit_related_library'),
-                active: props.nav === 'dim_audit_related_library',
-              },
+              { active: props.nav === 'dim_audit_related_library' },
             )}
-            {navChildDeep(
+            {navChildDeepNav(
+              'dim_enterprise_library',
               'enterprise_library',
               t.sidebar.dimEnterpriseLibrary,
               <IconUser className="h-[11px] w-[11px]" />,
-              {
-                onClick: () => props.onNav('dim_enterprise_library'),
-                active: props.nav === 'dim_enterprise_library',
-              },
+              { active: props.nav === 'dim_enterprise_library' },
             )}
           </div>
           {navChild('tax', t.sidebar.dimTaxCode, <IconPlusSquare className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.tax })}
@@ -808,11 +917,14 @@ function Sidebar(props: {
             open: !!openChildren.dict,
           })}
           <div className={openChildren.dict ? 'block' : 'hidden'}>
+            {navGrand('dim_dict', t.sidebar.dimDictHub, {
+              active: props.nav === 'dim_dict',
+            })}
             {navGrand('dim_subject_category', t.sidebar.dimSubjectCategory, {
               active: props.nav === 'dim_subject_category',
             })}
           </div>
-          {navChild('ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />, { onClick: () => props.onNav('dim_version') })}
+          {navChildNav('dim_version', 'ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />)}
         </div>
 
         <div className="my-1 border-t border-border-light" />
@@ -823,9 +935,9 @@ function Sidebar(props: {
 
         {navParent('overview', t.sidebar.overview, <IconChartBars className="h-[15px] w-[15px]" />)}
         <div className={openParents.overview && !collapsed ? 'block' : 'hidden'}>
-          {navChild('ov1', t.sidebar.ovSummary, <span />, { onClick: () => props.onNav('overview_summary') })}
-          {navChild('ov2', t.sidebar.ovTrend, <span />, { onClick: () => props.onNav('overview_trend') })}
-          {navChild('ov3', t.sidebar.ovTax, <span />, { onClick: () => props.onNav('overview_tax') })}
+          {navChildNav('overview_summary', 'ov1', t.sidebar.ovSummary, <span />)}
+          {navChildNav('overview_trend', 'ov2', t.sidebar.ovTrend, <span />)}
+          {navChildNav('overview_tax', 'ov3', t.sidebar.ovTax, <span />)}
         </div>
 
         {navParent('tax_analysis', t.sidebar.taxAnalysis, <IconChartBars className="h-[15px] w-[15px]" />)}
@@ -833,16 +945,16 @@ function Sidebar(props: {
           {navGrand('tax_enterprise_structure', t.sidebar.taxEnterpriseStructure, {
             active: props.nav === 'tax_enterprise_structure',
           })}
-          {navChild('ta2', t.sidebar.taxInOutDeviation, <span />, { onClick: () => props.onNav('tax_in_out_deviation') })}
-          {navChild('ta3', t.sidebar.taxRiskExposure, <span />, { soon: true })}
+          {navChildNav('tax_in_out_deviation', 'ta2', t.sidebar.taxInOutDeviation, <span />)}
+          {navChildNav('tax_risk_exposure', 'ta3', t.sidebar.taxRiskExposure, <span />)}
         </div>
 
         {navParent('supplier', t.sidebar.supplier, <IconClock className="h-[15px] w-[15px]" />)}
         <div className={openParents.supplier && !collapsed ? 'block' : 'hidden'}>
-          {navChild('s1', t.sidebar.supplierCr, <span />, { onClick: () => props.onNav('supplier_cr') })}
-          {navChild('s2', t.sidebar.supplierTop, <span />, { onClick: () => props.onNav('supplier_top') })}
-          {navChild('s3', t.sidebar.supplierNew, <span />, { onClick: () => props.onNav('supplier_new') })}
-          {navChild('s4', t.sidebar.tradeRelationships, <span />, { onClick: () => props.onNav('trade_relationships') })}
+          {navChildNav('supplier_cr', 's1', t.sidebar.supplierCr, <span />)}
+          {navChildNav('supplier_top', 's2', t.sidebar.supplierTop, <span />)}
+          {navChildNav('supplier_new', 's3', t.sidebar.supplierNew, <span />)}
+          {navChildNav('trade_relationships', 's4', t.sidebar.tradeRelationships, <span />)}
         </div>
 
         {navStandalone('health_score', t.sidebar.healthScore, <IconMiniCheck className="h-[15px] w-[15px]" />)}
@@ -851,36 +963,44 @@ function Sidebar(props: {
           'flags',
           t.sidebar.flags,
           <IconAlert className="h-[15px] w-[15px]" />,
-          !collapsed ? <span className="rounded-full bg-danger px-1.5 py-[1px] text-il-soon font-semibold text-white">12</span> : null,
+          !collapsed && pendingFlagCount != null && pendingFlagCount > 0 ? (
+            <span className="rounded-full bg-danger px-1.5 py-[1px] text-il-soon font-semibold text-white">
+              {pendingFlagCount > 99 ? '99+' : pendingFlagCount}
+            </span>
+          ) : null,
         )}
         <div className={openParents.flags && !collapsed ? 'block' : 'hidden'}>
-          {navChild('f1', t.sidebar.flagsList, <span />, { onClick: () => props.onNav('flags_list') })}
-          {navChild('f2', t.sidebar.flagsRules, <span />, { onClick: () => props.onNav('flags_rules') })}
-          {navChild('f3', t.sidebar.flagsTrack, <span />, { onClick: () => props.onNav('flags_track') })}
+          {navChildNav('flags_list', 'f1', t.sidebar.flagsList, <span />)}
+          {navChildNav('flags_rules', 'f2', t.sidebar.flagsRules, <span />)}
+          {navChildNav('flags_track', 'f3', t.sidebar.flagsTrack, <span />)}
         </div>
 
         {navParent(
           'related',
           t.sidebar.related,
           <IconNetwork className="h-[15px] w-[15px]" />,
-          !collapsed ? <span className="rounded-full bg-warn px-1.5 py-[1px] text-il-soon font-semibold text-white">3</span> : null,
+          !collapsed && relatedNavCount != null && relatedNavCount > 0 ? (
+            <span className="rounded-full bg-warn px-1.5 py-[1px] text-il-soon font-semibold text-white">
+              {relatedNavCount > 99 ? '99+' : relatedNavCount}
+            </span>
+          ) : null,
         )}
         <div className={openParents.related && !collapsed ? 'block' : 'hidden'}>
-          {navChild('r1', t.sidebar.relatedGraph, <span />, { onClick: () => props.onNav('related_graph'), soon: true })}
-          {navChild('r2', t.sidebar.relatedPairs, <span />, { onClick: () => props.onNav('related_pairs') })}
-          {navChild('r3', t.sidebar.relatedShell, <span />, { onClick: () => props.onNav('related_shell') })}
+          {navChildNav('related_graph', 'r1', t.sidebar.relatedGraph, <span />)}
+          {navChildNav('related_pairs', 'r2', t.sidebar.relatedPairs, <span />)}
+          {navChildNav('related_shell', 'r3', t.sidebar.relatedShell, <span />)}
         </div>
 
         {navParent('finance', t.sidebar.finance, <IconReportDoc className="h-[15px] w-[15px]" />)}
         <div className={openParents.finance && !collapsed ? 'block' : 'hidden'}>
-          {navChild('j1', t.sidebar.financeReconcile, <span />, { onClick: () => props.onNav('finance_reconcile'), soon: true })}
-          {navChild('j2', t.sidebar.financeDiff, <span />, { onClick: () => props.onNav('finance_diff'), soon: true })}
+          {navChildNav('finance_reconcile', 'j1', t.sidebar.financeReconcile, <span />)}
+          {navChildNav('finance_diff', 'j2', t.sidebar.financeDiff, <span />)}
         </div>
 
         {navParent('compare', t.sidebar.compare, <IconCompare className="h-[15px] w-[15px]" />)}
         <div className={openParents.compare && !collapsed ? 'block' : 'hidden'}>
-          {navChild('c1', t.sidebar.compareRank, <span />, { onClick: () => props.onNav('compare_rank') })}
-          {navChild('c2', t.sidebar.compareCharts, <span />, { onClick: () => props.onNav('compare_charts') })}
+          {navChildNav('compare_rank', 'c1', t.sidebar.compareRank, <span />)}
+          {navChildNav('compare_charts', 'c2', t.sidebar.compareCharts, <span />)}
         </div>
 
         <div className="my-1 border-t border-border-light" />
@@ -889,12 +1009,16 @@ function Sidebar(props: {
           {t.sidebar.sectionOutput}
         </div>
 
-        {navParent('report', t.sidebar.report, <IconReportDoc className="h-[15px] w-[15px]" />)}
-        <div className={openParents.report && !collapsed ? 'block' : 'hidden'}>
-          {navChild('rp1', t.sidebar.reportConfig, <span />, { onClick: () => props.onNav('report_config') })}
-          {navChild('rp2', t.sidebar.reportTemplates, <span />, { onClick: () => props.onNav('report_templates') })}
-          {navChild('rp3', t.sidebar.reportArchive, <span />, { onClick: () => props.onNav('report_archive') })}
-        </div>
+        {canAccessNav(props.user.role, 'report_config') ? (
+          <>
+            {navParent('report', t.sidebar.report, <IconReportDoc className="h-[15px] w-[15px]" />)}
+            <div className={openParents.report && !collapsed ? 'block' : 'hidden'}>
+              {navChildNav('report_config', 'rp1', t.sidebar.reportConfig, <span />)}
+              {navChildNav('report_templates', 'rp2', t.sidebar.reportTemplates, <span />)}
+              {navChildNav('report_archive', 'rp3', t.sidebar.reportArchive, <span />)}
+            </div>
+          </>
+        ) : null}
 
         <div className="my-1 border-t border-border-light" />
 
@@ -902,18 +1026,24 @@ function Sidebar(props: {
           {t.sidebar.sectionSystem}
         </div>
 
-        {navParent('users', t.sidebar.users, <IconUser className="h-[15px] w-[15px]" />)}
-        <div className={openParents.users && !collapsed ? 'block' : 'hidden'}>
-          {navChild('u1', t.sidebar.usersList, <span />, { onClick: () => props.onNav('users_list'), soon: true })}
-          {navChild('u2', t.sidebar.usersRoles, <span />, { onClick: () => props.onNav('users_roles'), soon: true })}
-          {navChild('u3', t.sidebar.usersAudit, <span />, { onClick: () => props.onNav('users_audit'), soon: true })}
-        </div>
+        {isAdmin(props.user.role) ? (
+          <>
+            {navParent('users', t.sidebar.users, <IconUser className="h-[15px] w-[15px]" />)}
+            <div className={openParents.users && !collapsed ? 'block' : 'hidden'}>
+              {navChildNav('users_list', 'u1', t.sidebar.usersList, <span />)}
+              {navChildNav('users_roles', 'u2', t.sidebar.usersRoles, <span />)}
+              {navChildNav('users_audit', 'u3', t.sidebar.usersAudit, <span />)}
+            </div>
+          </>
+        ) : null}
 
         {navParent('settings', t.sidebar.settings, <IconSettings className="h-[15px] w-[15px]" />)}
         <div className={openParents.settings && !collapsed ? 'block' : 'hidden'}>
-          {navChild('st1', t.sidebar.settingsThresholds, <span />, { onClick: () => props.onNav('settings_thresholds') })}
-          {navChild('st2', t.sidebar.settingsLicense, <span />, { onClick: () => props.onNav('settings_license'), soon: true })}
-          {navChild('st3', t.sidebar.settingsInstance, <span />, { onClick: () => props.onNav('settings_instance'), soon: true })}
+          {navChildNav('settings_thresholds', 'st1', t.sidebar.settingsThresholds, <span />)}
+          {navChildNav('settings_license', 'st2', t.sidebar.settingsLicense, <span />)}
+          {navChildNav('settings_instance', 'st3', t.sidebar.settingsInstance, <span />, {
+            active: props.nav === 'settings_instance',
+          })}
         </div>
       </div>
       <div className="border-t border-border-light px-3 py-2">
@@ -925,7 +1055,7 @@ function Sidebar(props: {
             <div className="truncate text-[12px] font-medium text-text">
               {props.user.displayName}
             </div>
-            <div className="text-il-pill text-text-3">{props.user.role}</div>
+            <div className="text-il-pill text-text-3">{props.user.roleLabel ?? props.user.role}</div>
           </div>
           <button
             className="rounded border border-border-light px-2 py-0.5 text-il-meta text-text-3 hover:border-danger hover:text-danger"
@@ -1013,12 +1143,34 @@ function apiEventToImportEvent(raw: ApiImportEvent): ImportEvent {
 }
 
 function Topbar(props: { breadcrumb: React.ReactNode }) {
+  const [licenseTag, setLicenseTag] = useState<string>(t.shell.licenseTag)
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void fetchLicenseInfo(ac.signal).then((res) => {
+      if (ac.signal.aborted || !res.ok || !res.license) return
+      const lic = res.license
+      const tier =
+        lic.tier === 'pro' || lic.tier === 'professional'
+          ? '专业版'
+          : lic.tier === 'enterprise'
+            ? '企业版'
+            : lic.tier === 'trial'
+              ? '试用版'
+              : lic.tier || '授权'
+      const exp = lic.expiresAt ? ` · 有效期 ${lic.expiresAt}` : ''
+      const expired = lic.isExpired ? ' · 已过期' : ''
+      setLicenseTag(`${tier}${exp}${expired}`)
+    })
+    return () => ac.abort()
+  }, [])
+
   return (
     <div className="flex h-[52px] items-center gap-3 border-b border-border-light bg-white px-5">
       <div className="flex-1 text-il-topbar text-text-2">{props.breadcrumb}</div>
       <div className="flex items-center gap-2">
         <span className="rounded-full border border-[#c8dff7] bg-[#EBF4FF] px-2.5 py-0.5 text-il-pill font-medium text-accent-mid">
-          {t.shell.licenseTag}
+          {licenseTag}
         </span>
         <button className="rounded-[7px] border border-border bg-white px-3 py-1 text-il-pill text-text-2 hover:border-accent hover:text-accent">
           {t.common.help}
@@ -1031,6 +1183,7 @@ function Topbar(props: { breadcrumb: React.ReactNode }) {
 function ImportUploadPage(props: {
   handoff: ImportWizardHandoff | null
   onConsumeHandoff: () => void
+  onNav: (k: NavKey) => void
 }) {
   const [queue, setQueue] = useState<PickedExcel[]>([])
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
@@ -1053,6 +1206,11 @@ function ImportUploadPage(props: {
   const [formatCheckBrowserIssues, setFormatCheckBrowserIssues] = useState<string[]>([])
   const [formatCheckYamlIssues, setFormatCheckYamlIssues] = useState<string[]>([])
   const [fieldMappingConfig, setFieldMappingConfig] = useState<FieldMappingConfig>(() => FALLBACK_FIELD_MAPPING_CONFIG)
+  const [mappingTemplates, setMappingTemplates] = useState<
+    { template_id: string; name: string; is_active?: boolean }[]
+  >([])
+  const [activeTemplateId, setActiveTemplateId] = useState('')
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [maxUploadMb, setMaxUploadMb] = useState(readStoredMaxUploadMb)
   const [autoImportAfterFormat, setAutoImportAfterFormat] = useState(readStoredAutoImportAfterFormat)
   const [autoDwdAfterImport, setAutoDwdAfterImport] = useState(readStoredAutoDwdAfterImport)
@@ -1163,6 +1321,22 @@ function ImportUploadPage(props: {
         return v
       })
     })()
+    return () => ac.abort()
+  }, [])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void fetchFieldMappingTemplates(ac.signal).then((res) => {
+      if (ac.signal.aborted || !res.ok) return
+      const templates = res.templates ?? []
+      setMappingTemplates(templates)
+      const active = String(res.active_template_id ?? '').trim()
+      setActiveTemplateId(active)
+      setSelectedTemplateId((prev) => {
+        if (prev && templates.some((tpl) => tpl.template_id === prev)) return prev
+        return active
+      })
+    })
     return () => ac.abort()
   }, [])
 
@@ -1483,6 +1657,7 @@ function ImportUploadPage(props: {
       }
       if (!end || end.type !== 'session_end') return false
       resetFormatAfterRun = true
+      const sessionMeta = extractImportSessionMeta(collectedEvs)
       setImportResult({
         source,
         simDueToApiFailure: simDueToApiFailure === true,
@@ -1493,6 +1668,8 @@ function ImportUploadPage(props: {
         events: collectedEvs,
         failures: collectedFails,
         runQueue: target,
+        importSessionId: sessionMeta.importSessionId,
+        fieldMappingTemplate: sessionMeta.fieldMappingTemplate,
       })
       return true
     }
@@ -1516,6 +1693,7 @@ function ImportUploadPage(props: {
           maxUploadMb: capMb,
           autoDwdAfterImport,
           rebuildEnterpriseYearRelAfterDwd: rebuildRelAfterDwd,
+          fieldMappingTemplateId: selectedTemplateId || undefined,
           files: target.map((r) => ({ file: r.file, pathLabel: r.pathLabel })),
           onUploadProgress: (done, total) => {
             setImportPhase({ kind: 'upload', cur: done, total })
@@ -1604,6 +1782,30 @@ function ImportUploadPage(props: {
       <div className={['mb-4 shrink-0', importing ? 'pointer-events-none opacity-60' : ''].join(' ')}>
         <UploadZone onFiles={addFiles} />
       </div>
+
+      <Card title={t.importUpload.templateSectionTitle} className="mb-4 shrink-0">
+        <p className="mb-2 text-il-meta text-text-2">{t.importUpload.templateSectionHint}</p>
+        <label className="mb-1 block text-il-label font-medium text-text-2">
+          {t.importUpload.templateSelectLabel}
+        </label>
+        <select
+          value={selectedTemplateId}
+          onChange={(e) => setSelectedTemplateId(e.target.value)}
+          className="h-[33px] w-full max-w-md rounded-[7px] border border-border bg-[#fafbfc] px-2 py-[7px] text-il-input text-text outline-none focus:border-accent focus:bg-white"
+          disabled={importing || mappingTemplates.length === 0}
+        >
+          {mappingTemplates.length === 0 ? (
+            <option value="">{t.importUpload.templateUseActive}</option>
+          ) : (
+            mappingTemplates.map((tpl) => (
+              <option key={tpl.template_id} value={tpl.template_id}>
+                {tpl.name}
+                {tpl.template_id === activeTemplateId ? ` · ${t.importUpload.templateActiveBadge}` : ''}
+              </option>
+            ))
+          )}
+        </select>
+      </Card>
 
       <Card title={t.importUpload.batchConfig} className="mb-4 shrink-0">
         <div className="mb-2 flex min-w-0 flex-nowrap items-start gap-2 sm:gap-3">
@@ -2115,6 +2317,23 @@ function ImportUploadPage(props: {
                 {collectRejectRowsForExport(importResult.events).length}
               </span>
             </div>
+            {importResult.fieldMappingTemplate ? (
+              <div className="min-w-[12rem]">
+                <span className="text-text-3">{t.importUpload.resultTemplateLabel}：</span>
+                <span className="font-semibold text-text">
+                  {importResult.fieldMappingTemplate.template_name}
+                </span>
+                <span className="ml-1 font-mono text-[11px] text-text-3">
+                  ({importResult.fieldMappingTemplate.template_id})
+                </span>
+              </div>
+            ) : null}
+            {importResult.importSessionId ? (
+              <div className="min-w-[10rem]">
+                <span className="text-text-3">{t.importUpload.resultSessionLabel}：</span>
+                <span className="font-mono text-[12px] text-text">{importResult.importSessionId}</span>
+              </div>
+            ) : null}
           </div>
           {collectRejectRowsForExport(importResult.events).length === 0 ? (
             <div className="mb-3 text-il-meta text-text-3">{t.importUpload.resultCsvEmpty}</div>
@@ -2134,6 +2353,23 @@ function ImportUploadPage(props: {
             >
               {t.importUpload.resultDownloadCsv}
             </button>
+            {importResult.importSessionId &&
+            importResult.source === 'api' &&
+            importResult.simDueToApiFailure !== true ? (
+              <button
+                type="button"
+                className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
+                onClick={() =>
+                  navigateToQualityPage(props.onNav, 'import_quality_detail', {
+                    batchId: importResult.batchDate,
+                    sessionId: importResult.importSessionId,
+                    domain: 'lineage_reject',
+                  })
+                }
+              >
+                {t.importUpload.resultOpenQualityLineage}
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={getFailedQueueRows(importResult).length === 0}
@@ -2689,6 +2925,11 @@ function AppShell(props: {
   onNav: (k: NavKey) => void
   onLogout: () => void
 }) {
+  useEffect(() => {
+    if (canAccessNav(props.user.role, props.nav)) return
+    props.onNav(defaultNavForRole(props.user.role))
+  }, [props.nav, props.user.role, props.onNav])
+
   const breadcrumb = useMemo(() => {
     if (props.nav === 'import_wizard_upload')
       return (
@@ -2833,6 +3074,27 @@ function AppShell(props: {
         <>
           {t.sidebar.sectionAnalysis} / {t.sidebar.taxAnalysis} /{' '}
           <b className="text-text font-medium">{t.sidebar.taxInOutDeviation}</b>
+        </>
+      )
+    if (props.nav === 'tax_risk_exposure')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.taxAnalysis} /{' '}
+          <b className="text-text font-medium">{t.sidebar.taxRiskExposure}</b>
+        </>
+      )
+    if (props.nav === 'related_graph')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.related} /{' '}
+          <b className="text-text font-medium">{t.sidebar.relatedGraph}</b>
+        </>
+      )
+    if (props.nav === 'import_invoice_export')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} /{' '}
+          <b className="text-text font-medium">{t.sidebar.invoiceExport}</b>
         </>
       )
     if (props.nav === 'trade_relationships')
@@ -3008,6 +3270,12 @@ function AppShell(props: {
           {t.sidebar.dimMgmt} / <b className="text-text font-medium">{t.breadcrumb.dimVersion}</b>
         </>
       )
+    if (props.nav === 'dim_dict')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimDict} / <b className="text-text font-medium">{t.breadcrumb.dimDict}</b>
+        </>
+      )
     if (props.nav === 'dim_subject_category')
       return (
         <>
@@ -3020,6 +3288,36 @@ function AppShell(props: {
           {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.breadcrumb.taxEnterpriseStructure}</b>
         </>
       )
+    if (props.nav === 'finance_reconcile')
+      return (
+        <>
+          {t.sidebar.finance} / <b className="text-text font-medium">{t.breadcrumb.financeReconcile}</b>
+        </>
+      )
+    if (props.nav === 'finance_diff')
+      return (
+        <>
+          {t.sidebar.finance} / <b className="text-text font-medium">{t.breadcrumb.financeDiff}</b>
+        </>
+      )
+    if (props.nav === 'settings_thresholds')
+      return (
+        <>
+          {t.sidebar.settings} / <b className="text-text font-medium">{t.sidebar.settingsThresholds}</b>
+        </>
+      )
+    if (props.nav === 'settings_license')
+      return (
+        <>
+          {t.sidebar.settings} / <b className="text-text font-medium">{t.sidebar.settingsLicense}</b>
+        </>
+      )
+    if (props.nav === 'settings_instance')
+      return (
+        <>
+          {t.sidebar.settings} / <b className="text-text font-medium">{t.sidebar.settingsInstance}</b>
+        </>
+      )
     return (
       <>
         {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.pending}</b>
@@ -3028,8 +3326,9 @@ function AppShell(props: {
   }, [props.nav])
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar nav={props.nav} onNav={props.onNav} user={props.user} onLogout={props.onLogout} />
+    <RbacProvider role={props.user.role}>
+      <div className="flex h-screen overflow-hidden">
+        <Sidebar nav={props.nav} onNav={props.onNav} user={props.user} onLogout={props.onLogout} />
       <div className="flex flex-1 flex-col overflow-hidden bg-bg">
         <Topbar breadcrumb={breadcrumb} />
         <div
@@ -3043,11 +3342,9 @@ function AppShell(props: {
                   : 'flex-1 overflow-y-auto'
           }
         >
-          <div className={props.nav === 'dwd_to_dim_center' ? 'block' : 'hidden'} aria-hidden={props.nav !== 'dwd_to_dim_center'}>
-            <DwdToDimCenterPage visible={props.nav === 'dwd_to_dim_center'} />
-          </div>
-          {props.nav !== 'dwd_to_dim_center' &&
-            (props.nav === 'import_wizard_format_check' ? (
+          {props.nav === 'dwd_to_dim_center' ? (
+            <DwdToDimCenterPage onNav={props.onNav} />
+          ) : props.nav === 'import_wizard_format_check' ? (
             <FormatCheckStandalonePage
               onNav={props.onNav}
               onProceedToUploadWithHandoff={props.onProceedToUploadWithHandoff}
@@ -3056,6 +3353,7 @@ function AppShell(props: {
             <ImportUploadPage
               handoff={props.importHandoff}
               onConsumeHandoff={props.onConsumeImportHandoff}
+              onNav={props.onNav}
             />
           ) : props.nav === 'import_wizard_preview' ? (
             <DataPreviewPage onNav={props.onNav} />
@@ -3070,7 +3368,7 @@ function AppShell(props: {
           ) : props.nav === 'import_mapping_config' ? (
             <FieldMappingConfigPrototype onNavUpload={() => props.onNav('import_wizard_upload')} />
           ) : props.nav === 'import_mapping_templates' ? (
-            <MappingTemplatesPrototype />
+            <MappingTemplatesPrototype onNavMapping={() => props.onNav('import_mapping_config')} />
           ) : props.nav === 'import_quality_overview' ? (
             <DataQualityOverviewPage onNav={props.onNav} />
           ) : props.nav === 'import_quality_detail' ? (
@@ -3078,7 +3376,7 @@ function AppShell(props: {
           ) : props.nav === 'import_quality_trend' ? (
             <DataQualityTrendPage onNav={props.onNav} />
           ) : props.nav === 'health_score' ? (
-            <HealthScorePage />
+            <HealthScorePage onNav={props.onNav} />
           ) : props.nav === 'dim_enterprise_library' ? (
             <EnterpriseLibraryPage onNav={props.onNav} />
           ) : props.nav === 'dim_audit_related_library' ? (
@@ -3092,13 +3390,13 @@ function AppShell(props: {
           ) : props.nav === 'dim_audited_contribution' ? (
             <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_audited_invoice_link' ? (
-            <AuditedEnterpriseInvoiceLinkPage />
+            <AuditedEnterpriseInvoiceLinkPage onNav={props.onNav} />
           ) : props.nav === 'dim_org_manage' ? (
-            <AuditedEnterpriseTreePage mode="management" />
+            <AuditedEnterpriseTreePage mode="management" onNav={props.onNav} />
           ) : props.nav === 'dim_org_equity' ? (
-            <AuditedEnterpriseTreePage mode="equity" />
+            <AuditedEnterpriseTreePage mode="equity" onNav={props.onNav} />
           ) : props.nav === 'dim_org_diff' ? (
-            <AuditedEnterpriseRelationViewPage />
+            <AuditedEnterpriseRelationViewPage onNav={props.onNav} />
           ) : props.nav === 'dim_tax_lib' ? (
             <TaxCodeLibraryPage mode="manage" onOpenResult={() => props.onNav('dim_tax_result')} />
           ) : props.nav === 'dim_tax_risk_define' ? (
@@ -3109,6 +3407,8 @@ function AppShell(props: {
             <TaxCodeAnalysisPage />
           ) : props.nav === 'dim_version' ? (
             <DimVersionPage />
+          ) : props.nav === 'dim_dict' ? (
+            <DimDictPage onNav={props.onNav} />
           ) : props.nav === 'dim_subject_category' ? (
             <SubjectCategoryPage
               onNavigateToRebuild={() => navToDwdDimWithTask(props.onNav, SUBJECT_DIM_TASK.recompute)}
@@ -3120,7 +3420,9 @@ function AppShell(props: {
           ) : props.nav === 'overview_tax' ? (
             <OverviewTaxPage />
           ) : props.nav === 'tax_in_out_deviation' ? (
-            <TaxInOutDeviationPage />
+            <TaxInOutDeviationPage onNav={props.onNav} />
+          ) : props.nav === 'tax_risk_exposure' ? (
+            <TaxRiskExposurePage onNav={props.onNav} />
           ) : props.nav === 'supplier_cr' ? (
             <SupplierCrPage />
           ) : props.nav === 'supplier_top' ? (
@@ -3128,56 +3430,76 @@ function AppShell(props: {
           ) : props.nav === 'supplier_new' ? (
             <SupplierNewPage />
           ) : props.nav === 'flags_list' ? (
-            <FlagsListPage />
+            <FlagsListPage onNav={props.onNav} />
           ) : props.nav === 'flags_rules' ? (
             <FlagsRulesPage />
           ) : props.nav === 'flags_track' ? (
-            <FlagsTrackPage />
+            <FlagsTrackPage onNav={props.onNav} />
           ) : props.nav === 'trade_relationships' ? (
             <TradeRelationshipsPage />
+          ) : props.nav === 'related_graph' ? (
+            <RelatedGraphPage onNav={props.onNav} />
           ) : props.nav === 'related_pairs' ? (
-            <RelatedPairsPage />
+            <RelatedPairsPage onNav={props.onNav} />
           ) : props.nav === 'related_shell' ? (
-            <RelatedShellPage />
+            <RelatedShellPage onNav={props.onNav} />
           ) : props.nav === 'compare_rank' ? (
-            <CompareRankPage />
+            <CompareRankPage onNav={props.onNav} />
           ) : props.nav === 'compare_charts' ? (
-            <CompareChartsPage />
-          ) : props.nav === 'report_config' || props.nav === 'report_archive' ? (
-            <ReportConfigPage />
+            <CompareChartsPage onNav={props.onNav} />
+          ) : props.nav === 'report_config' ? (
+            <ReportConfigPage onNav={props.onNav} />
+          ) : props.nav === 'report_archive' ? (
+            <ReportArchivePage onNav={props.onNav} />
           ) : props.nav === 'report_templates' ? (
             <ReportTemplatesPage />
+          ) : props.nav === 'import_invoice_export' ? (
+            <InvoiceExportPage />
           ) : props.nav === 'settings_thresholds' ? (
             <SettingsThresholdsPage />
+          ) : props.nav === 'settings_license' ? (
+            <SettingsLicensePage />
+          ) : props.nav === 'settings_instance' ? (
+            <SettingsInstancePage onNav={props.onNav} />
+          ) : props.nav === 'users_list' ? (
+            <UsersListPage currentUser={props.user} />
+          ) : props.nav === 'users_roles' ? (
+            <UsersRolesPage />
+          ) : props.nav === 'users_audit' ? (
+            <UsersAuditPage />
           ) : props.nav === 'tax_enterprise_structure' ? (
             <TaxCodeEnterpriseAnalysisPage />
+          ) : props.nav === 'finance_reconcile' ? (
+            <FinanceReconcilePage onNav={props.onNav} />
+          ) : props.nav === 'finance_diff' ? (
+            <FinanceDiffPage onNav={props.onNav} />
           ) : (
             <div className="p-6 text-text-2">{t.importUpload.placeholderPage}</div>
-          ))}
+          )}
         </div>
       </div>
     </div>
+    </RbacProvider>
   )
 }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ kind: 'logged_out' })
+  const [authChecking, setAuthChecking] = useState(true)
+  const [sessionExpired, setSessionExpired] = useState(false)
 
   const LS_USER = 'invoicelens.demoUser'
-  const readStoredUser = (): User | null => {
-    try {
-      const raw = localStorage.getItem(LS_USER)
-      if (!raw) return null
-      const obj = JSON.parse(raw) as any
-      const username = String(obj?.username ?? '').trim()
-      const displayName = String(obj?.displayName ?? '').trim()
-      const role = String(obj?.role ?? '').trim()
-      if (!username || !displayName || !role) return null
-      return { username, displayName, role }
-    } catch {
-      return null
-    }
-  }
+  const toUser = (row: {
+    username: string
+    displayName: string
+    role: string
+    roleLabel?: string
+  }): User => ({
+    username: row.username,
+    displayName: row.displayName,
+    role: row.role,
+    roleLabel: row.roleLabel,
+  })
   const writeStoredUser = (u: User) => {
     try {
       localStorage.setItem(LS_USER, JSON.stringify(u))
@@ -3204,32 +3526,90 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    const u = readStoredUser()
-    if (!u) return
-    const nav = navFromUrl()
-    setState({ kind: 'logged_in', user: u, nav: nav ?? 'import_wizard_upload', importHandoff: null })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const resolveNav = useCallback((role: string): NavKey => {
+    const fromUrl = navFromUrl()
+    if (fromUrl && canAccessNav(role, fromUrl)) return fromUrl
+    return defaultNavForRole(role)
   }, [])
+
+  const forceLogout = useCallback((expired = false) => {
+    setSessionToken(null)
+    clearStoredUser()
+    setState({ kind: 'logged_out' })
+    if (expired) setSessionExpired(true)
+  }, [])
+
+  useEffect(() => {
+    setAuthExpiredHandler(() => forceLogout(true))
+    return () => setAuthExpiredHandler(null)
+  }, [forceLogout])
+
+  useEffect(() => {
+    const token = getSessionToken()
+    if (!token) {
+      clearStoredUser()
+      setAuthChecking(false)
+      return
+    }
+    const ac = new AbortController()
+    void fetchAuthMe(ac.signal).then((res) => {
+      if (ac.signal.aborted) return
+      setAuthChecking(false)
+      if (!res.ok || !res.user) {
+        forceLogout(false)
+        return
+      }
+      const u = toUser(res.user)
+      writeStoredUser(u)
+      setState({
+        kind: 'logged_in',
+        user: u,
+        nav: resolveNav(u.role),
+        importHandoff: null,
+      })
+    })
+    return () => ac.abort()
+  }, [forceLogout, resolveNav])
+
   const consumeImportHandoff = useCallback(() => {
     setState((s) => (s.kind === 'logged_in' ? { ...s, importHandoff: null } : s))
   }, [])
   const proceedToUploadWithHandoff = useCallback((h: ImportWizardHandoff) => {
-    setState((s) => (s.kind === 'logged_in' ? { ...s, importHandoff: h, nav: 'import_wizard_upload' } : s))
+    setState((s) => {
+      if (s.kind !== 'logged_in') return s
+      const nav = canAccessNav(s.user.role, 'import_wizard_upload')
+        ? 'import_wizard_upload'
+        : defaultNavForRole(s.user.role)
+      return { ...s, importHandoff: h, nav }
+    })
   }, [])
+
+  const handleLogout = useCallback(() => {
+    void postAuthLogout().finally(() => forceLogout(false))
+  }, [forceLogout])
+
+  if (authChecking) {
+    return (
+      <div className="fixed inset-0 flex items-center justify-center bg-bg text-text-2">
+        {t.common.sessionChecking}
+      </div>
+    )
+  }
 
   if (state.kind === 'logged_out') {
     return (
       <LoginScreen
-        onLogin={(user) =>
-          (writeStoredUser(user),
+        sessionExpired={sessionExpired}
+        onLogin={(user) => {
+          setSessionExpired(false)
+          writeStoredUser(user)
           setState({
             kind: 'logged_in',
             user,
-            nav: navFromUrl() ?? 'import_wizard_upload',
+            nav: resolveNav(user.role),
             importHandoff: null,
-          }))
-        }
+          })
+        }}
       />
     )
   }
@@ -3241,7 +3621,7 @@ export default function App() {
       onConsumeImportHandoff={consumeImportHandoff}
       onProceedToUploadWithHandoff={proceedToUploadWithHandoff}
       onNav={(nav) => setState((s) => (s.kind === 'logged_in' ? { ...s, nav } : s))}
-      onLogout={() => (clearStoredUser(), setState({ kind: 'logged_out' }))}
+      onLogout={handleLogout}
     />
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
@@ -6,6 +6,7 @@ import {
   type DwsTradeRelationshipRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
 
@@ -20,9 +21,12 @@ const ROLE_BADGE: Record<string, string> = {
 export function TradeRelationshipsPage() {
   const ui = t.tradeRelationshipsUi
   const dash = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis' })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const f = useDwsFilters(true, { entityPool: 'analysis', initFromUrl: true })
   const [roleFilter, setRoleFilter] = useState<RoleFilter>('all')
-  const [keyword, setKeyword] = useState('')
+  const [keyword, setKeyword] = useState(
+    urlQuery.keyword ?? urlQuery.seller_tax_no ?? urlQuery.buyer_tax_no ?? '',
+  )
   const [rows, setRows] = useState<DwsTradeRelationshipRow[]>([])
   const [total, setTotal] = useState(0)
   const [roleSummary, setRoleSummary] = useState<Record<string, number>>({})
@@ -35,6 +39,23 @@ export function TradeRelationshipsPage() {
     '本页另要求有购方（进项）角色。',
     '本页使用 L1 基础分析主体池（购方或销方任一侧即可）。',
   )
+  const flagContextHint = useMemo(() => {
+    const buyer = urlQuery.buyer_tax_no?.trim()
+    const seller = urlQuery.seller_tax_no?.trim()
+    if (!buyer && !seller) return null
+    return dash.flagContextInternalHint
+      .replace('{buyer}', buyer || '—')
+      .replace('{seller}', seller || '—')
+  }, [dash, urlQuery.buyer_tax_no, urlQuery.seller_tax_no])
+
+  const counterpartyFilter = useMemo(() => {
+    const raw =
+      urlQuery.seller_tax_no?.trim() ||
+      urlQuery.counterparty_id?.trim() ||
+      urlQuery.counterparty_tax_no?.trim() ||
+      ''
+    return raw ? raw.replace(/[\s-]+/g, '').toUpperCase() : ''
+  }, [urlQuery.counterparty_id, urlQuery.counterparty_tax_no, urlQuery.seller_tax_no])
 
   const load = useCallback(async (signal?: AbortSignal) => {
     if (!f.effectiveYear || !f.entityId.trim()) {
@@ -53,6 +74,9 @@ export function TradeRelationshipsPage() {
           entityId: f.entityId.trim(),
           roleFilter,
           keyword: keyword.trim() || undefined,
+          counterpartyId: counterpartyFilter || undefined,
+          partyATax: urlQuery.buyer_tax_no?.trim() || f.entityId.trim() || undefined,
+          partyBTax: urlQuery.seller_tax_no?.trim() || undefined,
           limit: 200,
         },
         signal,
@@ -72,7 +96,7 @@ export function TradeRelationshipsPage() {
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, roleFilter, keyword, ui.loadFailed])
+  }, [counterpartyFilter, f.effectiveYear, f.entityId, keyword, roleFilter, ui.loadFailed, urlQuery.buyer_tax_no, urlQuery.seller_tax_no])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -90,6 +114,7 @@ export function TradeRelationshipsPage() {
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
@@ -182,8 +207,18 @@ export function TradeRelationshipsPage() {
                 </thead>
                 <tbody className="text-text-2">
                   {rows.length > 0 ? (
-                    rows.map((r) => (
-                      <tr key={r.counterparty_id} className="border-b border-border-light last:border-b-0">
+                    rows.map((r) => {
+                      const highlighted =
+                        counterpartyFilter !== '' &&
+                        r.counterparty_id.replace(/[\s-]+/g, '').toUpperCase() === counterpartyFilter
+                      return (
+                      <tr
+                        key={r.counterparty_id}
+                        className={[
+                          'border-b border-border-light last:border-b-0',
+                          highlighted ? 'bg-amber-50/80' : '',
+                        ].join(' ')}
+                      >
                         <td className="px-3 py-2 font-medium text-text">{r.counterparty_name || '—'}</td>
                         <td className="px-3 py-2 font-mono text-[12px]">{r.counterparty_id || '—'}</td>
                         <td className="px-3 py-2">
@@ -201,7 +236,8 @@ export function TradeRelationshipsPage() {
                         <td className="px-3 py-2 tabular-nums">{r.purchase_cnt}</td>
                         <td className="px-3 py-2 tabular-nums">{r.sales_cnt}</td>
                       </tr>
-                    ))
+                      )
+                    })
                   ) : (
                     <tr>
                       <td colSpan={7} className="px-3 py-6 text-center text-text-3">

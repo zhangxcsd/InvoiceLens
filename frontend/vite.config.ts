@@ -1,6 +1,26 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { Plugin } from 'vite'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version?: string }
+const appVersion = String(pkg.version ?? '0.0.0')
+
+function writeBuildMetaPlugin(): Plugin {
+  return {
+    name: 'invoicelens-write-build-meta',
+    buildStart() {
+      const buildTime = new Date().toISOString()
+      const meta = { app_version: appVersion, build_time: buildTime }
+      const configPath = path.resolve(__dirname, '../config/build_meta.json')
+      fs.writeFileSync(configPath, `${JSON.stringify(meta, null, 2)}\n`, 'utf-8')
+    },
+  }
+}
 
 function localApiProxyErrorBanner(err: NodeJS.ErrnoException): void {
   const code = err.code ?? ''
@@ -27,7 +47,10 @@ function localApiProxyErrorBanner(err: NodeJS.ErrnoException): void {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), writeBuildMetaPlugin()],
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(appVersion),
+  },
   server: {
     // 开发时走同源 /api，避免 fetch 直连 127.0.0.1:8765 与页面 localhost:5173 跨域/混合源问题
     proxy: {

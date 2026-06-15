@@ -874,6 +874,7 @@ def load_excel_batch_to_ods(
     force_reason: str | None = None,
     target_sheet_keys: list[str] | None = None,
     emit_event: Any | None = None,
+    field_mapping_template_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     进程池解析 + 主进程原子写出的最小可运行实现。
@@ -1815,6 +1816,12 @@ def load_excel_batch_to_ods(
 
     if conn is not None:
         status = "success" if fail_count == 0 else "failed"
+        detail_payload: Any = logs
+        if field_mapping_template_meta:
+            detail_payload = {
+                "field_mapping_template": field_mapping_template_meta,
+                "file_logs": logs,
+            }
         conn.execute(
             """
             INSERT OR REPLACE INTO ods_load_log(
@@ -1837,7 +1844,7 @@ def load_excel_batch_to_ods(
                 fail_count,
                 warn_count,
                 json.dumps(written_parquet_paths, ensure_ascii=False),
-                json.dumps(logs, ensure_ascii=False),
+                json.dumps(detail_payload, ensure_ascii=False),
             ],
         )
         conn.execute(

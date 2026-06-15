@@ -112,13 +112,16 @@ def api_invoice_coverage_meta(conn: Any) -> dict[str, Any]:
             conn,
             "SELECT DISTINCT stat_year FROM dim_level1_enterprise_year WHERE stat_year IS NOT NULL ORDER BY stat_year DESC",
         )
+        mapping_ready = _mapping_status_table_ready(conn)
         return {
             "ok": True,
             "views_ready": True,
             "stat_years": years,
             "default_stat_year": default_y,
             "group_member_stat_years": group_years,
+            "roster_stat_years": group_years,
             "level1_stat_years": level1_years,
+            "mapping_status_ready": mapping_ready,
         }
     except Exception as exc:
         return {
@@ -166,6 +169,32 @@ def api_invoice_coverage_soe_options(conn: Any, *, stat_year: str | None) -> dic
             "options": [],
             "error": {"message": str(exc), "exception_type": type(exc).__name__},
         }
+
+
+def _mapping_status_table_ready(conn: Any) -> bool:
+    try:
+        conn.execute("SELECT 1 FROM dwd_enterprise_mapping_status LIMIT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _latest_mapping_calc_run_id(conn: Any) -> str | None:
+    try:
+        row = conn.execute(
+            """
+            SELECT calc_run_id
+            FROM dwd_enterprise_mapping_status
+            GROUP BY calc_run_id
+            ORDER BY max(calc_time) DESC NULLS LAST
+            LIMIT 1
+            """
+        ).fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return str(row[0]).strip() or None
 
 
 def _member_base_sql() -> str:
@@ -281,10 +310,6 @@ def api_invoice_coverage_summary(
                       AND length(trim(COALESCE(v.enterprise_id, ''))) > 0
                 ) AS unmapped_member_rows
             FROM vw_audit_invoice_coverage_group_member v
-            INNER JOIN dim_group_enterprise_year g
-                ON g.stat_year = v.stat_year AND g.enterprise_id = v.enterprise_id
-            LEFT JOIN dim_enterprise_year_rel r
-                ON r.subject_id = v.subject_id AND r.stat_year = v.stat_year
             WHERE {where_sql}
         """
         row = conn.execute(sql, params).fetchone()
@@ -343,7 +368,7 @@ def api_invoice_coverage_members(
             return {"ok": True, "views_ready": False, "rows": [], "total": 0}
         y = _safe_int_year(stat_year)
         lv = (list_view or "unreported").strip().lower()
-        if lv not in ("unreported", "reported", "all"):
+        if lv not in ("unreported", "reported", "all", "unmapped"):
             lv = "unreported"
         clauses: list[str] = []
         params: list[Any] = []
@@ -360,6 +385,12 @@ def api_invoice_coverage_members(
             clauses.append("v.in_coverage_denominator AND NOT v.is_reported_both")
         elif lv == "reported":
             clauses.append("v.in_coverage_denominator AND v.is_reported_both")
+        elif lv == "unmapped":
+            clauses.append(
+                "COALESCE(v.is_member, TRUE)"
+                " AND v.subject_id IS NULL"
+                " AND length(trim(COALESCE(v.enterprise_id, ''))) > 0"
+            )
         else:
             clauses.append("COALESCE(v.is_member, TRUE)")
         where_sql = " AND ".join(clauses) if clauses else "TRUE"
@@ -422,6 +453,149 @@ def api_invoice_coverage_members(
         }
     except Exception as exc:
         logger.exception("invoice_coverage_members")
+        return {
+            "ok": False,
+            "rows": [],
+            "total": 0,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+
+
+def api_invoice_coverage_mapping_status(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    enterprise_kw: str = "",
+    match_status: str = "pending",
+    limit: int = 2000,
+) -> dict[str, Any]:
+    """票面销购方与 dim_enterprise 映射质检（dwd_enterprise_mapping_status 最新批次）。"""
+    try:
+        if not _mapping_status_table_ready(conn):
+            return {
+                "ok": True,
+                "mapping_status_ready": False,
+                "rows": [],
+                "total": 0,
+                "hint": "尚未执行「企业→票映射质检」任务（enterprise_mapping_check），请到加工中心 → DWD→DIM 运行任务 6。",
+            }
+        run_id = _latest_mapping_calc_run_id(conn)
+        if not run_id:
+            return {
+                "ok": True,
+                "mapping_status_ready": True,
+                "rows": [],
+                "total": 0,
+                "hint": "映射质检表为空，请先运行 enterprise_mapping_check 任务。",
+            }
+        y = _safe_int_year(stat_year) if stat_year else None
+        ms = (match_status or "pending").strip().lower()
+        if ms not in ("pending", "name_fallback", "matched", "all"):
+            ms = "pending"
+        clauses = ["m.calc_run_id = ?"]
+        params: list[Any] = [run_id]
+        if ms != "all":
+            clauses.append("m.match_status = ?")
+            params.append("name_fallback" if ms == "name_fallback" else ms)
+        ek = _norm_kw(enterprise_kw)
+        if ek:
+            clauses.append(
+                "("
+                "lower(COALESCE(m.enterprise_name_raw, '')) LIKE ? OR "
+                "lower(COALESCE(m.taxpayer_id, '')) LIKE ? OR "
+                "lower(COALESCE(m.enterprise_name_std, '')) LIKE ?"
+                ")"
+            )
+            like_e = f"%{ek}%"
+            params.extend([like_e, like_e, like_e])
+        if y is not None:
+            clauses.append(
+                "("
+                "EXISTS ("
+                "  SELECT 1 FROM dim_enterprise_year_roster ro"
+                "  WHERE ro.stat_year = ?"
+                "    AND upper(regexp_replace(trim(COALESCE(ro.enterprise_id, '')), '[\\s-]+', '', 'g'))"
+                "      = upper(trim(COALESCE(m.taxpayer_id, '')))"
+                ") OR EXISTS ("
+                "  SELECT 1 FROM dwd_inv_header h"
+                "  WHERE h.stat_year = ?"
+                "    AND ("
+                "      upper(trim(COALESCE(h.xfsbh, ''))) = upper(trim(COALESCE(m.taxpayer_id, '')))"
+                "      OR upper(trim(COALESCE(h.gfsbh, ''))) = upper(trim(COALESCE(m.taxpayer_id, '')))"
+                "    )"
+                ")"
+                ")"
+            )
+            params.extend([y, y])
+        where_sql = " AND ".join(clauses)
+        lim = max(1, min(int(limit or 2000), 5000))
+        count_sql = f"SELECT COUNT(*) FROM dwd_enterprise_mapping_status m WHERE {where_sql}"
+        total = int(conn.execute(count_sql, list(params)).fetchone()[0] or 0)
+        list_sql = f"""
+            SELECT
+                m.taxpayer_id,
+                m.enterprise_name_raw,
+                m.enterprise_name_std,
+                m.linked_enterprise_id,
+                m.linked_taxpayer_id,
+                m.match_key,
+                m.match_status,
+                m.pending_reason,
+                m.import_batch_id,
+                m.calc_run_id,
+                m.calc_time
+            FROM dwd_enterprise_mapping_status m
+            WHERE {where_sql}
+            ORDER BY
+                CASE m.match_status WHEN 'pending' THEN 0 WHEN 'name_fallback' THEN 1 ELSE 2 END,
+                COALESCE(m.enterprise_name_raw, ''),
+                COALESCE(m.taxpayer_id, '')
+            LIMIT {lim}
+        """
+        rows_out: list[dict[str, Any]] = []
+        for r in conn.execute(list_sql, list(params)).fetchall():
+            if not r:
+                continue
+            status_raw = str(r[6] or "pending")
+            status_label = {
+                "matched": "已匹配",
+                "name_fallback": "名称兜底",
+                "pending": "待匹配",
+            }.get(status_raw, status_raw)
+            reason_raw = str(r[7] or "")
+            reason_label = {
+                "missing_taxpayer_id": "缺少税号",
+                "taxpayer_not_in_dim_enterprise": "税号未入 dim_enterprise",
+            }.get(reason_raw, reason_raw)
+            rows_out.append(
+                {
+                    "taxpayer_id": str(r[0] or ""),
+                    "enterprise_name_raw": str(r[1] or ""),
+                    "enterprise_name_std": str(r[2] or ""),
+                    "linked_enterprise_id": str(r[3] or "") if r[3] is not None else "",
+                    "linked_taxpayer_id": str(r[4] or "") if r[4] is not None else "",
+                    "match_key": str(r[5] or ""),
+                    "match_status": status_raw,
+                    "match_status_label": status_label,
+                    "pending_reason": reason_raw,
+                    "pending_reason_label": reason_label,
+                    "import_batch_id": str(r[8] or "") if r[8] is not None else "",
+                    "calc_run_id": str(r[9] or ""),
+                    "calc_time": str(r[10] or "") if r[10] is not None else "",
+                }
+            )
+        return {
+            "ok": True,
+            "mapping_status_ready": True,
+            "calc_run_id": run_id,
+            "stat_year": str(y) if y is not None else None,
+            "match_status": ms,
+            "rows": rows_out,
+            "total": total,
+            "limit": lim,
+        }
+    except Exception as exc:
+        logger.exception("invoice_coverage_mapping_status")
         return {
             "ok": False,
             "rows": [],

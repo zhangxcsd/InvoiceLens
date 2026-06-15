@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsOverviewSummary, postDwsRebuild } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
-import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
+import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
 
 export function OverviewSummaryPage() {
   const ui = t.dwsDashboardUi
-  const f = useDwsFilters(false)
+  const deepLink = useDwsUrlDeepLinkFilter()
+  const f = useDwsFilters(false, { initFromUrl: true })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [summary, setSummary] = useState<{
@@ -21,6 +22,8 @@ export function OverviewSummaryPage() {
     avg_quality_score: number
     red_cnt: number
     cancel_cnt: number
+    supplier_cnt_source?: string
+    quality_metrics_source?: string
   } | null>(null)
   const [rebuildBusy, setRebuildBusy] = useState(false)
   const [rebuildMsg, setRebuildMsg] = useState<string | null>(null)
@@ -31,7 +34,11 @@ export function OverviewSummaryPage() {
     setErr(null)
     try {
       const res = await fetchDwsOverviewSummary(
-        { statYear: f.effectiveYear, entityId: f.entityId.trim() || undefined },
+        {
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim() || undefined,
+          ...deepLink.timeFilterParams,
+        },
         signal,
       )
       if (signal?.aborted || res.aborted) return
@@ -50,17 +57,35 @@ export function OverviewSummaryPage() {
         avg_quality_score: res.avg_quality_score ?? 0,
         red_cnt: res.red_cnt ?? 0,
         cancel_cnt: res.cancel_cnt ?? 0,
+        supplier_cnt_source: res.supplier_cnt_source,
+        quality_metrics_source: res.quality_metrics_source,
       })
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, deepLink.timeFilterParams, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
     void load(ac.signal)
     return () => ac.abort()
   }, [load])
+
+  const hasTimeFilter = Boolean(
+    deepLink.timeFilterParams.statMonth ||
+      deepLink.timeFilterParams.dateFrom ||
+      deepLink.timeFilterParams.dateTo,
+  )
+  const caliberHint = useMemo(() => {
+    if (!hasTimeFilter) return null
+    const parts: string[] = [ui.monthGranularityHint]
+    if (summary?.quality_metrics_source === 'dwd_inv_header') {
+      parts.push(ui.qualityFilteredHint)
+    } else if (summary?.quality_metrics_source === 'dws_quality') {
+      parts.push(ui.qualityAnnualHint)
+    }
+    return parts.join(' ')
+  }, [hasTimeFilter, summary?.quality_metrics_source, ui])
 
   const onRebuild = async () => {
     setRebuildBusy(true)
@@ -83,6 +108,10 @@ export function OverviewSummaryPage() {
     <div className="w-full px-5 py-6">
       <PrototypePageHeader title={ui.overviewSummaryTitle} note={ui.overviewSummaryDesc} noteTone="plain" />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
+      {deepLink.flagContextHint ? (
+        <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
+      ) : null}
+      {caliberHint ? <p className="mb-2 text-il-meta text-amber-800">{caliberHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
       {rebuildMsg ? <p className="mb-2 text-il-meta text-accent">{rebuildMsg}</p> : null}
 
