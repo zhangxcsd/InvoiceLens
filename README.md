@@ -56,6 +56,8 @@ HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
 
 本地 API 已不使用标准库 **`cgi`**（Python 3.13 起已移除），可在 **Python 3.13+** 下运行；若启动仍报错，请确认在项目根目录执行且已 `pip install -r requirements.txt`。
 
+**Python 与 CI**：GitHub Actions 工作流固定 **Python 3.12**；本地可用 3.13+。发布 PyInstaller 包前建议在 3.12/3.13 上与 CI 同大版本复跑打包冒烟（见 `docs/packaging.md`「Python 版本对齐」）。
+
 亦可直接：`python main.py`
 
 ### 相关文档
@@ -65,6 +67,7 @@ HTML 报告固定输出到：`frontend/playwright-report/tree-regression/`
 - 前端字体与排版规范（Tailwind `il-*`）：`docs/frontend-typography.md`
 - 企业年度关系回填运行手册（Runbook）：`docs/dim_enterprise_year_rel_runbook.md`
 - **离线打包（PyInstaller）**：`docs/packaging.md`
+- **交付运维 Runbook（RBAC / 任务链 / Stage 5）**：`docs/ops_delivery_runbook.md`
 - 主体库命名收敛清单（术语/字段统一基准）：`docs/subject_naming_convergence.md`
 - 主体库分域规则（组织机构主体/自然人主体）：`docs/subject_dimension_split_rules.md`
 - 主体库范围与数据职责（主数据/血缘/更名口径决策）：`docs/subject_library_scope_decision.md`

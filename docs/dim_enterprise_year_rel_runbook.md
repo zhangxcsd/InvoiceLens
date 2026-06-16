@@ -329,3 +329,13 @@ WHERE stat_year = 2026;
 | `python scripts/rebuild_enterprise_year_rel.py --years 2024,2025` | 直连 DuckDB 重算（`--all` = DWD∪台账年度；`--dry-run`、`--db` 见 `--help`） |
 
 前端封装：`frontend/src/config/localApi.ts` 中 `postDimEnterpriseYearRelRebuild`、`fetchDimEnterpriseYearRelMeta`、`postDwdBuild({ ..., rebuild_enterprise_year_rel: true })`。
+
+---
+
+## 10. 并发与互斥（运维）
+
+`dim.enterprise_year_rel.rebuild` 在单进程内与其它自动化路径 **互斥**（错误码 `rel_rebuild_busy`）。与任务链、花名册链式重算、DWD `rebuild_enterprise_year_rel` 可能互相排队。
+
+- 详细说明与排查步骤：**`docs/ops_delivery_runbook.md` §2**
+- 回归：`python scripts/test_enterprise_year_rel_mutex_smoke.py`
+

@@ -439,7 +439,7 @@ export const zhCN = {
     downloadSample: '下载样例包',
     applyTemplate: '应用到当前环境',
     uploadPackTitle: '上传自定义模板包',
-    uploadPackDesc: '支持 .zip（含样例 xlsx + README + 可选 mapping 片段）。原型阶段仅展示区域。',
+    uploadPackDesc: '支持 .zip（含样例 xlsx + README + 可选 mapping 片段）；上传后将写入 data/config/field_mapping_templates.json 并可在模板列表中启用。',
     uploadPackPlaceholder: '将模板包拖拽到此处，或点击选择文件（未接通）',
     templateCards: [
       {
@@ -696,7 +696,7 @@ export const zhCN = {
   importHistoryUi: {
     pageTitle: '历史批次记录',
     pageBody:
-      '按导入批次查看历史运行记录（当前阶段以 ODS 落盘日志为准）。可按批次/会话检索、查看会话概览，并从此处进入 ODS数据查看 或执行删除等运维操作。重跑入口先保留外观与交互壳，后续再接入方案 A 的实际重跑逻辑。',
+      '按导入批次查看历史运行记录（以 ODS 落盘日志为准）。可按批次/会话检索、查看会话概览，并从此处进入 ODS 数据查看或执行删除等运维操作；批次重跑请前往「ODS→DWD 加工中心」或「文件上传」重新发起导入。',
     kpiSource: '数据来源（ODS 根目录）',
     listLoadErrorTitle: '批次列表加载失败',
     listLoadError: '无法加载批次列表',

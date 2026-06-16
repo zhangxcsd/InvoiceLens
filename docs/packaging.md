@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-1. **Python 3.12+**（与日常开发一致），已安装依赖：
+1. **Python 版本**（见下文「Python 版本对齐」），已安装依赖：
 
    ```bat
    pip install -r requirements.txt
@@ -163,3 +163,46 @@ GitHub Actions 工作流（`.github/workflows/`）在相关路径变更时触发
 | 其他 `*-smoke.yml` | 各子系统脚本冒烟 |
 
 Windows job 不重复 Stage 5 脚本（runner 耗时考虑）；Linux job 仍覆盖授权导入冒烟。
+
+## Python 版本对齐
+
+| 场景 | 版本 | 说明 |
+|------|------|------|
+| GitHub Actions 冒烟 / 打包 CI | **3.12** | `.github/workflows/*-smoke.yml` 统一 `python-version: '3.12'` |
+| 本地日常开发 | **3.13+** 推荐 | 本地 API 不依赖已移除的 `cgi` 模块；README 开发节说明 |
+| PyInstaller 交付包 | 与构建机一致 | 建议在 **3.12 或 3.13** 上与 CI 相同大版本做 release 构建，避免 wheel 差异 |
+
+开发机为 3.14 等较新版本时，发布前请在 3.12/3.13 环境复跑 `test_packaging_smoke.py --require-binary`。
+
+## Windows 安装程序（规划）
+
+当前交付以 **`dist/InvoiceLens.exe` 单文件** 为主（见上文构建步骤）。若需安装向导、开始菜单快捷方式与卸载项，建议二阶段采用 **Inno Setup** 或 **NSIS**（尚未纳入仓库自动化）：
+
+| 方案 | 优点 | 本仓库建议 |
+|------|------|------------|
+| **Inno Setup** | 脚本简单、Unicode/卸载友好 | 优先：复制 `InvoiceLens.exe`、`config/`、`assets/`、`frontend/dist/` 到 `{app}`，`data/` 指向 `{userappdata}\InvoiceLens` |
+| **NSIS** | 生态成熟、可定制高 | 备选：同样布局，注意长路径与单文件 exe 首次解压等待 |
+
+**安装包应包含**：`InvoiceLens.exe`、只读资源目录、可选示例 `README.txt`（端口 8765、日志路径、授权文件位置）。**不要**把客户 `data/` 或私钥打入安装包。
+
+**暂不行**：代码签名（需企业证书）；自动更新通道。交付前手工冒烟仍用 `scripts/test_packaging_smoke.py --require-binary`。
+
+## 授权签发 SOP（生产补充）
+
+在「授权与门控」基础上，现场签发 checklist：
+
+1. **密钥**：仅在一台离线或受控机器保留 `scripts/.license_private.pem`；仓库与安装包只带 `config/license_public.pem`。
+2. **字段**：确认 `tier`、`customer`、`max_entities` / `max_invoices` / `max_years`、`export_report`、`cross_group`、`expires_at` 与合同一致。
+3. **签发**：
+   ```bat
+   python scripts/sign_license.py --out D:\deliver\ACME\license.lic --payload "{"tier":"pro","customer":"ACME",...}"
+   ```
+4. **验签**：目标机部署 `license.lic` 至 `data/config/license.lic`，重启应用；调用 `GET /api/settings/license` 核对 `gates`；跑 `python scripts/test_license_gate_smoke.py`。
+5. **轮换**：换公钥需 **同步发新 exe**（内置公钥）；旧 `.lic` 将全部失效。换私钥不影响已发 lic，但需安全销毁旧私钥。
+6. **开发覆盖**：`license_override.json` 仅用于内网调试，**勿**随客户交付。
+
+## 运维 Runbook 索引
+
+- RBAC、任务链、`enterprise_year_rel` 互斥、finance/quality **sync-flags**、Stage 5 部署清单：`docs/ops_delivery_runbook.md`
+- 企业年度关系 SQL 回填：`docs/dim_enterprise_year_rel_runbook.md`
+
