@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:with-api": "concurrently --kill-others-on-fail -n api,vite -c blue,green \"node scripts/spawn-local-api.mjs\" \"vite --host 127.0.0.1 --port 5173\"",
     "build": "tsc -b && vite build",
+    "build:serve-ui-test": "tsc -b && vite build --mode serve-ui-test",
     "lint": "eslint .",
     "preview": "vite preview",
     "test:tree-regression": "playwright test tests/tree-regression.spec.ts",
@@ -14,6 +15,7 @@
     "test:tree-regression:report": "playwright show-report playwright-report/tree-regression",
     "test:nav-walkthrough": "playwright test tests/nav-walkthrough.spec.ts",
     "test:rbac-nav": "playwright test tests/rbac-nav.spec.ts -c playwright.rbac.config.ts",
+    "test:flags-rules": "playwright test tests/flags-rules.spec.ts -c playwright.flags-rules.config.ts",
     "test:deep-link-audit-flag": "playwright test tests/deep-link-audit-flag.spec.ts",
     "test:compare-charts-drill": "playwright test tests/compare-charts-drill.spec.ts"
   },

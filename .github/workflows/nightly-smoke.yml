@@ -1,0 +1,75 @@
+name: Nightly Smoke
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+jobs:
+  python-smokes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Audit rules smoke
+        run: python scripts/test_audit_rules_smoke.py
+
+      - name: RBAC smoke
+        run: python scripts/test_rbac_smoke.py
+
+      - name: License gate smoke
+        run: python scripts/test_license_gate_smoke.py
+
+      - name: E2E delivery chain smoke
+        run: python scripts/test_e2e_delivery_chain_smoke.py
+
+      - name: DWS filter API smoke
+        run: python scripts/test_dws_filter_api_smoke.py
+
+      - name: Finance reconcile API smoke
+        run: python scripts/test_finance_reconcile_api_smoke.py
+
+  playwright-smokes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build:serve-ui-test
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Nav walkthrough Playwright
+        working-directory: frontend
+        run: npm run test:nav-walkthrough
+
+      - name: Flags rules Playwright
+        working-directory: frontend
+        run: npm run test:flags-rules

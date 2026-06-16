@@ -160,6 +160,7 @@ GitHub Actions 工作流（`.github/workflows/`）在相关路径变更时触发
 | `e2e-delivery-chain-smoke.yml` | 端到端交付链 |
 | `dws-filter-smoke.yml` | DWS 筛选 API |
 | `tree-regression-smoke.yml` | 树组件 Playwright 截图回归 |
+| `nightly-smoke.yml` | 每日 UTC 16:00 聚合 Python 冒烟 + Playwright 导航/规则页（无 PyInstaller 重建） |
 | 其他 `*-smoke.yml` | 各子系统脚本冒烟 |
 
 Windows job 不重复 Stage 5 脚本（runner 耗时考虑）；Linux job 仍覆盖授权导入冒烟。

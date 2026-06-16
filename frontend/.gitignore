@@ -14,7 +14,9 @@ dist-ssr
 
 # Playwright ephemeral (tree-regression baseline stays in git)
 playwright-report/rbac-nav/
+playwright-report/flags-rules/
 test-results/rbac-nav-artifacts/
+test-results/flags-rules-artifacts/
 test-results/tree-regression-artifacts/.playwright-artifacts-*/
 test-results/tree-regression-artifacts/deep-link-*/
 test-results/tree-regression-artifacts/**/video.webm

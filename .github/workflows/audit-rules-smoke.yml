@@ -8,6 +8,11 @@ on:
       - 'src/local_api/license_gate.py'
       - 'src/local_api/invoice_export_api.py'
       - 'src/local_api/report_api.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'config/audit_rules.yaml'
+      - 'frontend/src/dm/FlagsRulesPage.tsx'
+      - 'frontend/tests/flags-rules.spec.ts'
+      - 'frontend/playwright.flags-rules.config.ts'
       - 'scripts/test_audit_rules_smoke.py'
       - 'scripts/test_p2_license_graph_smoke.py'
       - '.github/workflows/audit-rules-smoke.yml'
@@ -18,6 +23,11 @@ on:
       - 'src/local_api/license_gate.py'
       - 'src/local_api/invoice_export_api.py'
       - 'src/local_api/report_api.py'
+      - 'src/local_api/audit_flag_api.py'
+      - 'config/audit_rules.yaml'
+      - 'frontend/src/dm/FlagsRulesPage.tsx'
+      - 'frontend/tests/flags-rules.spec.ts'
+      - 'frontend/playwright.flags-rules.config.ts'
       - 'scripts/test_audit_rules_smoke.py'
       - 'scripts/test_p2_license_graph_smoke.py'
       - '.github/workflows/audit-rules-smoke.yml'
@@ -40,3 +50,37 @@ jobs:
 
       - name: Run P2 license/graph smoke tests
         run: python scripts/test_p2_license_graph_smoke.py
+
+  flags-rules-playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend for preview
+        working-directory: frontend
+        run: npm run build:serve-ui-test
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Flags rules Playwright
+        working-directory: frontend
+        run: npm run test:flags-rules
