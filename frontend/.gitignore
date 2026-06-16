@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Playwright ephemeral (tree-regression baseline stays in git)
+playwright-report/rbac-nav/
+test-results/rbac-nav-artifacts/
+test-results/tree-regression-artifacts/.playwright-artifacts-*/
+test-results/tree-regression-artifacts/deep-link-*/
+test-results/tree-regression-artifacts/**/video.webm
+test-results/tree-regression-artifacts/**/test-failed-*.png
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
