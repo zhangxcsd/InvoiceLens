@@ -153,3 +153,10 @@ rules:
     name: 高风险税收分类编码集中
     risk_level: 中风险
     min_high_risk_amount: 10000
+
+  # 进销结构偏离（由「进销偏离分析」页 sync-flags 同步，非 SQL 扫描规则）
+  # 审计含义：进项/销项税率桶占比差超过系统阈值时写入疑点跟踪
+  RULE-TAX-DEV:
+    enabled: true
+    name: 进销结构偏离
+    risk_level: 中风险

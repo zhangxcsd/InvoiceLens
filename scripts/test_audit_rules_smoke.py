@@ -394,7 +394,26 @@ def test_synthetic_flag_detail_json_helpers_smoke() -> None:
     assert dq["batch_id"] == "b1"
 
 
+def test_audit_rules_execution_mode_smoke() -> None:
+    from src.local_api.audit_flag_api import api_audit_rules_config_get
+
+    resp = api_audit_rules_config_get(None)
+    assert resp.get("ok") is True
+    rules_list = resp.get("rules_list") or []
+    assert len(rules_list) > 0
+    by_id = {str(r["rule_id"]): r for r in rules_list}
+    assert "execution_mode" in by_id["RULE-01"]
+    assert by_id["RULE-01"]["execution_mode"] == "sql_scan"
+    assert by_id["RULE-01"]["rescan_included"] is True
+    assert by_id["RULE-SHELL"]["execution_mode"] == "post_scan"
+    assert by_id["RULE-FIN-DIFF"]["execution_mode"] == "sync"
+    assert by_id["RULE-FIN-DIFF"]["rescan_included"] is False
+    assert "trigger_hint" in by_id["RULE-FIN-DIFF"]
+    assert by_id.get("RULE-TAX-DEV", {}).get("execution_mode") == "sync"
+
+
 def main() -> None:
+    test_audit_rules_execution_mode_smoke()
     test_tax_deviation_threshold_marking()
     test_synthetic_flag_detail_json_helpers_smoke()
     test_tax_deviation_flag_detail_json_smoke()

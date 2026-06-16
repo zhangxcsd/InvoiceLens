@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
@@ -6,11 +6,47 @@ import {
   postAuditRun,
   saveAuditRulesConfig,
   validateAuditRulesConfig,
+  type AuditRuleExecutionMode,
   type AuditRuleListItem,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
+
+function executionModeBadgeClass(mode: AuditRuleExecutionMode | undefined): string {
+  switch (mode) {
+    case 'sql_scan':
+      return 'bg-[#e8f0fe] text-[#1a56db]'
+    case 'post_scan':
+      return 'bg-[#f0e8fe] text-[#6b21a8]'
+    case 'sync':
+      return 'bg-[#fef3c7] text-[#92400e]'
+    default:
+      return 'bg-[#f3f4f6] text-text-3'
+  }
+}
+
+function executionModeLabel(mode: AuditRuleExecutionMode | undefined, ui: typeof t.auditRulesUi): string {
+  switch (mode) {
+    case 'sql_scan':
+      return ui.executionModeSqlScan
+    case 'post_scan':
+      return ui.executionModePostScan
+    case 'sync':
+      return ui.executionModeSync
+    default:
+      return '—'
+  }
+}
+
+function syncSourceHint(rule: AuditRuleListItem, ui: typeof t.auditRulesUi): string {
+  const rid = rule.rule_id
+  if (rid.startsWith('RULE-FIN-')) return ui.syncSourceFinance
+  if (rid.startsWith('RULE-DQ-')) return ui.syncSourceQuality
+  if (rid === 'RULE-TAX-DEV') return ui.syncSourceTaxDev
+  if (rid.startsWith('RULE-TAX-')) return ui.syncSourceTaxCode
+  return rule.trigger_hint ?? '—'
+}
 
 export function FlagsRulesPage() {
   const ui = t.auditRulesUi
@@ -24,6 +60,11 @@ export function FlagsRulesPage() {
   const [validateBusy, setValidateBusy] = useState(false)
   const [feedback, setFeedback] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
+
+  const syncRules = useMemo(
+    () => rulesList.filter((r) => r.execution_mode === 'sync'),
+    [rulesList],
+  )
 
   const loadRules = useCallback(async () => {
     setLoading(true)
@@ -131,11 +172,13 @@ export function FlagsRulesPage() {
           <p className="text-il-meta text-text-3">{ui.rulesTableEmpty}</p>
         ) : (
           <div className="overflow-x-auto rounded-sm border border-border-light">
-            <table className="w-full min-w-[720px] border-collapse text-il-page-desc">
+            <table className="w-full min-w-[960px] border-collapse text-il-page-desc">
               <thead>
                 <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
                   <th className="px-2 py-2 font-medium">{ui.colRuleId}</th>
                   <th className="px-2 py-2 font-medium">{ui.colRuleName}</th>
+                  <th className="px-2 py-2 font-medium">{ui.colExecutionMode}</th>
+                  <th className="px-2 py-2 font-medium">{ui.colTriggerHint}</th>
                   <th className="px-2 py-2 font-medium">{ui.colEnabled}</th>
                   <th className="px-2 py-2 font-medium">{ui.colModules}</th>
                   <th className="px-2 py-2 font-medium">{ui.colRisk}</th>
@@ -146,6 +189,19 @@ export function FlagsRulesPage() {
                   <tr key={r.rule_id} className="border-b border-border-light last:border-0">
                     <td className="px-2 py-2 font-mono text-il-meta">{r.rule_id}</td>
                     <td className="px-2 py-2">{r.name}</td>
+                    <td className="px-2 py-2">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-il-meta ${executionModeBadgeClass(r.execution_mode)}`}
+                      >
+                        {executionModeLabel(r.execution_mode, ui)}
+                      </span>
+                    </td>
+                    <td className="max-w-[280px] px-2 py-2 text-il-meta" title={r.trigger_hint}>
+                      <span>{r.trigger_hint || '—'}</span>
+                      {r.execution_mode === 'sync' && r.rescan_included === false ? (
+                        <p className="mt-0.5 text-[11px] text-[#92400e]">{ui.syncRescanNote}</p>
+                      ) : null}
+                    </td>
                     <td className="px-2 py-2">{r.enabled ? ui.enabledYes : ui.enabledNo}</td>
                     <td className="px-2 py-2 text-il-meta">{r.modules.join('、')}</td>
                     <td className="px-2 py-2 text-il-meta">
@@ -162,6 +218,29 @@ export function FlagsRulesPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </Card>
+
+      <Card title={ui.syncCardTitle}>
+        <p className="mb-3 text-il-meta text-text-2">{ui.syncCardDesc}</p>
+        {syncRules.length === 0 ? (
+          <p className="text-il-meta text-text-3">{ui.syncCardEmpty}</p>
+        ) : (
+          <ul className="space-y-2 text-il-meta text-text-2">
+            {syncRules.map((r) => (
+              <li
+                key={r.rule_id}
+                className="rounded-sm border border-border-light bg-[#fffbeb] px-3 py-2"
+              >
+                <div className="font-mono text-il-label text-text">{r.rule_id}</div>
+                <div>{r.name}</div>
+                <div className="mt-1 text-text-3">{syncSourceHint(r, ui)}</div>
+                {r.trigger_hint ? (
+                  <div className="mt-0.5 text-text-3">{r.trigger_hint}</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         )}
       </Card>
 

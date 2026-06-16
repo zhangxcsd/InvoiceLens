@@ -174,18 +174,50 @@ Windows job 不重复 Stage 5 脚本（runner 耗时考虑）；Linux job 仍覆
 
 开发机为 3.14 等较新版本时，发布前请在 3.12/3.13 环境复跑 `test_packaging_smoke.py --require-binary`。
 
-## Windows 安装程序（规划）
+## Windows 安装程序
 
-当前交付以 **`dist/InvoiceLens.exe` 单文件** 为主（见上文构建步骤）。若需安装向导、开始菜单快捷方式与卸载项，建议二阶段采用 **Inno Setup** 或 **NSIS**（尚未纳入仓库自动化）：
+除直接分发 `dist/InvoiceLens.exe` 外，仓库提供 **Inno Setup** 脚本生成带开始菜单与卸载项的安装包。
 
-| 方案 | 优点 | 本仓库建议 |
-|------|------|------------|
-| **Inno Setup** | 脚本简单、Unicode/卸载友好 | 优先：复制 `InvoiceLens.exe`、`config/`、`assets/`、`frontend/dist/` 到 `{app}`，`data/` 指向 `{userappdata}\InvoiceLens` |
-| **NSIS** | 生态成熟、可定制高 | 备选：同样布局，注意长路径与单文件 exe 首次解压等待 |
+### 前置条件
 
-**安装包应包含**：`InvoiceLens.exe`、只读资源目录、可选示例 `README.txt`（端口 8765、日志路径、授权文件位置）。**不要**把客户 `data/` 或私钥打入安装包。
+1. 已完成上文「构建步骤」，存在 `dist/InvoiceLens.exe`。
+2. 安装 [Inno Setup 6+](https://jrsoftware.org/isinfo.php)，并将 `ISCC.exe` 所在目录加入 `PATH`（默认 `C:\Program Files (x86)\Inno Setup 6`）。
 
-**暂不行**：代码签名（需企业证书）；自动更新通道。交付前手工冒烟仍用 `scripts/test_packaging_smoke.py --require-binary`。
+### 一键构建安装包
+
+在项目根目录：
+
+```bat
+scripts\build_installer.bat
+```
+
+- 若 `dist\InvoiceLens.exe` 不存在，脚本会先执行 `pyinstaller invoicelens.spec --noconfirm`。
+- 已有 exe 时跳过 PyInstaller：`scripts\build_installer.bat --skip-pyinstaller`
+- 产物：`dist\InvoiceLens-Setup.exe`
+
+手动编译（未加入 PATH 时）：
+
+```bat
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\InvoiceLens.iss
+```
+
+### 安装布局
+
+| 路径 | 说明 |
+|------|------|
+| `{autopf}\InvoiceLens\InvoiceLens.exe` | 主程序（单文件 PyInstaller 包，内含 config/assets/frontend/dist） |
+| `{autopf}\InvoiceLens\README.txt` | 来自 `packaging/README_install.txt`（端口 8765、日志、授权位置） |
+| `{autopf}\InvoiceLens\data\` | **不**打入安装包；首次运行在工作目录（`{app}`）旁自动创建 |
+
+快捷方式工作目录设为 `{app}`，与开发模式一致（相对 cwd 的 `data/`）。
+
+### 相关文件
+
+- `packaging/InvoiceLens.iss` — Inno Setup 脚本
+- `packaging/README_install.txt` — 安装目录内 README
+- `scripts/build_installer.bat` — 构建辅助脚本
+
+**暂不行**：代码签名（需企业证书）；自动更新通道。交付前仍建议 `python scripts/test_packaging_smoke.py --require-binary`。
 
 ## 授权签发 SOP（生产补充）
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from datetime import date
 from typing import Any
 
@@ -460,6 +461,55 @@ RULE_MODULE_MAP: dict[str, list[str]] = {
     "RULE-TAX-HIGH-CODE": ["税务分析", "税收分类编码", "疑点清单"],
 }
 
+_EXECUTION_MODE_ORDER = {"sql_scan": 0, "post_scan": 1, "sync": 2}
+
+
+def _rule_execution_meta(rule_id: str) -> dict[str, Any]:
+    """每条规则的执行方式、触发说明与是否纳入 audit/run 扫描器。"""
+    rid = str(rule_id).strip()
+    if rid == "RULE-SHELL":
+        return {
+            "execution_mode": "post_scan",
+            "trigger_hint": "完整扫描后自动运行（写入 dm_shell_co）",
+            "rescan_included": True,
+        }
+    m = re.match(r"^RULE-(\d{2})$", rid)
+    if m and 1 <= int(m.group(1)) <= 10:
+        return {
+            "execution_mode": "sql_scan",
+            "trigger_hint": "「保存并扫描当前年」触发 POST /api/audit/run",
+            "rescan_included": True,
+        }
+    if rid.startswith("RULE-FIN-"):
+        return {
+            "execution_mode": "sync",
+            "trigger_hint": "「财务核对 · 差异分析」页同步疑点",
+            "rescan_included": False,
+        }
+    if rid.startswith("RULE-DQ-"):
+        return {
+            "execution_mode": "sync",
+            "trigger_hint": "「数据质量」各页同步疑点",
+            "rescan_included": False,
+        }
+    if rid == "RULE-TAX-DEV":
+        return {
+            "execution_mode": "sync",
+            "trigger_hint": "「税务分析 · 进销偏离分析」页同步疑点",
+            "rescan_included": False,
+        }
+    if rid.startswith("RULE-TAX-"):
+        return {
+            "execution_mode": "sync",
+            "trigger_hint": "「税收分类结构分析」页同步疑点",
+            "rescan_included": False,
+        }
+    return {
+        "execution_mode": "sql_scan",
+        "trigger_hint": "「保存并扫描当前年」触发 POST /api/audit/run",
+        "rescan_included": True,
+    }
+
 
 def _validate_audit_rules_data(data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]]]:
     errors: list[str] = []
@@ -495,9 +545,15 @@ def _validate_audit_rules_data(data: dict[str, Any]) -> tuple[list[str], list[di
                 "risk_level": risk_level,
                 "modules": RULE_MODULE_MAP.get(rule_id, ["疑点清单"]),
                 "param_keys": sorted(k for k in rc if k not in ("enabled", "name")),
+                **_rule_execution_meta(rule_id),
             }
         )
-    rules_list.sort(key=lambda x: str(x.get("rule_id", "")))
+    rules_list.sort(
+        key=lambda x: (
+            _EXECUTION_MODE_ORDER.get(str(x.get("execution_mode", "")), 9),
+            str(x.get("rule_id", "")),
+        )
+    )
     return errors, rules_list
 
 

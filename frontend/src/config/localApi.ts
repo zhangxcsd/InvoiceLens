@@ -6833,6 +6833,8 @@ export async function postAuditFlagConfirm(params: {
   }
 }
 
+export type AuditRuleExecutionMode = 'sql_scan' | 'post_scan' | 'sync'
+
 export type AuditRuleListItem = {
   rule_id: string
   name: string
@@ -6840,6 +6842,26 @@ export type AuditRuleListItem = {
   risk_level: string
   modules: string[]
   param_keys?: string[]
+  execution_mode?: AuditRuleExecutionMode
+  trigger_hint?: string
+  rescan_included?: boolean
+}
+
+function mapAuditRuleListItem(r: Record<string, unknown>): AuditRuleListItem {
+  const mode = r.execution_mode
+  const executionMode: AuditRuleExecutionMode | undefined =
+    mode === 'sql_scan' || mode === 'post_scan' || mode === 'sync' ? mode : undefined
+  return {
+    rule_id: String(r.rule_id ?? ''),
+    name: String(r.name ?? ''),
+    enabled: Boolean(r.enabled ?? true),
+    risk_level: String(r.risk_level ?? ''),
+    modules: Array.isArray(r.modules) ? r.modules.map(String) : [],
+    param_keys: Array.isArray(r.param_keys) ? r.param_keys.map(String) : undefined,
+    execution_mode: executionMode,
+    trigger_hint: r.trigger_hint != null ? String(r.trigger_hint) : undefined,
+    rescan_included: r.rescan_included != null ? Boolean(r.rescan_included) : undefined,
+  }
 }
 
 export async function fetchAuditRulesConfig(signal?: AbortSignal): Promise<{
@@ -6858,14 +6880,7 @@ export async function fetchAuditRulesConfig(signal?: AbortSignal): Promise<{
       yamlText: String(json.yaml_text ?? ''),
       source: json.source != null ? String(json.source) : undefined,
       rulesList: Array.isArray(json.rules_list)
-        ? json.rules_list.map((r: any) => ({
-            rule_id: String(r.rule_id ?? ''),
-            name: String(r.name ?? ''),
-            enabled: Boolean(r.enabled ?? true),
-            risk_level: String(r.risk_level ?? ''),
-            modules: Array.isArray(r.modules) ? r.modules.map(String) : [],
-            param_keys: Array.isArray(r.param_keys) ? r.param_keys.map(String) : undefined,
-          }))
+        ? json.rules_list.map((r: any) => mapAuditRuleListItem(r))
         : undefined,
     }
   } catch (e) {
@@ -6899,13 +6914,7 @@ export async function validateAuditRulesConfig(yamlText: string): Promise<{
       ok: true,
       message: json.message != null ? String(json.message) : undefined,
       rulesList: Array.isArray(json.rules_list)
-        ? json.rules_list.map((r: any) => ({
-            rule_id: String(r.rule_id ?? ''),
-            name: String(r.name ?? ''),
-            enabled: Boolean(r.enabled ?? true),
-            risk_level: String(r.risk_level ?? ''),
-            modules: Array.isArray(r.modules) ? r.modules.map(String) : [],
-          }))
+        ? json.rules_list.map((r: any) => mapAuditRuleListItem(r))
         : undefined,
     }
   } catch (e) {
