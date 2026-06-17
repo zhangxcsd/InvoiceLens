@@ -11,7 +11,7 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { formatDwsAmount } from '../dws/useDwsFilters'
-import { navigateToFlagsList, navigateToHealthScore, navigateToTaxRiskExposure, navigateWithQuery } from '../utils/navHelpers'
+import { navigateToFlagsList, navigateToHealthScore, navigateToTaxRiskExposure, navigateToEntityProfile, navigateWithQuery } from '../utils/navHelpers'
 import { scorecardRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
 import { useLicense } from '../settings/useLicense'
@@ -274,6 +274,18 @@ export function CompareRankPage({ onNav }: Props) {
                     {onNav ? (
                       <td className="py-2">
                         <div className="flex flex-col gap-1 text-xs">
+                          <button
+                            type="button"
+                            className="text-left text-accent hover:underline"
+                            onClick={() =>
+                              navigateToEntityProfile(onNav, {
+                                statYear: String(r.stat_year),
+                                entityId: r.entity_id,
+                              })
+                            }
+                          >
+                            {ui.actionEntityProfile}
+                          </button>
                           <button
                             type="button"
                             className="text-left text-accent hover:underline"

@@ -8,7 +8,9 @@ import {
   navigateToFlagsTrack,
   navigateToHealthScore,
   navigateToInvoiceExport,
+  navigateToInvoiceTiming,
   navigateToQualityDetail,
+  navigateToRedOffsetAnalysis,
   navigateToRelatedPairs,
   navigateToRelatedShell,
   navigateToTaxRiskExposure,
@@ -60,6 +62,20 @@ export function isRelatedRule(ruleId: string): boolean {
   return ruleId === 'RULE-09' || ruleId === 'RULE-10' || ruleId === 'RULE-SHELL'
 }
 
+/** 从规则 ID 构造最小疑点行（用于健康度页 flag_breakdown 深链）。 */
+export function minimalFlagRowForRule(ruleId: string, entityId?: string | null): AuditFlagRow {
+  return {
+    flag_id: '',
+    rule_id: ruleId,
+    risk_level: '',
+    flag_type: '',
+    group_id: '',
+    description: '',
+    suggestion: '',
+    entity_id: entityId ?? null,
+  }
+}
+
 export type FlagActionLabels = {
   viewFinanceDiffBtn: string
   viewTaxCodeBtn: string
@@ -74,6 +90,8 @@ export type FlagActionLabels = {
   viewSupplierTopBtn: string
   viewSupplierCrBtn: string
   viewOverviewTrendBtn: string
+  viewInvoiceTimingBtn: string
+  viewRedOffsetBtn: string
   viewTaxInOutDevBtn: string
   viewTaxRiskExposureBtn: string
   viewTrackBtn: string
@@ -420,10 +438,28 @@ export function getFlagActionLinks(row: AuditFlagRow, _statYear: string, labels:
 
   switch (ruleId) {
     case 'RULE-01':
-    case 'RULE-02':
-    case 'RULE-03':
     case 'RULE-04':
       if (entityId) links.push({ id: 'invoice_export', label: labels.viewInvoiceBtn })
+      if (hasTrendContextFromFlag(row)) {
+        links.push({ id: 'overview_trend', label: labels.viewOverviewTrendBtn })
+      }
+      if (isQualityRelatedRule(ruleId)) {
+        links.push({ id: 'health_score', label: labels.viewQualityBtn })
+      }
+      break
+    case 'RULE-02':
+      if (entityId) links.push({ id: 'invoice_export', label: labels.viewInvoiceBtn })
+      if (entityId) links.push({ id: 'invoice_timing', label: labels.viewInvoiceTimingBtn })
+      if (hasTrendContextFromFlag(row)) {
+        links.push({ id: 'overview_trend', label: labels.viewOverviewTrendBtn })
+      }
+      if (isQualityRelatedRule(ruleId)) {
+        links.push({ id: 'health_score', label: labels.viewQualityBtn })
+      }
+      break
+    case 'RULE-03':
+      if (entityId) links.push({ id: 'invoice_export', label: labels.viewInvoiceBtn })
+      if (entityId) links.push({ id: 'red_offset_analysis', label: labels.viewRedOffsetBtn })
       if (hasTrendContextFromFlag(row)) {
         links.push({ id: 'overview_trend', label: labels.viewOverviewTrendBtn })
       }
@@ -517,6 +553,12 @@ export function navigateFlagAction(
       return
     case 'overview_trend':
       navigateWithQuery(onNav, 'overview_trend', dwsNavParamsFromFlag(row, statYear))
+      return
+    case 'invoice_timing':
+      navigateToInvoiceTiming(onNav, { statYear, entityId })
+      return
+    case 'red_offset_analysis':
+      navigateToRedOffsetAnalysis(onNav, { statYear, entityId })
       return
     case 'related_pairs': {
       const p = relatedPairsNavParamsFromFlag(row, statYear)

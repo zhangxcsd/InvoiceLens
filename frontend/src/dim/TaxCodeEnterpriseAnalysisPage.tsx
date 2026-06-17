@@ -32,6 +32,13 @@ export function TaxCodeEnterpriseAnalysisPage() {
   })
   const [hint, setHint] = useState<string | null>(null)
   const [fluctuationHint, setFluctuationHint] = useState<string | null>(null)
+  const [fluctuation, setFluctuation] = useState<{
+    fluctuation_index: number | null
+    fluctuation_level: string | null
+    baseline_month: number | null
+    compare_month: number | null
+    top_movers: Array<{ category_prefix: string; delta_share: number }>
+  } | null>(null)
   const [caliberHint, setCaliberHint] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -88,6 +95,13 @@ export function TaxCodeEnterpriseAnalysisPage() {
         })
         setHint(data?.hint ?? null)
         setFluctuationHint(data?.fluctuation_hint ?? null)
+        setFluctuation({
+          fluctuation_index: data?.fluctuation_index ?? null,
+          fluctuation_level: data?.fluctuation_level ?? null,
+          baseline_month: data?.baseline_month ?? null,
+          compare_month: data?.compare_month ?? null,
+          top_movers: data?.top_movers ?? [],
+        })
         setCaliberHint(data?.caliber_hint ?? null)
         if (data?.stat_years?.length && !data.stat_years.includes(f.effectiveYear)) {
           f.setStatYear(data.stat_years[0] ?? f.effectiveYear)
@@ -244,6 +258,36 @@ export function TaxCodeEnterpriseAnalysisPage() {
         ) : null}
         {fluctuationHint ? <p className="mt-1 text-il-meta text-text-3">{fluctuationHint}</p> : null}
       </Card>
+
+      {fluctuation?.fluctuation_index != null ? (
+        <Card title={ui.fluctuationCardTitle}>
+          <p className="text-il-page-desc text-text-2">
+            {ui.fluctuationCompareHint
+              .replace('{baseline}', String(fluctuation.baseline_month ?? '—'))
+              .replace('{compare}', String(fluctuation.compare_month ?? '—'))}
+          </p>
+          {fluctuation.top_movers.length > 0 ? (
+            <div className="mt-3 overflow-x-auto rounded-sm border border-border-light">
+              <table className="w-full border-collapse text-il-page-desc">
+                <thead>
+                  <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
+                    <th className="px-3 py-2 font-medium">{ui.colMoverCategory}</th>
+                    <th className="px-3 py-2 font-medium">{ui.colMoverDelta}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fluctuation.top_movers.map((m) => (
+                    <tr key={m.category_prefix} className="border-b border-border-light last:border-b-0">
+                      <td className="px-3 py-2 font-mono">{m.category_prefix}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatDwsPct(m.delta_share)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
       <Card title={ui.syncFlagsBtn}>
         <p className="mb-3 text-il-meta text-text-3">{ui.syncFlagsHint}</p>

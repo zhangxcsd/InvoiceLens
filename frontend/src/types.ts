@@ -56,6 +56,12 @@ export type NavKey =
   | 'finance_diff'
   | 'compare_rank'
   | 'compare_charts'
+  | 'entity_profile'
+  | 'goods_category'
+  | 'red_offset_analysis'
+  | 'invoice_timing'
+  | 'counterparty_risk'
+  | 'year_over_year_compare'
   // 输出
   | 'report_config'
   | 'report_templates'

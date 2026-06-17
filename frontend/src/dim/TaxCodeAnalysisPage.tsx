@@ -10,6 +10,7 @@ import {
   type TaxCodeUnmatchedRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { InvoiceDetailDrillPanel } from '../dws/InvoiceDetailDrillPanel'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from '../dws/useDwsFilters'
 import { readNavQueryParams } from '../utils/navHelpers'
 
@@ -30,6 +31,8 @@ export function TaxCodeAnalysisPage() {
   const [err, setErr] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const [drillOpen, setDrillOpen] = useState(false)
+  const drillUi = t.invoiceDetailDrillUi
 
   const deepGoodsName = urlQuery.goods_name?.trim() || undefined
   const deepSlvNum = urlQuery.slv_num?.trim() || undefined
@@ -236,7 +239,31 @@ export function TaxCodeAnalysisPage() {
             {ui.caliberHintLabel}：{caliberHint}
           </p>
         ) : null}
+        {overview?.fluctuation_hint ? (
+          <p className="mt-1 text-il-meta text-text-3">{overview.fluctuation_hint}</p>
+        ) : null}
+        {f.entityId.trim() ? (
+          <button
+            type="button"
+            className="mt-2 rounded-sm border border-border bg-white px-2.5 py-1 text-il-page-desc text-accent hover:border-accent"
+            onClick={() => setDrillOpen(true)}
+          >
+            {drillUi.drillFromSummary}
+          </button>
+        ) : null}
       </Card>
+
+      {overview?.fluctuation_index != null ? (
+        <Card title={ui.fluctuationCardTitle}>
+          <p className="text-il-page-desc text-text-2">
+            {ui.fluctuationCompareHint
+              .replace('{baseline}', String(overview.baseline_month ?? '—'))
+              .replace('{compare}', String(overview.compare_month ?? '—'))}
+            {' · '}
+            {overview.fluctuation_index.toFixed(2)}
+          </p>
+        </Card>
+      ) : null}
 
       <Card title={ui.syncFlagsBtn}>
         <p className="mb-3 text-il-meta text-text-3">{ui.syncFlagsHint}</p>
@@ -303,6 +330,18 @@ export function TaxCodeAnalysisPage() {
           onPageSizeChange={setPageSize}
         />
       </Card>
+
+      <InvoiceDetailDrillPanel
+        open={drillOpen}
+        onClose={() => setDrillOpen(false)}
+        title={drillUi.drillFromSummary}
+        filters={{
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim() || undefined,
+          goodsName: deepGoodsName,
+          slvNum: deepSlvNum,
+        }}
+      />
     </div>
   )
 }

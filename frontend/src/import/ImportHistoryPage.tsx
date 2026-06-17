@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
-import { deleteOdsPreviewImport, fetchOdsPreviewBatches, odsPreviewBatchKey, postDwdBuild, postDwdForceRebuild, type OdsPreviewBatchMeta } from '../config/localApi'
+import { deleteOdsPreviewImport, fetchOdsImportSessionSummary, fetchOdsPreviewBatches, odsPreviewBatchKey, postDwdBuild, postDwdForceRebuild, type OdsImportSessionSummary, type OdsPreviewBatchMeta } from '../config/localApi'
 import type { NavKey } from '../types'
 
 type BatchGroup = {
@@ -140,8 +140,12 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
   const [rerunBusy, setRerunBusy] = useState(false)
   const [rerunMsg, setRerunMsg] = useState('')
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [sessionSummary, setSessionSummary] = useState<OdsImportSessionSummary | null>(null)
+  const [sessionSummaryBusy, setSessionSummaryBusy] = useState(false)
+  const [sessionSummaryErr, setSessionSummaryErr] = useState<string | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  const summaryAbortRef = useRef<AbortController | null>(null)
   const seqRef = useRef(0)
 
   const reload = useCallback(async () => {
@@ -210,6 +214,38 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
     if (!currentGroup) return null
     return currentGroup.sessions.find((s) => s.meta.session_id === selectedSessionId) ?? null
   }, [currentGroup, selectedSessionId])
+
+  useEffect(() => {
+    summaryAbortRef.current?.abort()
+    if (!currentGroup || !currentSession?.meta.session_id || currentRecord?.type !== 'excel_to_ods') {
+      setSessionSummary(null)
+      setSessionSummaryErr(null)
+      setSessionSummaryBusy(false)
+      return
+    }
+    const ac = new AbortController()
+    summaryAbortRef.current = ac
+    setSessionSummaryBusy(true)
+    setSessionSummaryErr(null)
+    void fetchOdsImportSessionSummary(
+      {
+        batchId: currentGroup.batchId,
+        sessionId: currentSession.meta.session_id,
+        sampleLimit: 30,
+      },
+      ac.signal,
+    ).then((res) => {
+      if (ac.signal.aborted) return
+      setSessionSummaryBusy(false)
+      if (!res.ok) {
+        setSessionSummary(null)
+        setSessionSummaryErr(res.error?.message ?? t.importHistoryUi.sessionSummaryError)
+        return
+      }
+      setSessionSummary(res)
+    })
+    return () => ac.abort()
+  }, [currentGroup, currentSession, currentRecord?.type])
 
   const openPreviewInNewWindow = () => {
     if (!currentGroup || !currentRecord) return
@@ -593,6 +629,162 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
                     <div className="mt-3 text-il-meta leading-relaxed text-text-3">
                       {rerunMsg || t.importHistoryUi.detailFootnote}
                     </div>
+
+                    {currentRecord?.type === 'excel_to_ods' ? (
+                      <div className="mt-4 space-y-4 border-t border-border-light pt-4">
+                        {sessionSummaryBusy ? (
+                          <p className="text-il-meta text-text-3">{t.importHistoryUi.sessionSummaryLoading}</p>
+                        ) : null}
+                        {sessionSummaryErr ? (
+                          <p className="text-il-meta text-danger">
+                            {t.importHistoryUi.sessionSummaryError}：{sessionSummaryErr}
+                          </p>
+                        ) : null}
+                        {!sessionSummaryBusy && sessionSummary?.ok ? (
+                          <>
+                            <div>
+                              <div className="mb-2 text-il-label font-medium text-text-2">
+                                {t.importHistoryUi.formatSnapshotTitle}
+                              </div>
+                              {sessionSummary.field_mapping_template ? (
+                                <dl className="grid grid-cols-1 gap-2 text-[12px] sm:grid-cols-3">
+                                  <div>
+                                    <dt className="text-text-3">{t.importHistoryUi.formatTemplateId}</dt>
+                                    <dd className="mt-0.5 font-mono text-text-2">
+                                      {sessionSummary.field_mapping_template.template_id || '—'}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-text-3">{t.importHistoryUi.formatTemplateName}</dt>
+                                    <dd className="mt-0.5 text-text-2">
+                                      {sessionSummary.field_mapping_template.template_name || '—'}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt className="text-text-3">{t.importHistoryUi.formatTemplateUpdated}</dt>
+                                    <dd className="mt-0.5 text-text-2">
+                                      {sessionSummary.field_mapping_template.template_updated_at || '—'}
+                                    </dd>
+                                  </div>
+                                </dl>
+                              ) : (
+                                <p className="text-il-meta text-text-3">{t.importHistoryUi.formatSnapshotEmpty}</p>
+                              )}
+                            </div>
+
+                            <div>
+                              <div className="mb-2 text-il-label font-medium text-text-2">
+                                {t.importHistoryUi.failureAggTitle}
+                              </div>
+                              {sessionSummary.failure_summary ? (
+                                <div className="mb-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
+                                  <div className="rounded border border-border-light bg-[#fafbfc] px-2 py-1.5">
+                                    <div className="text-text-3">{t.importHistoryUi.failureFileCount}</div>
+                                    <div className="font-semibold tabular-nums text-text-2">
+                                      {sessionSummary.failure_summary.import_file_count}
+                                    </div>
+                                  </div>
+                                  <div className="rounded border border-border-light bg-[#fafbfc] px-2 py-1.5">
+                                    <div className="text-text-3">{t.importHistoryUi.failureBlockingCount}</div>
+                                    <div className="font-semibold tabular-nums text-text-2">
+                                      {sessionSummary.failure_summary.file_blocking_count}
+                                    </div>
+                                  </div>
+                                  <div className="rounded border border-border-light bg-[#fafbfc] px-2 py-1.5">
+                                    <div className="text-text-3">{t.importHistoryUi.failureRowRejectCount}</div>
+                                    <div className="font-semibold tabular-nums text-text-2">
+                                      {sessionSummary.failure_summary.row_reject_count}
+                                    </div>
+                                  </div>
+                                  <div className="rounded border border-border-light bg-[#fafbfc] px-2 py-1.5">
+                                    <div className="text-text-3">{t.importHistoryUi.failureRejectSampleCount}</div>
+                                    <div className="font-semibold tabular-nums text-text-2">
+                                      {sessionSummary.failure_summary.reject_sample_count}
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {(sessionSummary.fail_files?.length ?? 0) > 0 ? (
+                                <div className="mb-3">
+                                  <div className="mb-1 text-il-meta text-text-3">{t.importHistoryUi.failFilesTitle}</div>
+                                  <div className="max-h-40 overflow-auto rounded border border-border-light">
+                                    <table className="w-full min-w-[480px] border-collapse text-left text-[11px]">
+                                      <thead className="bg-[#f5f8fc] text-text-3">
+                                        <tr>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colFailFile}</th>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colFailStatus}</th>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colFailReason}</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {(sessionSummary.fail_files ?? []).map((f, i) => (
+                                          <tr key={`${f.file_name}-${i}`} className="border-t border-border-light/80">
+                                            <td className="px-2 py-1 font-mono">{f.file_name || '—'}</td>
+                                            <td className="px-2 py-1">{f.status}</td>
+                                            <td className="px-2 py-1 text-text-2">{f.reason || '—'}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {(sessionSummary.reject_row_samples?.length ?? 0) > 0 ? (
+                                <div className="mb-3">
+                                  <div className="mb-1 text-il-meta text-text-3">{t.importHistoryUi.rejectSamplesTitle}</div>
+                                  <div className="max-h-48 overflow-auto rounded border border-border-light">
+                                    <table className="w-full min-w-[560px] border-collapse text-left text-[11px]">
+                                      <thead className="bg-[#f5f8fc] text-text-3">
+                                        <tr>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colRejectSeq}</th>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colRejectSheet}</th>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colRejectField}</th>
+                                          <th className="px-2 py-1 font-medium">{t.importHistoryUi.colRejectReason}</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {(sessionSummary.reject_row_samples ?? []).map((s, i) => (
+                                          <tr key={`${s.seq_no}-${i}`} className="border-t border-border-light/80">
+                                            <td className="px-2 py-1 tabular-nums">{s.seq_no ?? '—'}</td>
+                                            <td className="px-2 py-1">{s.sheet || '—'}</td>
+                                            <td className="px-2 py-1">{s.field || '—'}</td>
+                                            <td className="px-2 py-1 text-text-2">{s.reason}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {(sessionSummary.reject_row_ranges?.length ?? 0) > 0 ? (
+                                <div>
+                                  <div className="mb-1 text-il-meta text-text-3">{t.importHistoryUi.rejectRangesTitle}</div>
+                                  <ul className="list-inside list-disc space-y-1 text-[11px] text-text-2">
+                                    {(sessionSummary.reject_row_ranges ?? []).map((r, i) => (
+                                      <li key={`${r.seq_no_start}-${i}`}>
+                                        {t.importHistoryUi.colRejectRange} {r.seq_no_start}–{r.seq_no_end}：{r.reason}
+                                        {r.source_excel_file ? `（${r.source_excel_file}）` : ''}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
+
+                              {!sessionSummaryBusy &&
+                              !sessionSummaryErr &&
+                              (sessionSummary.fail_files?.length ?? 0) === 0 &&
+                              (sessionSummary.reject_row_samples?.length ?? 0) === 0 &&
+                              (sessionSummary.reject_row_ranges?.length ?? 0) === 0 ? (
+                                <p className="text-il-meta text-text-3">{t.importHistoryUi.sessionSummaryEmpty}</p>
+                              ) : null}
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </>
               )}

@@ -1083,6 +1083,39 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if payload.get("ok") else 503, payload)
             return
 
+        if path == "/api/ods-preview/session-summary":
+            qs = parse_qs(parsed.query or "")
+            batch_id = (qs.get("batch_id", [""])[0] or "").strip()
+            session_id = (qs.get("session_id", [""])[0] or "").strip()
+            try:
+                sample_limit = int((qs.get("sample_limit", ["30"])[0] or "30").strip() or "30")
+            except Exception:
+                sample_limit = 30
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.ods_preview import load_ods_import_session_summary
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = load_ods_import_session_summary(
+                    conn,
+                    batch_id=batch_id,
+                    session_id=session_id,
+                    sample_limit=sample_limit,
+                )
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"无法连接或查询 DuckDB（导入会话摘要）：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 503, payload)
+            return
+
         if path == "/api/ods-preview/session":
             qs = parse_qs(parsed.query or "")
             batch_id = (qs.get("batch_id", [""])[0] or "").strip()
@@ -3119,6 +3152,103 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return
 
+        if path == "/api/dws/entity-profile":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.entity_profile_api import api_dws_entity_profile
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_entity_profile(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/invoice-detail/list":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            stat_month = (qs.get("stat_month", [""])[0] or "").strip() or None
+            date_from = (qs.get("date_from", [""])[0] or "").strip() or None
+            date_to = (qs.get("date_to", [""])[0] or "").strip() or None
+            seller_tax_no = (qs.get("seller_tax_no", [""])[0] or "").strip() or None
+            goods_name = (qs.get("goods_name", [""])[0] or "").strip() or None
+            slv_num = (qs.get("slv_num", [""])[0] or "").strip() or None
+            limit = (qs.get("limit", ["50"])[0] or "50").strip()
+            offset = (qs.get("offset", ["0"])[0] or "0").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dws_invoice_detail_api import api_dws_invoice_detail_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_invoice_detail_list(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    stat_month=stat_month,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_tax_no,
+                    goods_name=goods_name,
+                    slv_num=slv_num,
+                    limit=int(limit) if limit.isdigit() else 50,
+                    offset=int(offset) if offset.isdigit() else 0,
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/invoice-detail/export":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            stat_month = (qs.get("stat_month", [""])[0] or "").strip() or None
+            date_from = (qs.get("date_from", [""])[0] or "").strip() or None
+            date_to = (qs.get("date_to", [""])[0] or "").strip() or None
+            seller_tax_no = (qs.get("seller_tax_no", [""])[0] or "").strip() or None
+            goods_name = (qs.get("goods_name", [""])[0] or "").strip() or None
+            slv_num = (qs.get("slv_num", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dws_invoice_detail_api import api_dws_invoice_detail_export
+
+                conn = get_conn()
+                init_all_tables(conn)
+                status, body, ctype, fname = api_dws_invoice_detail_export(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    stat_month=stat_month,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_tax_no,
+                    goods_name=goods_name,
+                    slv_num=slv_num,
+                )
+                if isinstance(body, dict):
+                    self._send(status, body)
+                else:
+                    self._send_file(status, body, content_type=ctype, filename=fname or "invoice_detail.csv")
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
         if path == "/api/audit/meta":
             try:
                 from db.duckdb_conn import get_conn
@@ -3673,6 +3803,46 @@ class Handler(BaseHTTPRequestHandler):
                 return
         except Exception:
             pass
+
+        from src.local_api.dws_dplus_routes import DWS_DPLUS_GET_PATHS, dispatch_dws_dplus_get
+
+        if path in DWS_DPLUS_GET_PATHS:
+            qs = parse_qs(parsed.query or "")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+
+                conn = get_conn()
+                init_all_tables(conn)
+                result = dispatch_dws_dplus_get(path, qs, conn)
+                if result:
+                    status, payload = result
+                    self._send(status, payload)
+                    return
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+                return
+
+        if path == "/api/dws/red-offset/export":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            kind = (qs.get("kind", ["all"])[0] or "all").strip() or "all"
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.red_offset_api import export_red_offset_csv_bytes
+
+                conn = get_conn()
+                init_all_tables(conn)
+                body, exported, total = export_red_offset_csv_bytes(
+                    conn, stat_year=stat_year, entity_id=entity_id, kind=kind
+                )
+                fname = f"red_offset_{stat_year or 'export'}.csv"
+                self._send_file(200, body, content_type="text/csv; charset=utf-8", filename=fname)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
 
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
@@ -5344,6 +5514,103 @@ class Handler(BaseHTTPRequestHandler):
                     quarter=quarter,
                 )
                 self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/entity-profile":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.entity_profile_api import api_dws_entity_profile
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_entity_profile(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/invoice-detail/list":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            stat_month = (qs.get("stat_month", [""])[0] or "").strip() or None
+            date_from = (qs.get("date_from", [""])[0] or "").strip() or None
+            date_to = (qs.get("date_to", [""])[0] or "").strip() or None
+            seller_tax_no = (qs.get("seller_tax_no", [""])[0] or "").strip() or None
+            goods_name = (qs.get("goods_name", [""])[0] or "").strip() or None
+            slv_num = (qs.get("slv_num", [""])[0] or "").strip() or None
+            limit = (qs.get("limit", ["50"])[0] or "50").strip()
+            offset = (qs.get("offset", ["0"])[0] or "0").strip()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dws_invoice_detail_api import api_dws_invoice_detail_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_invoice_detail_list(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    stat_month=stat_month,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_tax_no,
+                    goods_name=goods_name,
+                    slv_num=slv_num,
+                    limit=int(limit) if limit.isdigit() else 50,
+                    offset=int(offset) if offset.isdigit() else 0,
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/invoice-detail/export":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            entity_id = (qs.get("entity_id", [""])[0] or "").strip() or None
+            stat_month = (qs.get("stat_month", [""])[0] or "").strip() or None
+            date_from = (qs.get("date_from", [""])[0] or "").strip() or None
+            date_to = (qs.get("date_to", [""])[0] or "").strip() or None
+            seller_tax_no = (qs.get("seller_tax_no", [""])[0] or "").strip() or None
+            goods_name = (qs.get("goods_name", [""])[0] or "").strip() or None
+            slv_num = (qs.get("slv_num", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dws_invoice_detail_api import api_dws_invoice_detail_export
+
+                conn = get_conn()
+                init_all_tables(conn)
+                status, body, ctype, fname = api_dws_invoice_detail_export(
+                    conn,
+                    stat_year=stat_year,
+                    entity_id=entity_id,
+                    stat_month=stat_month,
+                    date_from=date_from,
+                    date_to=date_to,
+                    seller_tax_no=seller_tax_no,
+                    goods_name=goods_name,
+                    slv_num=slv_num,
+                )
+                if isinstance(body, dict):
+                    self._send(status, body)
+                else:
+                    self._send_file(status, body, content_type=ctype, filename=fname or "invoice_detail.csv")
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return

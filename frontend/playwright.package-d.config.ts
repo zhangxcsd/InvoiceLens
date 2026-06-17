@@ -7,8 +7,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 export default defineConfig({
   testDir: './tests',
   timeout: 90_000,
-  outputDir: './test-results/rbac-nav-artifacts',
-  reporter: [['list'], ['html', { outputFolder: './playwright-report/rbac-nav', open: 'never' }]],
+  outputDir: './test-results/package-d-artifacts',
+  reporter: [['list'], ['html', { outputFolder: './playwright-report/package-d', open: 'never' }]],
   use: {
     baseURL: 'http://127.0.0.1:8776',
     trace: 'on-first-retry',

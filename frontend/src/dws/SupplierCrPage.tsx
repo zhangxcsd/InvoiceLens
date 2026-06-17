@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsSupplierCr } from '../config/localApi'
+import { fetchDwsCustomerCr } from '../config/dwsDplusApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams, writeNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
 
@@ -12,6 +14,11 @@ function normTaxId(v: string): string {
 
 export function SupplierCrPage() {
   const ui = t.dwsDashboardUi
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const [roleMode, setRoleMode] = useState<'supplier' | 'customer'>(() =>
+    urlQuery.role_mode === 'customer' ? 'customer' : 'supplier',
+  )
+  const isCustomer = roleMode === 'customer'
   const deepLink = useDwsUrlDeepLinkFilter()
   const highlightSupplierId = useMemo(() => {
     const raw = deepLink.urlQuery.seller_tax_no?.trim()
@@ -24,7 +31,12 @@ export function SupplierCrPage() {
       deepLink.urlQuery.seller_tax_no?.trim() || highlightSupplierId,
     )
   }, [highlightSupplierId, deepLink.urlQuery.seller_tax_no, ui])
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBuyer: !isCustomer,
+    requireBothRoles: isCustomer,
+    initFromUrl: true,
+  })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [cr, setCr] = useState<{
@@ -43,11 +55,12 @@ export function SupplierCrPage() {
     setLoading(true)
     setErr(null)
     try {
-      const res = await fetchDwsSupplierCr(
+      const fetcher = isCustomer ? fetchDwsCustomerCr : fetchDwsSupplierCr
+      const res = await fetcher(
         {
           statYear: f.effectiveYear,
           entityId: f.entityId.trim(),
-          ...deepLink.timeFilterParams,
+          ...(!isCustomer ? deepLink.timeFilterParams : {}),
         },
         signal,
       )
@@ -61,13 +74,13 @@ export function SupplierCrPage() {
         cr1: res.cr1 ?? null,
         cr3: res.cr3 ?? null,
         cr10: res.cr10 ?? null,
-        supplier_cnt: res.supplier_cnt ?? 0,
+        supplier_cnt: (res as { supplier_cnt?: number }).supplier_cnt ?? (res as { customer_cnt?: number }).customer_cnt ?? 0,
         total_net_jshj: res.total_net_jshj ?? 0,
       })
     } finally {
       setLoading(false)
     }
-  }, [f.effectiveYear, f.entityId, deepLink.timeFilterParams, ui.loadFailed])
+  }, [f.effectiveYear, f.entityId, deepLink.timeFilterParams, isCustomer, ui.loadFailed])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -77,7 +90,11 @@ export function SupplierCrPage() {
 
   return (
     <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.supplierCrTitle} note={ui.supplierCrDesc} noteTone="plain" />
+      <PrototypePageHeader
+        title={isCustomer ? ui.customerCrTitle : ui.supplierCrTitle}
+        note={isCustomer ? ui.customerCrDesc : ui.supplierCrDesc}
+        noteTone="plain"
+      />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {deepLink.flagContextHint ? (
         <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
@@ -87,6 +104,24 @@ export function SupplierCrPage() {
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
+        <div className="mb-3 flex gap-2">
+          {(['supplier', 'customer'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={[
+                'rounded border px-2 py-1 text-il-meta',
+                roleMode === mode ? 'border-accent bg-accent/5 text-accent' : 'border-border-light text-text-3',
+              ].join(' ')}
+              onClick={() => {
+                setRoleMode(mode)
+                writeNavQueryParams({ role_mode: mode })
+              }}
+            >
+              {mode === 'supplier' ? ui.roleSupplier : ui.roleCustomer}
+            </button>
+          ))}
+        </div>
         <DwsFilterBar
           effectiveYear={f.effectiveYear}
           yearOptions={f.yearOptions}

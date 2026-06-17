@@ -144,6 +144,240 @@ def _dim_empty_hint(dim_cnt: int) -> str | None:
     return "税收分类编码库（dim_tax_code）为空，请先在「税收分类层级树」导入编码表后再查看命中率。"
 
 
+def _fluctuation_level(index: float | None) -> str | None:
+    if index is None:
+        return None
+    if index < 0.15:
+        return "low"
+    if index < 0.35:
+        return "medium"
+    return "high"
+
+
+def _fluctuation_from_month_maps(
+    baseline: dict[str, float],
+    compare: dict[str, float],
+    *,
+    baseline_month: int | None,
+    compare_month: int | None,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    if baseline_month is None or compare_month is None:
+        return {
+            "fluctuation_index": None,
+            "fluctuation_level": None,
+            "top_movers": [],
+            "baseline_month": None,
+            "compare_month": None,
+        }
+    all_cats = set(baseline.keys()) | set(compare.keys())
+    l1 = 0.0
+    movers: list[dict[str, Any]] = []
+    for cat in all_cats:
+        b = baseline.get(cat, 0.0)
+        c = compare.get(cat, 0.0)
+        delta = c - b
+        l1 += abs(delta)
+        if abs(delta) > 0.0001:
+            movers.append(
+                {
+                    "category_prefix": cat,
+                    "baseline_share": round(b, 6),
+                    "compare_share": round(c, 6),
+                    "delta_share": round(delta, 6),
+                }
+            )
+    index = round(l1 / 2.0, 6) if all_cats else None
+    movers.sort(key=lambda x: abs(x["delta_share"]), reverse=True)
+    return {
+        "fluctuation_index": index,
+        "fluctuation_level": _fluctuation_level(index),
+        "top_movers": movers[:top_n],
+        "baseline_month": baseline_month,
+        "compare_month": compare_month,
+    }
+
+
+def _compute_tax_code_fluctuation(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_id: str | None = None,
+    scope_sql: str = "",
+    scope_params: list[Any] | None = None,
+    detail_sql: str = "",
+    detail_params: list[Any] | None = None,
+) -> dict[str, Any]:
+    """税码二级类目结构跨月波动（最近两月 L1 距离 / 2）。"""
+    sp = list(scope_params or [])
+    dp = list(detail_params or [])
+    entity_clause = ""
+    entity_params: list[Any] = []
+    eid = _norm_entity(entity_id)
+    if eid:
+        # 审计含义：单户下钻时购销任一侧税号命中
+        entity_clause = f" AND ({_NORM_XFS} = ? OR {_NORM_GFS} = ?)"
+        entity_params = [eid, eid]
+    try:
+        month_rows = conn.execute(
+            f"""
+            -- 审计含义：按开票月份汇总二级类目金额占比，用于度量结构突变
+            WITH coded AS (
+                SELECT
+                    coalesce(h.stat_month, d.stat_month) AS sm,
+                    left(nullif(trim(COALESCE(d.ssflbm, '')), ''), 2) AS level2_prefix,
+                    sum({_LINE_AMOUNT}) AS cat_amount
+                FROM dwd_inv_detail d
+                INNER JOIN dwd_inv_header h ON d.header_uuid = h.header_uuid
+                WHERE h.stat_year = ?
+                  AND d.logic_line_no > 0
+                  AND nullif(trim(COALESCE(d.ssflbm, '')), '') IS NOT NULL
+                  AND length(nullif(trim(COALESCE(d.ssflbm, '')), '')) >= 2
+                  {scope_sql}
+                  {entity_clause}
+                  {detail_sql}
+                GROUP BY 1, 2
+            ),
+            month_totals AS (
+                SELECT sm, sum(cat_amount) AS total_amount
+                FROM coded
+                WHERE sm IS NOT NULL AND sm BETWEEN 1 AND 12
+                GROUP BY sm
+            )
+            SELECT c.sm, c.level2_prefix,
+                   CASE WHEN mt.total_amount > 0 THEN c.cat_amount / mt.total_amount ELSE 0 END AS share
+            FROM coded c
+            INNER JOIN month_totals mt ON mt.sm = c.sm
+            WHERE c.sm IS NOT NULL
+            ORDER BY c.sm, c.level2_prefix
+            """,
+            [stat_year, *sp, *entity_params, *dp],
+        ).fetchall()
+        if not month_rows:
+            return _fluctuation_from_month_maps({}, {}, baseline_month=None, compare_month=None)
+
+        month_maps: dict[int, dict[str, float]] = {}
+        for sm, prefix, share in month_rows or []:
+            if sm is None:
+                continue
+            m = int(sm)
+            if not (1 <= m <= 12):
+                continue
+            month_maps.setdefault(m, {})[str(prefix or "")] = float(share or 0)
+
+        months = sorted(month_maps.keys())
+        if len(months) < 2:
+            return _fluctuation_from_month_maps({}, {}, baseline_month=None, compare_month=None)
+
+        baseline_m, compare_m = months[-2], months[-1]
+        return _fluctuation_from_month_maps(
+            month_maps[baseline_m],
+            month_maps[compare_m],
+            baseline_month=baseline_m,
+            compare_month=compare_m,
+        )
+    except Exception:
+        logger.exception("tax_code_fluctuation")
+        return _fluctuation_from_month_maps({}, {}, baseline_month=None, compare_month=None)
+
+
+def _batch_entity_fluctuation_indices(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+    detail_sql: str = "",
+    detail_params: list[Any] | None = None,
+) -> dict[str, float | None]:
+    """批量计算分析主体池企业的税码结构波动指数。"""
+    ids = [_norm_entity(x) for x in entity_ids if _norm_entity(x)]
+    if not ids:
+        return {}
+    dp = list(detail_params or [])
+    placeholders = ", ".join(["?"] * len(ids))
+    try:
+        month_rows = conn.execute(
+            f"""
+            -- 审计含义：按企业+月份汇总二级类目占比，供跨月结构对比
+            WITH coded AS (
+                SELECT
+                    CASE
+                        WHEN {_NORM_GFS} IN ({placeholders}) THEN {_NORM_GFS}
+                        WHEN {_NORM_XFS} IN ({placeholders}) THEN {_NORM_XFS}
+                        ELSE NULL
+                    END AS entity_id,
+                    coalesce(h.stat_month, d.stat_month) AS sm,
+                    left(nullif(trim(COALESCE(d.ssflbm, '')), ''), 2) AS level2_prefix,
+                    sum({_LINE_AMOUNT}) AS cat_amount
+                FROM dwd_inv_detail d
+                INNER JOIN dwd_inv_header h ON d.header_uuid = h.header_uuid
+                WHERE h.stat_year = ?
+                  AND d.logic_line_no > 0
+                  AND nullif(trim(COALESCE(d.ssflbm, '')), '') IS NOT NULL
+                  AND length(nullif(trim(COALESCE(d.ssflbm, '')), '')) >= 2
+                  {detail_sql}
+                GROUP BY 1, 2, 3
+            ),
+            month_totals AS (
+                SELECT entity_id, sm, sum(cat_amount) AS total_amount
+                FROM coded
+                WHERE entity_id IS NOT NULL AND sm IS NOT NULL AND sm BETWEEN 1 AND 12
+                GROUP BY 1, 2
+            )
+            SELECT c.entity_id, c.sm, c.level2_prefix,
+                   CASE WHEN mt.total_amount > 0 THEN c.cat_amount / mt.total_amount ELSE 0 END AS share
+            FROM coded c
+            INNER JOIN month_totals mt ON mt.entity_id = c.entity_id AND mt.sm = c.sm
+            WHERE c.entity_id IS NOT NULL
+            ORDER BY c.entity_id, c.sm
+            """,
+            [*ids, *ids, stat_year, *dp],
+        ).fetchall()
+    except Exception:
+        logger.exception("batch_entity_fluctuation")
+        return {eid: None for eid in ids}
+
+    by_entity: dict[str, dict[int, dict[str, float]]] = {}
+    for eid_raw, sm, prefix, share in month_rows or []:
+        eid = str(eid_raw or "")
+        if not eid:
+            continue
+        m = int(sm or 0)
+        if not (1 <= m <= 12):
+            continue
+        by_entity.setdefault(eid, {}).setdefault(m, {})[str(prefix or "")] = float(share or 0)
+
+    out: dict[str, float | None] = {}
+    for eid in ids:
+        month_maps = by_entity.get(eid, {})
+        months = sorted(month_maps.keys())
+        if len(months) < 2:
+            out[eid] = None
+            continue
+        fl = _fluctuation_from_month_maps(
+            month_maps[months[-2]],
+            month_maps[months[-1]],
+            baseline_month=months[-2],
+            compare_month=months[-1],
+        )
+        out[eid] = fl.get("fluctuation_index")
+    return out
+
+
+def _fluctuation_hint_text(fl: dict[str, Any]) -> str | None:
+    idx = fl.get("fluctuation_index")
+    if idx is None:
+        return "波动指数需至少两个有效开票月份的结构数据；当前筛选下暂无法计算。"
+    bm = fl.get("baseline_month")
+    cm = fl.get("compare_month")
+    level = fl.get("fluctuation_level") or "low"
+    level_cn = {"low": "低", "medium": "中", "high": "高"}.get(str(level), str(level))
+    return (
+        f"波动指数 {float(idx):.2f}（{level_cn}），对比 {bm} 月 → {cm} 月二级类目金额占比变化；"
+        "指数越高表示税码结构突变越明显。"
+    )
+
+
 def api_tax_code_analysis_overview(
     conn: Any,
     *,
@@ -270,6 +504,16 @@ def api_tax_code_analysis_overview(
         if lines_with_code == 0:
             hints.append(f"{y} 年度当前筛选条件下无有效明细行（logic_line_no>0）。")
 
+        fluctuation = _compute_tax_code_fluctuation(
+            conn,
+            stat_year=y,
+            entity_id=entity_id,
+            scope_sql=scope_sql,
+            scope_params=scope_params,
+            detail_sql=detail_sql,
+            detail_params=detail_params,
+        )
+
         return {
             "ok": True,
             "stat_year": str(y),
@@ -295,6 +539,8 @@ def api_tax_code_analysis_overview(
                 "HIGH 占比 = audit_risk_label=HIGH 的税额 / 非空编码行税额合计；"
                 "Top1 二级类目占比 = 金额最高的前 2 位编码前缀 / 全部编码行金额。"
             ),
+            **fluctuation,
+            "fluctuation_hint": _fluctuation_hint_text(fluctuation),
         }
     except Exception as exc:
         logger.exception("tax_code_analysis_overview")
@@ -588,6 +834,32 @@ def api_tax_code_analysis_enterprise_summary(
             for r in rows_raw or []
         ]
 
+        entity_ids = [r["entity_id"] for r in rows if r.get("entity_id")]
+        fl_map = _batch_entity_fluctuation_indices(
+            conn,
+            stat_year=y,
+            entity_ids=entity_ids,
+            detail_sql=detail_sql,
+            detail_params=detail_params,
+        )
+        for row in rows:
+            row["fluctuation_index"] = fl_map.get(row["entity_id"])
+
+        scope_fl = _compute_tax_code_fluctuation(
+            conn,
+            stat_year=y,
+            entity_id=eid or None,
+            detail_sql=detail_sql,
+            detail_params=detail_params,
+        )
+        mutation_values = [v for v in fl_map.values() if v is not None]
+        if eid and scope_fl.get("fluctuation_index") is not None:
+            monthly_mutation_rate = scope_fl["fluctuation_index"]
+        elif mutation_values:
+            monthly_mutation_rate = round(sum(mutation_values) / len(mutation_values), 6)
+        else:
+            monthly_mutation_rate = None
+
         kpi_row = conn.execute(
             f"""
             {metrics_cte}
@@ -641,12 +913,13 @@ def api_tax_code_analysis_enterprise_summary(
                 "enterprise_coverage": enterprise_coverage,
                 "high_risk_enterprise_count": high_risk_count,
                 "top_category_concentration": round(avg_top_concentration, 6),
-                "monthly_mutation_rate": None,
+                "monthly_mutation_rate": monthly_mutation_rate,
             },
             "dim_tax_code_count": dim_cnt,
             "stat_years": _distinct_stat_years(conn),
             "hint": _dim_empty_hint(dim_cnt),
-            "fluctuation_hint": "波动指数需跨月历史结构数据，当前版本暂未计算。",
+            **scope_fl,
+            "fluctuation_hint": _fluctuation_hint_text(scope_fl),
             "caliber_hint": (
                 f"企业范围：{y} 年分析主体池（发票张数 ≥ {n}）。"
                 "Top 类目取二级编码（前 2 位）金额占比最高者；HIGH 占比为 HIGH 标签税额 / 企业编码行金额。"

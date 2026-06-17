@@ -36,6 +36,12 @@ jobs:
       - name: Finance reconcile API smoke
         run: python scripts/test_finance_reconcile_api_smoke.py
 
+      - name: DWS package D API smoke
+        run: python scripts/test_dws_package_d_smoke.py
+
+      - name: DWS D+ analysis API smoke
+        run: python scripts/test_dws_dplus_smoke.py
+
   playwright-smokes:
     runs-on: ubuntu-latest
     steps:
@@ -73,3 +79,19 @@ jobs:
       - name: Flags rules Playwright
         working-directory: frontend
         run: npm run test:flags-rules
+
+      - name: Deep-link audit flag Playwright
+        working-directory: frontend
+        run: npm run test:deep-link-audit-flag
+
+      - name: RBAC nav Playwright
+        working-directory: frontend
+        run: npm run test:rbac-nav
+
+      - name: Package D profile & drill Playwright
+        working-directory: frontend
+        run: npm run test:package-d
+
+      - name: D+ analysis pages Playwright
+        working-directory: frontend
+        run: npm run test:dplus

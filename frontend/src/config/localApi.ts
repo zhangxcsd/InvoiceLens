@@ -91,7 +91,7 @@ export function setAuthExpiredHandler(handler: AuthExpiredHandler | null): void 
   authExpiredHandler = handler
 }
 
-async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(apiUrl(path), withAuthHeaders(init))
   if (res.status === 401 && path !== '/api/auth/login') {
     setSessionToken(null)
@@ -101,7 +101,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 }
 
 /** React 依赖重跑 / 卸载时 AbortController 取消 fetch，不应当作业务错误展示 */
-function isFetchAbortError(e: unknown): boolean {
+export function isFetchAbortError(e: unknown): boolean {
   if (typeof DOMException !== 'undefined' && e instanceof DOMException && e.name === 'AbortError') {
     return true
   }
@@ -1528,6 +1528,84 @@ export async function fetchOdsPreviewBatches(
       error: { message: e instanceof Error ? e.message : '网络错误' },
       ods_dir_hint: undefined,
     }
+  }
+}
+
+export type OdsImportSessionSummary = {
+  ok: boolean
+  batch_id?: string
+  session_id?: string
+  field_mapping_template?: {
+    template_id: string
+    template_name: string
+    template_updated_at: string
+  } | null
+  failure_summary?: {
+    row_reject_count: number
+    file_blocking_count: number
+    reject_sample_count: number
+    import_file_count: number
+  }
+  fail_files?: Array<{
+    file_name: string
+    status: string
+    file_blocking: boolean
+    reason: string
+    exception_type?: string | null
+  }>
+  reject_row_samples?: Array<{
+    seq_no?: number | string | null
+    sheet: string
+    field?: string | null
+    reason: string
+    exception_type?: string | null
+    source_excel_file?: string | null
+  }>
+  reject_row_ranges?: Array<{
+    seq_no_start?: number | string | null
+    seq_no_end?: number | string | null
+    reason: string
+    source_excel_file?: string | null
+  }>
+  fetch_warning?: string | null
+  error?: { message?: string; detail?: string }
+}
+
+export async function fetchOdsImportSessionSummary(
+  params: { batchId: string; sessionId: string; sampleLimit?: number },
+  signal?: AbortSignal,
+): Promise<OdsImportSessionSummary> {
+  try {
+    const q = new URLSearchParams()
+    q.set('batch_id', params.batchId)
+    q.set('session_id', params.sessionId)
+    if (params.sampleLimit != null) q.set('sample_limit', String(params.sampleLimit))
+    const res = await apiFetch(`/api/ods-preview/session-summary?${q.toString()}`, { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    }
+    const tmpl = json.field_mapping_template
+    return {
+      ok: true,
+      batch_id: json.batch_id != null ? String(json.batch_id) : undefined,
+      session_id: json.session_id != null ? String(json.session_id) : undefined,
+      field_mapping_template:
+        tmpl && typeof tmpl === 'object'
+          ? {
+              template_id: String(tmpl.template_id ?? ''),
+              template_name: String(tmpl.template_name ?? ''),
+              template_updated_at: String(tmpl.template_updated_at ?? ''),
+            }
+          : null,
+      failure_summary: json.failure_summary ?? undefined,
+      fail_files: Array.isArray(json.fail_files) ? json.fail_files : [],
+      reject_row_samples: Array.isArray(json.reject_row_samples) ? json.reject_row_samples : [],
+      reject_row_ranges: Array.isArray(json.reject_row_ranges) ? json.reject_row_ranges : [],
+      fetch_warning: json.fetch_warning != null ? String(json.fetch_warning) : null,
+    }
+  } catch (e) {
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
   }
 }
 
@@ -3346,6 +3424,20 @@ export async function saveDimTaxCodeRiskRules(
   }
 }
 
+export type TaxCodeFluctuation = {
+  fluctuation_index: number | null
+  fluctuation_level: 'low' | 'medium' | 'high' | null
+  top_movers: Array<{
+    category_prefix: string
+    baseline_share: number
+    compare_share: number
+    delta_share: number
+  }>
+  baseline_month: number | null
+  compare_month: number | null
+  fluctuation_hint?: string | null
+}
+
 export type TaxCodeAnalysisOverview = {
   stat_year: string
   match_rate: number
@@ -3358,7 +3450,7 @@ export type TaxCodeAnalysisOverview = {
   dim_tax_code_count?: number
   hint?: string | null
   caliber_hint?: string | null
-}
+} & Partial<TaxCodeFluctuation>
 
 export type TaxCodeUnmatchedRow = {
   ssflbm: string
@@ -3396,7 +3488,7 @@ export type TaxCodeEnterpriseSummary = {
   fluctuation_hint?: string | null
   caliber_hint?: string | null
   min_invoice_count?: number
-}
+} & Partial<TaxCodeFluctuation>
 
 export async function fetchTaxCodeAnalysisOverview(
   params: {
@@ -3434,6 +3526,24 @@ export async function fetchTaxCodeAnalysisOverview(
         dim_tax_code_count: Number(json.dim_tax_code_count ?? 0),
         hint: json.hint != null ? String(json.hint) : null,
         caliber_hint: json.caliber_hint != null ? String(json.caliber_hint) : null,
+        fluctuation_index: json.fluctuation_index != null ? Number(json.fluctuation_index) : null,
+        fluctuation_level:
+          json.fluctuation_level === 'low' ||
+          json.fluctuation_level === 'medium' ||
+          json.fluctuation_level === 'high'
+            ? json.fluctuation_level
+            : null,
+        baseline_month: json.baseline_month != null ? Number(json.baseline_month) : null,
+        compare_month: json.compare_month != null ? Number(json.compare_month) : null,
+        top_movers: Array.isArray(json.top_movers)
+          ? json.top_movers.map((m: any) => ({
+              category_prefix: String(m?.category_prefix ?? ''),
+              baseline_share: Number(m?.baseline_share ?? 0),
+              compare_share: Number(m?.compare_share ?? 0),
+              delta_share: Number(m?.delta_share ?? 0),
+            }))
+          : [],
+        fluctuation_hint: json.fluctuation_hint != null ? String(json.fluctuation_hint) : null,
       },
     }
   } catch (e) {
@@ -3558,6 +3668,23 @@ export async function fetchTaxCodeEnterpriseSummary(
         fluctuation_hint: json.fluctuation_hint != null ? String(json.fluctuation_hint) : null,
         caliber_hint: json.caliber_hint != null ? String(json.caliber_hint) : null,
         min_invoice_count: Number(json.min_invoice_count ?? 10),
+        fluctuation_index: json.fluctuation_index != null ? Number(json.fluctuation_index) : null,
+        fluctuation_level:
+          json.fluctuation_level === 'low' ||
+          json.fluctuation_level === 'medium' ||
+          json.fluctuation_level === 'high'
+            ? json.fluctuation_level
+            : null,
+        baseline_month: json.baseline_month != null ? Number(json.baseline_month) : null,
+        compare_month: json.compare_month != null ? Number(json.compare_month) : null,
+        top_movers: Array.isArray(json.top_movers)
+          ? json.top_movers.map((m: any) => ({
+              category_prefix: String(m?.category_prefix ?? ''),
+              baseline_share: Number(m?.baseline_share ?? 0),
+              compare_share: Number(m?.compare_share ?? 0),
+              delta_share: Number(m?.delta_share ?? 0),
+            }))
+          : [],
       },
     }
   } catch (e) {
@@ -6539,6 +6666,447 @@ export async function fetchDwsSupplierTop(
   }
 }
 
+export type DwsEntityProfile = {
+  stat_year: string
+  entity_id: string
+  entity_name: string
+  concentration: {
+    cr1: number | null
+    cr3: number | null
+    cr10: number | null
+    total_net_jshj: number | null
+    top_suppliers: DwsSupplierTopRow[]
+  }
+  churn: {
+    new_total: number
+    new_top10: number
+    disappeared_total: number
+    prior_year: string
+  }
+  tax_structure: {
+    buckets: Array<{ tax_bucket: string; amount_je: number; line_cnt: number; amount_ratio: number }>
+    total_amount_je: number | null
+    total_line_cnt: number | null
+  }
+  tax_code: Partial<TaxCodeFluctuation> & {
+    match_rate?: number | null
+    high_risk_amount_share?: number | null
+    top_category_name?: string | null
+    top_category_share?: number | null
+  }
+  related: {
+    graph_node_count: number
+    graph_edge_count: number
+    graph_ok: boolean
+  }
+  audit_flags: {
+    total: number
+    pending: number
+    by_rule: Array<{
+      rule_id: string
+      flag_count: number
+      pending_count: number
+      amount_sum: number
+    }>
+  }
+  customer_concentration?: {
+    cr1: number | null
+    cr3: number | null
+    cr10: number | null
+    total_net_jshj: number | null
+    top_customers: DwsCustomerTopRow[]
+  }
+  behavior?: { summary: Record<string, number>; month_count: number }
+  goods_category?: {
+    total_net_jshj: number | null
+    top_categories: DwsGoodsCatRow[]
+  }
+  counterparty_risk?: { rows: DwsCounterpartyRiskRow[] }
+  year_over_year?: {
+    prior_year: string
+    churn_summary: { new_total?: number; disappeared_total?: number }
+    tax_buckets: { current?: TaxBucketRow[]; prior?: TaxBucketRow[] }
+  }
+}
+
+type TaxBucketRow = { tax_bucket: string; amount_ratio: number; amount_je: number }
+
+export type DwsGoodsCatRow = {
+  tax_code_short: string
+  tax_code_level2: string
+  stat_quarter: number
+  net_jshj: number
+  invoice_cnt: number
+  supplier_cnt: number
+  avg_single_amt: number | null
+  max_single_amt: number | null
+  distinct_tax_rates: number
+}
+
+export type DwsCustomerTopRow = {
+  customer_id: string
+  customer_name: string
+  net_jshj: number
+  invoice_cnt: number
+  amount_rank: number
+  amount_ratio: number
+  cumulative_ratio: number
+  is_new_customer: boolean
+  last_invoice_date: string
+}
+
+export type DwsEnterpriseBehaviorMonth = {
+  stat_month: string
+  stat_month_no: number
+  inv_cnt_total: number
+  inv_amt_total: number
+  red_inv_ratio: number | null
+  amt_mom_change: number | null
+  cnt_mom_change: number | null
+  abnormal_red_flag: boolean
+  abnormal_spike_flag: boolean
+  abnormal_counterparty_concentration_flag: boolean
+  risk_level: string
+}
+
+export type DwsRedOffsetOverview = {
+  stat_year: string
+  entity_id: string | null
+  kpis: {
+    header_cnt: number
+    red_cnt: number
+    red_ratio: number | null
+    orphan_cnt: number
+    fully_reversed_cnt: number
+    red_offset_amt: number
+    net_amt: number
+  }
+  monthly_trend: Array<{ stat_month: number; header_cnt: number; red_cnt: number; orphan_cnt: number }>
+  hint?: string | null
+}
+
+export type DwsRedOffsetRow = {
+  invoice_no: string
+  invoice_date: string
+  seller_tax_no: string
+  seller_name: string
+  buyer_tax_no: string
+  buyer_name: string
+  fpzt: string
+  net_calc_status: string
+  is_fully_reversed: boolean
+  is_orphan_red: boolean
+  red_offset_jshj: number
+  net_jshj: number
+  red_invoice_count: number
+}
+
+export type DwsInvoiceTimingOverview = {
+  stat_year: string
+  entity_id: string
+  role_type: string
+  stats: {
+    holiday_cnt: number
+    weekend_large_cnt: number
+    normal_cnt: number
+    yearend_cnt: number
+    yearend_ratio: number | null
+  }
+  day_of_week: Array<{ dow: number; cnt: number }>
+  monthly: Array<{ stat_month: number; holiday_cnt: number; weekend_large_cnt: number }>
+  hint?: string | null
+}
+
+export type DwsCounterpartyRiskRow = {
+  counterparty_id: string
+  counterparty_name: string
+  trade_amount: number
+  flag_count: number
+  amount_sum: number
+  by_rule: Record<string, number>
+  risk_score: number
+}
+
+export type DwsYearOverYearCompare = {
+  stat_year: string
+  prior_year: string
+  entity_id: string
+  tax_buckets: { current: TaxBucketRow[]; prior: TaxBucketRow[] }
+  top_suppliers: { current: DwsSupplierTopRow[]; prior: DwsSupplierTopRow[] }
+  top_customers: { current: Array<{ id: string; name: string; amount: number }>; prior: Array<{ id: string; name: string; amount: number }> }
+  category_mix: { current: Array<{ id: string; name: string; amount: number }>; prior: Array<{ id: string; name: string; amount: number }> }
+  churn_summary: { new_total: number; disappeared_total: number }
+}
+
+export async function fetchDwsEntityProfile(
+  params: { statYear: string; entityId: string; minInvoiceCount?: number },
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; aborted?: boolean; data?: DwsEntityProfile; error?: { message?: string } }> {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  sp.set('entity_id', params.entityId.trim())
+  if (params.minInvoiceCount != null && Number.isFinite(params.minInvoiceCount)) {
+    sp.set('min_invoice_count', String(Math.trunc(params.minInvoiceCount)))
+  }
+  try {
+    const res = await apiFetch(`/api/dws/entity-profile?${sp.toString()}`, { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    const topSuppliers: DwsSupplierTopRow[] = (json.concentration?.top_suppliers ?? []).map((x: any) => ({
+      supplier_id: String(x?.supplier_id ?? ''),
+      supplier_name: String(x?.supplier_name ?? ''),
+      net_jshj: Number(x?.net_jshj ?? 0),
+      invoice_cnt: Number(x?.invoice_cnt ?? 0),
+      amount_rank: Number(x?.amount_rank ?? 0),
+      amount_ratio: Number(x?.amount_ratio ?? 0),
+      cumulative_ratio: Number(x?.cumulative_ratio ?? 0),
+      is_new_supplier: Boolean(x?.is_new_supplier),
+      first_invoice_date: String(x?.first_invoice_date ?? ''),
+      last_invoice_date: String(x?.last_invoice_date ?? ''),
+    }))
+    return {
+      ok: true,
+      data: {
+        stat_year: String(json.stat_year ?? params.statYear),
+        entity_id: String(json.entity_id ?? params.entityId),
+        entity_name: String(json.entity_name ?? params.entityId),
+        concentration: {
+          cr1: json.concentration?.cr1 != null ? Number(json.concentration.cr1) : null,
+          cr3: json.concentration?.cr3 != null ? Number(json.concentration.cr3) : null,
+          cr10: json.concentration?.cr10 != null ? Number(json.concentration.cr10) : null,
+          total_net_jshj:
+            json.concentration?.total_net_jshj != null ? Number(json.concentration.total_net_jshj) : null,
+          top_suppliers: topSuppliers,
+        },
+        churn: {
+          new_total: Number(json.churn?.new_total ?? 0),
+          new_top10: Number(json.churn?.new_top10 ?? 0),
+          disappeared_total: Number(json.churn?.disappeared_total ?? 0),
+          prior_year: String(json.churn?.prior_year ?? ''),
+        },
+        tax_structure: {
+          buckets: (json.tax_structure?.buckets ?? []).map((b: any) => ({
+            tax_bucket: String(b?.tax_bucket ?? ''),
+            amount_je: Number(b?.amount_je ?? 0),
+            line_cnt: Number(b?.line_cnt ?? 0),
+            amount_ratio: Number(b?.amount_ratio ?? 0),
+          })),
+          total_amount_je:
+            json.tax_structure?.total_amount_je != null ? Number(json.tax_structure.total_amount_je) : null,
+          total_line_cnt:
+            json.tax_structure?.total_line_cnt != null ? Number(json.tax_structure.total_line_cnt) : null,
+        },
+        tax_code: {
+          match_rate: json.tax_code?.match_rate != null ? Number(json.tax_code.match_rate) : null,
+          high_risk_amount_share:
+            json.tax_code?.high_risk_amount_share != null ? Number(json.tax_code.high_risk_amount_share) : null,
+          top_category_name:
+            json.tax_code?.top_category_name != null ? String(json.tax_code.top_category_name) : null,
+          top_category_share:
+            json.tax_code?.top_category_share != null ? Number(json.tax_code.top_category_share) : null,
+          fluctuation_index:
+            json.tax_code?.fluctuation_index != null ? Number(json.tax_code.fluctuation_index) : null,
+          fluctuation_level:
+            json.tax_code?.fluctuation_level === 'low' ||
+            json.tax_code?.fluctuation_level === 'medium' ||
+            json.tax_code?.fluctuation_level === 'high'
+              ? json.tax_code.fluctuation_level
+              : null,
+          baseline_month:
+            json.tax_code?.baseline_month != null ? Number(json.tax_code.baseline_month) : null,
+          compare_month: json.tax_code?.compare_month != null ? Number(json.tax_code.compare_month) : null,
+          top_movers: Array.isArray(json.tax_code?.top_movers)
+            ? json.tax_code.top_movers.map((m: any) => ({
+                category_prefix: String(m?.category_prefix ?? ''),
+                baseline_share: Number(m?.baseline_share ?? 0),
+                compare_share: Number(m?.compare_share ?? 0),
+                delta_share: Number(m?.delta_share ?? 0),
+              }))
+            : [],
+        },
+        related: {
+          graph_node_count: Number(json.related?.graph_node_count ?? 0),
+          graph_edge_count: Number(json.related?.graph_edge_count ?? 0),
+          graph_ok: Boolean(json.related?.graph_ok),
+        },
+        audit_flags: {
+          total: Number(json.audit_flags?.total ?? 0),
+          pending: Number(json.audit_flags?.pending ?? 0),
+          by_rule: (json.audit_flags?.by_rule ?? []).map((r: any) => ({
+            rule_id: String(r?.rule_id ?? ''),
+            flag_count: Number(r?.flag_count ?? 0),
+            pending_count: Number(r?.pending_count ?? 0),
+            amount_sum: Number(r?.amount_sum ?? 0),
+          })),
+        },
+        customer_concentration: json.customer_concentration
+          ? {
+              cr1: json.customer_concentration.cr1 != null ? Number(json.customer_concentration.cr1) : null,
+              cr3: json.customer_concentration.cr3 != null ? Number(json.customer_concentration.cr3) : null,
+              cr10: json.customer_concentration.cr10 != null ? Number(json.customer_concentration.cr10) : null,
+              total_net_jshj:
+                json.customer_concentration.total_net_jshj != null
+                  ? Number(json.customer_concentration.total_net_jshj)
+                  : null,
+              top_customers: (json.customer_concentration.top_customers ?? []).map((x: any) => ({
+                customer_id: String(x?.customer_id ?? ''),
+                customer_name: String(x?.customer_name ?? ''),
+                net_jshj: Number(x?.net_jshj ?? 0),
+                invoice_cnt: Number(x?.invoice_cnt ?? 0),
+                amount_rank: Number(x?.amount_rank ?? 0),
+                amount_ratio: Number(x?.amount_ratio ?? 0),
+                cumulative_ratio: Number(x?.cumulative_ratio ?? 0),
+                is_new_customer: Boolean(x?.is_new_customer),
+                last_invoice_date: String(x?.last_invoice_date ?? ''),
+              })),
+            }
+          : undefined,
+        behavior: json.behavior
+          ? {
+              summary: json.behavior.summary ?? {},
+              month_count: Number(json.behavior.month_count ?? 0),
+            }
+          : undefined,
+        goods_category: json.goods_category
+          ? {
+              total_net_jshj:
+                json.goods_category.total_net_jshj != null ? Number(json.goods_category.total_net_jshj) : null,
+              top_categories: (json.goods_category.top_categories ?? []).map((x: any) => ({
+                tax_code_short: String(x?.tax_code_short ?? ''),
+                tax_code_level2: String(x?.tax_code_level2 ?? ''),
+                stat_quarter: Number(x?.stat_quarter ?? 0),
+                net_jshj: Number(x?.net_jshj ?? 0),
+                invoice_cnt: Number(x?.invoice_cnt ?? 0),
+                supplier_cnt: Number(x?.supplier_cnt ?? 0),
+                avg_single_amt: x?.avg_single_amt != null ? Number(x.avg_single_amt) : null,
+                max_single_amt: x?.max_single_amt != null ? Number(x.max_single_amt) : null,
+                distinct_tax_rates: Number(x?.distinct_tax_rates ?? 0),
+              })),
+            }
+          : undefined,
+        counterparty_risk: json.counterparty_risk
+          ? {
+              rows: (json.counterparty_risk.rows ?? []).map((x: any) => ({
+                counterparty_id: String(x?.counterparty_id ?? ''),
+                counterparty_name: String(x?.counterparty_name ?? ''),
+                trade_amount: Number(x?.trade_amount ?? 0),
+                flag_count: Number(x?.flag_count ?? 0),
+                amount_sum: Number(x?.amount_sum ?? 0),
+                by_rule: x?.by_rule ?? {},
+                risk_score: Number(x?.risk_score ?? 0),
+              })),
+            }
+          : undefined,
+        year_over_year: json.year_over_year
+          ? {
+              prior_year: String(json.year_over_year.prior_year ?? ''),
+              churn_summary: json.year_over_year.churn_summary ?? {},
+              tax_buckets: json.year_over_year.tax_buckets ?? {},
+            }
+          : undefined,
+      },
+    }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export type DwsInvoiceDetailRow = {
+  sdfphm: string
+  fpdm: string
+  fphm: string
+  kprq: string
+  fpzt: string
+  xfmc: string
+  xfsbh: string
+  gfmc: string
+  gfsbh: string
+  hwlwmc: string
+  ssflbm: string
+  je: number
+  se: number
+  jshj: number
+  slv: string
+  slv_num: number | null
+  stat_year: number | null
+  stat_month: number | null
+  logic_line_no: number
+}
+
+export type DwsInvoiceDetailFilters = {
+  statYear: string
+  entityId?: string
+  statMonth?: string
+  dateFrom?: string
+  dateTo?: string
+  sellerTaxNo?: string
+  goodsName?: string
+  slvNum?: string
+}
+
+function buildInvoiceDetailQuery(params: DwsInvoiceDetailFilters & { limit?: number; offset?: number }) {
+  const sp = new URLSearchParams()
+  sp.set('stat_year', params.statYear.trim())
+  if (params.entityId?.trim()) sp.set('entity_id', params.entityId.trim())
+  if (params.statMonth?.trim()) sp.set('stat_month', params.statMonth.trim())
+  if (params.dateFrom?.trim()) sp.set('date_from', params.dateFrom.trim())
+  if (params.dateTo?.trim()) sp.set('date_to', params.dateTo.trim())
+  if (params.sellerTaxNo?.trim()) sp.set('seller_tax_no', params.sellerTaxNo.trim())
+  if (params.goodsName?.trim()) sp.set('goods_name', params.goodsName.trim())
+  if (params.slvNum?.trim()) sp.set('slv_num', params.slvNum.trim())
+  if (params.limit != null) sp.set('limit', String(params.limit))
+  if (params.offset != null) sp.set('offset', String(params.offset))
+  return sp
+}
+
+export async function fetchDwsInvoiceDetailList(
+  params: DwsInvoiceDetailFilters & { limit?: number; offset?: number },
+  signal?: AbortSignal,
+): Promise<{
+  ok: boolean
+  aborted?: boolean
+  total?: number
+  rows?: DwsInvoiceDetailRow[]
+  error?: { message?: string }
+}> {
+  const sp = buildInvoiceDetailQuery(params)
+  try {
+    const res = await apiFetch(`/api/dws/invoice-detail/list?${sp.toString()}`, { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? { message: `HTTP ${res.status}` } }
+    const rows: DwsInvoiceDetailRow[] = (json.rows ?? []).map((x: any) => ({
+      sdfphm: String(x?.sdfphm ?? ''),
+      fpdm: String(x?.fpdm ?? ''),
+      fphm: String(x?.fphm ?? ''),
+      kprq: String(x?.kprq ?? ''),
+      fpzt: String(x?.fpzt ?? ''),
+      xfmc: String(x?.xfmc ?? ''),
+      xfsbh: String(x?.xfsbh ?? ''),
+      gfmc: String(x?.gfmc ?? ''),
+      gfsbh: String(x?.gfsbh ?? ''),
+      hwlwmc: String(x?.hwlwmc ?? ''),
+      ssflbm: String(x?.ssflbm ?? ''),
+      je: Number(x?.je ?? 0),
+      se: Number(x?.se ?? 0),
+      jshj: Number(x?.jshj ?? 0),
+      slv: String(x?.slv ?? ''),
+      slv_num: x?.slv_num != null ? Number(x.slv_num) : null,
+      stat_year: x?.stat_year != null ? Number(x.stat_year) : null,
+      stat_month: x?.stat_month != null ? Number(x.stat_month) : null,
+      logic_line_no: Number(x?.logic_line_no ?? 0),
+    }))
+    return { ok: true, total: Number(json.total ?? 0), rows }
+  } catch (e) {
+    if (isFetchAbortError(e)) return { ok: false, aborted: true }
+    return { ok: false, error: { message: e instanceof Error ? e.message : '网络错误' } }
+  }
+}
+
+export function dwsInvoiceDetailExportUrl(params: DwsInvoiceDetailFilters): string {
+  return apiUrl(`/api/dws/invoice-detail/export?${buildInvoiceDetailQuery(params).toString()}`)
+}
+
 export async function fetchDwsSupplierChurn(
   params: {
     statYear: string
@@ -6651,6 +7219,8 @@ export type AuditFlagRow = {
   analysis_batch?: string
   created_at?: string | null
   detail_json?: string | null
+  /** 仅规则落库使用；列表 API 不返回，请用 detail_json */
+  invoice_list?: string | null
 }
 
 export async function fetchAuditMeta(signal?: AbortSignal): Promise<{

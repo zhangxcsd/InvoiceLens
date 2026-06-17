@@ -33,6 +33,7 @@ const NAV_QUERY_KEYS = [
   'party_b_tax',
   'counterparty_tax_no',
   'counterparty_id',
+  'role_mode',
   'goods_name',
   'goods_key',
   'slv_num',
@@ -219,6 +220,78 @@ export function navigateToOverviewSummary(
   params?: { statYear?: string; entityId?: string },
 ) {
   navigateWithQuery(onNav, 'overview_summary', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToEntityProfile(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'entity_profile', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToSupplierTop(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string; sellerTaxNo?: string; roleMode?: 'supplier' | 'customer' },
+) {
+  navigateWithQuery(onNav, 'supplier_top', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+    seller_tax_no: params?.sellerTaxNo,
+    role_mode: params?.roleMode,
+  })
+}
+
+export function navigateToGoodsCategory(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'goods_category', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToRedOffsetAnalysis(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'red_offset_analysis', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToInvoiceTiming(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'invoice_timing', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToCounterpartyRisk(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'counterparty_risk', {
+    stat_year: params?.statYear,
+    entity_id: params?.entityId,
+  })
+}
+
+export function navigateToYearOverYearCompare(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; entityId?: string },
+) {
+  navigateWithQuery(onNav, 'year_over_year_compare', {
     stat_year: params?.statYear,
     entity_id: params?.entityId,
   })

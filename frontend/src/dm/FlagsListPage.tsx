@@ -11,7 +11,7 @@ import {
   type AuditFlagRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { readNavQueryParams, writeNavQueryParams } from '../utils/navHelpers'
+import { readNavQueryParams, writeNavQueryParams, navigateToEntityProfile } from '../utils/navHelpers'
 import type { NavKey } from '../types'
 import { FlagActionButtons } from './FlagActionButtons'
 import { navigateFlagAction } from './flagActionHelpers'
@@ -345,15 +345,31 @@ export function FlagsListPage({ onNav }: Props) {
                             </button>
                           }
                           extraAfter={
-                            <button
-                              type="button"
-                              className="text-accent underline-offset-2 hover:underline"
-                              onClick={() =>
-                                navigateFlagAction(onNav!, 'flags_track', row, effectiveYear)
-                              }
-                            >
-                              {ui.viewTrackBtn}
-                            </button>
+                            <>
+                              {onNav && row.entity_id ? (
+                                <button
+                                  type="button"
+                                  className="text-accent underline-offset-2 hover:underline"
+                                  onClick={() =>
+                                    navigateToEntityProfile(onNav, {
+                                      statYear: effectiveYear,
+                                      entityId: row.entity_id ?? undefined,
+                                    })
+                                  }
+                                >
+                                  {t.sidebar.entityProfile}
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="text-accent underline-offset-2 hover:underline"
+                                onClick={() =>
+                                  navigateFlagAction(onNav!, 'flags_track', row, effectiveYear)
+                                }
+                              >
+                                {ui.viewTrackBtn}
+                              </button>
+                            </>
                           }
                         />
                       </td>

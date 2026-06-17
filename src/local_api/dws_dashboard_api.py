@@ -2323,3 +2323,316 @@ def api_dws_rebuild(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             logger.exception("tax_deviation_sync after dws rebuild")
     return result
+
+
+def _customer_ranked_from_trade_sum(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_id: str,
+    limit: int | None = None,
+) -> tuple[list[tuple[Any, ...]], int]:
+    """销方视角：从 dws_trade_sum 聚合客户排名。"""
+    limit_clause = ""
+    limit_params: list[Any] = []
+    if limit is not None:
+        lim = max(1, min(int(limit or 20), 100))
+        limit_clause = " LIMIT ?"
+        limit_params = [lim]
+    sql = f"""
+        WITH base AS (
+            -- 审计含义：销方主体下的客户（购方）交易汇总
+            SELECT
+                counterparty_id,
+                max(counterparty_name) AS counterparty_name,
+                sum(total_amount) AS net_jshj,
+                sum(invoice_cnt)::INT AS invoice_cnt,
+                max(latest_invoice_date) AS last_invoice_date
+            FROM dws_trade_sum
+            WHERE stat_year = ? AND entity_id = ? AND counterparty_role = '客户'
+              AND length(counterparty_id) > 0
+            GROUP BY counterparty_id
+        ),
+        prior AS (
+            SELECT DISTINCT counterparty_id
+            FROM dws_trade_sum
+            WHERE stat_year < ? AND entity_id = ? AND counterparty_role = '客户'
+        ),
+        ranked AS (
+            SELECT
+                b.*,
+                NOT EXISTS (SELECT 1 FROM prior p WHERE p.counterparty_id = b.counterparty_id) AS is_new_customer,
+                sum(b.net_jshj) OVER () AS entity_total,
+                row_number() OVER (ORDER BY b.net_jshj DESC, b.counterparty_id) AS amount_rank,
+                sum(b.net_jshj) OVER (
+                    ORDER BY b.net_jshj DESC, b.counterparty_id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cum_amt
+            FROM base b
+        )
+        SELECT
+            counterparty_id, counterparty_name, net_jshj, invoice_cnt,
+            amount_rank,
+            CASE WHEN entity_total = 0 THEN 0 ELSE net_jshj / entity_total END,
+            CASE WHEN entity_total = 0 THEN 0 ELSE cum_amt / entity_total END,
+            is_new_customer, last_invoice_date
+        FROM ranked
+        ORDER BY amount_rank ASC
+        {limit_clause}
+    """
+    params = [stat_year, entity_id, stat_year, entity_id, *limit_params]
+    rows = conn.execute(sql, params).fetchall()
+    count = int(
+        conn.execute(
+            """
+            SELECT count(DISTINCT counterparty_id)::BIGINT
+            FROM dws_trade_sum
+            WHERE stat_year = ? AND entity_id = ? AND counterparty_role = '客户'
+              AND length(counterparty_id) > 0
+            """,
+            [stat_year, entity_id],
+        ).fetchone()[0]
+        or 0
+    )
+    return list(rows or []), count
+
+
+def _customer_row_dict(r: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "customer_id": str(r[0] or ""),
+        "customer_name": str(r[1] or r[0] or ""),
+        "net_jshj": float(r[2] or 0),
+        "invoice_cnt": int(r[3] or 0),
+        "amount_rank": int(r[4] or 0),
+        "amount_ratio": float(r[5] or 0),
+        "cumulative_ratio": float(r[6] or 0),
+        "is_new_customer": bool(r[7]),
+        "last_invoice_date": str(r[8] or "") if r[8] else "",
+    }
+
+
+def api_dws_customer_cr(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    entity_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        y = _safe_int_year(stat_year)
+        ef, ep = _entity_filter_clause(entity_id)
+        if not ep:
+            return {
+                "ok": False,
+                "error": {
+                    "message": "客户集中度需指定销方主体（entity_id 税号）",
+                    "exception_type": "ValidationError",
+                },
+            }
+        ranked, total = _customer_ranked_from_trade_sum(conn, stat_year=y, entity_id=ep[0], limit=None)
+        cr_rows = [(r[4], r[5], r[2], r[6]) for r in ranked]
+        cr = _cr_from_sup_rows(cr_rows)
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "entity_id": ep[0],
+            "customer_cnt": total,
+            "filter_source": "dws_trade_sum",
+            **cr,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+
+def api_dws_customer_top(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    entity_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    try:
+        y = _safe_int_year(stat_year)
+        ef, ep = _entity_filter_clause(entity_id)
+        if not ep:
+            return {
+                "ok": False,
+                "error": {
+                    "message": "Top 客户明细需指定销方主体（entity_id 税号）",
+                    "exception_type": "ValidationError",
+                },
+            }
+        lim = max(1, min(int(limit or 20), 100))
+        rows, total = _customer_ranked_from_trade_sum(conn, stat_year=y, entity_id=ep[0], limit=lim)
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "entity_id": ep[0],
+            "rows": [_customer_row_dict(r) for r in rows],
+            "total": total,
+            "limit": lim,
+            "filter_source": "dws_trade_sum",
+        }
+    except Exception as exc:
+        return {"ok": False, "rows": [], "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+
+def api_dws_customer_churn(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    entity_id: str | None = None,
+    kind: str = "new",
+    top_only: bool = False,
+    keyword: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """新增/消失客户（基于 dws_trade_sum 年度对比，销方视角）。"""
+    try:
+        y = _safe_int_year(stat_year)
+        ef, ep = _entity_filter_clause(entity_id)
+        if not ep:
+            return {
+                "ok": False,
+                "error": {
+                    "message": "客户变动分析需指定销方主体（entity_id 税号）",
+                    "exception_type": "ValidationError",
+                },
+            }
+        k = (kind or "new").strip().lower()
+        if k not in ("new", "disappeared"):
+            k = "new"
+        lim = max(1, min(int(limit or 50), 500))
+        off = max(0, int(offset or 0))
+        prior_y = y - 1
+        ranked, _ = _customer_ranked_from_trade_sum(conn, stat_year=y, entity_id=ep[0], limit=None)
+        new_total = sum(1 for r in ranked if r[7])
+        new_top10 = sum(1 for r in ranked if r[7] and int(r[4] or 0) <= 10)
+        dis_total = 0
+        if prior_y >= 1990:
+            dis_total = int(
+                conn.execute(
+                    """
+                    SELECT count(*)::BIGINT
+                    FROM dws_trade_sum prior
+                    WHERE prior.stat_year = ? AND prior.entity_id = ?
+                      AND prior.counterparty_role = '客户'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM dws_trade_sum cur
+                        WHERE cur.stat_year = ? AND cur.entity_id = prior.entity_id
+                          AND cur.counterparty_id = prior.counterparty_id
+                          AND cur.counterparty_role = '客户'
+                      )
+                    """,
+                    [prior_y, ep[0], y],
+                ).fetchone()[0]
+                or 0
+            )
+        summary = {
+            "new_total": new_total,
+            "new_top10": new_top10,
+            "disappeared_total": dis_total,
+            "prior_year": str(prior_y),
+        }
+        kw = (keyword or "").strip()
+        if k == "new":
+            filtered = [r for r in ranked if r[7]]
+            if top_only:
+                filtered = [r for r in filtered if int(r[4] or 0) <= 10]
+            if kw:
+                like = kw.lower()
+                filtered = [
+                    r
+                    for r in filtered
+                    if like in str(r[1] or "").lower() or like in str(r[0] or "").lower()
+                ]
+            total = len(filtered)
+            page = filtered[off : off + lim]
+            out = [
+                {**_customer_row_dict(r), "churn_kind": "new", "is_top10": int(r[4] or 0) <= 10}
+                for r in page
+            ]
+            hint = None if total > 0 else f"{y} 年度该销方无新增客户（相对 {prior_y} 及以前）。"
+        else:
+            if prior_y < 1990:
+                return {
+                    "ok": True,
+                    "stat_year": str(y),
+                    "prior_year": str(prior_y),
+                    "entity_id": ep[0],
+                    "kind": k,
+                    "rows": [],
+                    "total": 0,
+                    "summary": summary,
+                    "hint": "无法计算消失客户：当前年度过小。",
+                }
+            kw_clause = ""
+            kw_params: list[Any] = []
+            if kw:
+                kw_clause = " AND (prior.counterparty_name ILIKE ? OR prior.counterparty_id ILIKE ?)"
+                like = f"%{kw}%"
+                kw_params = [like, like]
+            count_sql = f"""
+                SELECT count(*)::BIGINT
+                FROM dws_trade_sum prior
+                WHERE prior.stat_year = ? AND prior.entity_id = ?
+                  AND prior.counterparty_role = '客户'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dws_trade_sum cur
+                    WHERE cur.stat_year = ? AND cur.entity_id = prior.entity_id
+                      AND cur.counterparty_id = prior.counterparty_id
+                      AND cur.counterparty_role = '客户'
+                  ){kw_clause}
+            """
+            total = int(conn.execute(count_sql, [prior_y, ep[0], y, *kw_params]).fetchone()[0] or 0)
+            rows = conn.execute(
+                f"""
+                SELECT
+                    prior.counterparty_id, prior.counterparty_name,
+                    prior.total_amount, prior.invoice_cnt,
+                    0, 0, 0, FALSE, prior.latest_invoice_date
+                FROM dws_trade_sum prior
+                WHERE prior.stat_year = ? AND prior.entity_id = ?
+                  AND prior.counterparty_role = '客户'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dws_trade_sum cur
+                    WHERE cur.stat_year = ? AND cur.entity_id = prior.entity_id
+                      AND cur.counterparty_id = prior.counterparty_id
+                      AND cur.counterparty_role = '客户'
+                  ){kw_clause}
+                ORDER BY prior.total_amount DESC NULLS LAST, prior.counterparty_id
+                LIMIT ? OFFSET ?
+                """,
+                [prior_y, ep[0], y, *kw_params, lim, off],
+            ).fetchall()
+            out = [
+                {
+                    **_customer_row_dict(r),
+                    "churn_kind": "disappeared",
+                    "compare_year": prior_y,
+                    "is_top10": False,
+                }
+                for r in rows or []
+            ]
+            hint = (
+                None
+                if total > 0
+                else f"{prior_y}→{y} 年度对比：该销方无消失客户（上年有、当年无）。"
+            )
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "prior_year": str(prior_y),
+            "entity_id": ep[0],
+            "kind": k,
+            "top_only": top_only,
+            "rows": out,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "summary": summary,
+            "hint": hint,
+        }
+    except Exception as exc:
+        return {"ok": False, "rows": [], "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+

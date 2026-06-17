@@ -26,6 +26,11 @@ _DEFAULT_CHAPTERS = [
     {"id": "trade_relationships", "label": "专题 往来关系摘要", "default": False},
     {"id": "tax_in_out_deviation", "label": "专题 进销偏离分析", "default": False},
     {"id": "finance_reconcile", "label": "专题 财务账票核对差异", "default": False},
+    {"id": "goods_category", "label": "专题 品类结构分析", "default": False},
+    {"id": "red_offset_analysis", "label": "专题 红冲/作废分析", "default": False},
+    {"id": "counterparty_risk", "label": "专题 对手风险聚合", "default": False},
+    {"id": "invoice_timing", "label": "专题 开票时间行为", "default": False},
+    {"id": "year_over_year", "label": "专题 跨年结构对比", "default": False},
 ]
 
 _BUILTIN_TEMPLATES: list[dict[str, Any]] = [

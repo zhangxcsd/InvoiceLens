@@ -45,10 +45,21 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
         CREATE TABLE IF NOT EXISTS dwd_inv_header (
             header_uuid VARCHAR PRIMARY KEY,
             stat_year SMALLINT,
-            xfsbh VARCHAR,
+            stat_month SMALLINT,
+            sdfphm VARCHAR,
+            fpdm VARCHAR,
+            fphm VARCHAR,
+            kprq DATE,
+            fpzt VARCHAR,
             xfmc VARCHAR,
-            gfsbh VARCHAR,
+            xfsbh VARCHAR,
             gfmc VARCHAR,
+            gfsbh VARCHAR,
+            jshj DECIMAL(18,2),
+            net_jshj DECIMAL(18,2),
+            is_orphan_red BOOLEAN,
+            net_calc_status VARCHAR,
+            invoice_date DATE,
             import_batch_id VARCHAR
         )
         """
@@ -59,9 +70,11 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
             detail_uuid VARCHAR PRIMARY KEY,
             header_uuid VARCHAR,
             stat_year SMALLINT,
+            stat_month SMALLINT,
             logic_line_no INTEGER,
             ssflbm VARCHAR,
             hwlwmc VARCHAR,
+            slv VARCHAR,
             slv_num DOUBLE,
             je DECIMAL(18,2),
             se DECIMAL(18,2),
@@ -97,17 +110,19 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(
         """
         INSERT INTO dwd_inv_header VALUES
-            ('h1', 2026, '91310000MA1AAAAAAA', '销方A', '91310000MA1BBBBBBB', '购方B', 'batch1'),
-            ('h2', 2026, '91310000MA1CCCCCCC', '销方C', '91310000MA1BBBBBBB', '购方B', 'batch1')
+            ('h1', 2026, 1, 'SD001', '', '001', DATE '2026-01-15', '正常', '销方A', '91310000MA1AAAAAAA', '购方B', '91310000MA1BBBBBBB', 325.00, 325.00, FALSE, '正常', DATE '2026-01-15', 'batch1'),
+            ('h2', 2026, 2, 'SD002', '', '002', DATE '2026-02-10', '正常', '销方C', '91310000MA1CCCCCCC', '购方B', '91310000MA1BBBBBBB', 67.80, 67.80, FALSE, '正常', DATE '2026-02-10', 'batch1'),
+            ('h3', 2026, 2, 'SD003', '', '003', DATE '2026-02-20', '正常', '销方D', '91310000MA1DDDDDDD', '购方B', '91310000MA1BBBBBBB', 339.00, 339.00, FALSE, '正常', DATE '2026-02-20', 'batch1')
         """
     )
     conn.execute(
         """
         INSERT INTO dwd_inv_detail VALUES
-            ('d1', 'h1', 2026, 1, '1090100000000000000', '办公用品', 0.13, 100.00, 13.00, 113.00, 'batch1'),
-            ('d2', 'h1', 2026, 2, '1090201010000000000', '咨询服务', 0.06, 200.00, 12.00, 212.00, 'batch1'),
-            ('d3', 'h2', 2026, 1, '9999999999999999999', '办公用品', 0.13, 50.00, 6.50, 56.50, 'batch1'),
-            ('d4', 'h2', 2026, 2, NULL, '其他货物', 0.13, 10.00, 1.30, 11.30, 'batch1')
+            ('d1', 'h1', 2026, 1, 1, '1090100000000000000', '办公用品', '13%', 0.13, 100.00, 13.00, 113.00, 'batch1'),
+            ('d2', 'h1', 2026, 1, 2, '1090201010000000000', '咨询服务', '6%', 0.06, 200.00, 12.00, 212.00, 'batch1'),
+            ('d3', 'h2', 2026, 2, 1, '9999999999999999999', '办公用品', '13%', 0.13, 50.00, 6.50, 56.50, 'batch1'),
+            ('d4', 'h2', 2026, 2, 2, NULL, '其他货物', '13%', 0.13, 10.00, 1.30, 11.30, 'batch1'),
+            ('d5', 'h3', 2026, 2, 1, '1090100000000000000', '办公用品', '13%', 0.13, 300.00, 39.00, 339.00, 'batch1')
         """
     )
 
@@ -180,8 +195,8 @@ def main() -> int:
 
     overview = api_tax_code_analysis_overview(conn, stat_year="2026")
     assert overview.get("ok"), overview
-    assert overview["lines_with_code"] == 3
-    assert overview["matched_line_count"] == 2
+    assert overview["lines_with_code"] == 4
+    assert overview["matched_line_count"] == 3
     assert overview["unmatched_line_count"] == 1
     assert 0 < overview["match_rate"] < 1
     assert overview["high_risk_amount_share"] > 0
@@ -197,7 +212,7 @@ def main() -> int:
 
     goods_filter = api_tax_code_analysis_overview(conn, stat_year="2026", goods_name="办公用品")
     assert goods_filter.get("ok"), goods_filter
-    assert goods_filter["lines_with_code"] == 2
+    assert goods_filter["lines_with_code"] == 3
     assert goods_filter["lines_with_code"] < overview["lines_with_code"]
 
     slv_filter = api_tax_code_analysis_overview(conn, stat_year="2026", slv_num="0.06")
@@ -207,7 +222,7 @@ def main() -> int:
     both = api_tax_code_analysis_overview(
         conn, stat_year="2026", goods_name="办公用品", slv_num="0.13"
     )
-    assert both.get("ok") and both["lines_with_code"] == 2
+    assert both.get("ok") and both["lines_with_code"] == 3
 
     ent = api_tax_code_analysis_enterprise_summary(
         conn, stat_year="2026", min_invoice_count=1, page=1, page_size=10
@@ -227,6 +242,23 @@ def main() -> int:
         page_size=10,
     )
     assert ent_goods.get("ok") and ent_goods["total"] >= 1
+
+    scoped_fl = api_tax_code_analysis_overview(
+        conn, stat_year="2026", entity_id="91310000MA1BBBBBBB"
+    )
+    assert scoped_fl.get("ok"), scoped_fl
+    assert scoped_fl.get("fluctuation_index") is not None
+    assert scoped_fl.get("baseline_month") == 1
+    assert scoped_fl.get("compare_month") == 2
+    assert isinstance(scoped_fl.get("top_movers"), list)
+
+    ent_fl = api_tax_code_analysis_enterprise_summary(
+        conn, stat_year="2026", min_invoice_count=1, page=1, page_size=10
+    )
+    assert ent_fl.get("ok"), ent_fl
+    assert ent_fl.get("fluctuation_index") is not None or ent_fl.get("fluctuation_hint")
+    if ent_fl.get("rows"):
+        assert "fluctuation_index" in ent_fl["rows"][0]
 
     empty_dim = duckdb.connect(":memory:")
     _seed(empty_dim)

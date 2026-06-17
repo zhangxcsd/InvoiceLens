@@ -54,4 +54,30 @@ test.describe('RBAC sidebar nav', () => {
     await expect(scanBtn).toBeDisabled()
     await expect(scanBtn).toHaveAttribute('title', t.rbac.writeDisabledHint)
   })
+
+  test('viewer direct finance_diff deep link is redirected', async ({ page }) => {
+    await page.goto('/?nav=finance_diff')
+    await page.getByPlaceholder(t.login.accountPlaceholder).fill(VIEWER_USER)
+    await page.getByPlaceholder(t.login.passwordPlaceholder).fill(VIEWER_PASS)
+    await page.getByRole('button', { name: t.login.submit, exact: true }).click()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.getByText(t.financeDiffUi.pageTitle)).toHaveCount(0)
+    await expect(page.getByText(t.financeDiffUi.pageDesc)).toHaveCount(0)
+    await expect(page.locator('b.font-medium').filter({ hasText: t.breadcrumb.dataPreview })).toBeVisible({
+      timeout: 15_000,
+    })
+  })
+
+  test('viewer direct import_wizard_upload deep link is redirected', async ({ page }) => {
+    await page.goto('/?nav=import_wizard_upload')
+    await page.getByPlaceholder(t.login.accountPlaceholder).fill(VIEWER_USER)
+    await page.getByPlaceholder(t.login.passwordPlaceholder).fill(VIEWER_PASS)
+    await page.getByRole('button', { name: t.login.submit, exact: true }).click()
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.getByRole('button', { name: t.importUpload.startImport, exact: true })).toHaveCount(0)
+    await expect(page.getByText(t.importUpload.title, { exact: true })).toHaveCount(0)
+    await expect(page.locator('b.font-medium').filter({ hasText: t.breadcrumb.dataPreview })).toBeVisible({
+      timeout: 15_000,
+    })
+  })
 })

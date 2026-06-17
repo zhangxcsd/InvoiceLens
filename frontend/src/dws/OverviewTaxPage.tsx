@@ -20,6 +20,7 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
+import { InvoiceDetailDrillPanel } from './InvoiceDetailDrillPanel'
 import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
 import { useDimDictDomain } from '../dim/useDimDict'
 
@@ -285,8 +286,18 @@ function matchesBucketFilter(bucket: string, selected: ReadonlySet<string>): boo
   return selected.size === 0 || selected.has(bucket)
 }
 
+function taxBucketToSlvNum(bucket: string): string | undefined {
+  if (bucket === '13%') return '0.13'
+  if (bucket === '9%') return '0.09'
+  if (bucket === '6%') return '0.06'
+  if (bucket === '3%') return '0.03'
+  if (bucket === '免税/零税率') return '0'
+  return undefined
+}
+
 export function OverviewTaxPage() {
   const ui = t.overviewTaxUi
+  const drillUi = t.invoiceDetailDrillUi
   const deepLink = useDwsUrlDeepLinkFilter()
   const f = useDwsFilters(false, { initFromUrl: true })
   const roleTypeDict = useDimDictDomain('finance_role_type')
@@ -304,6 +315,8 @@ export function OverviewTaxPage() {
   const [selectedTrendBuckets, setSelectedTrendBuckets] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [drillOpen, setDrillOpen] = useState(false)
+  const [drillSlvNum, setDrillSlvNum] = useState<string | undefined>(undefined)
 
   const selectedBarBucketSet = useMemo(() => new Set(selectedBarBuckets), [selectedBarBuckets])
   const selectedTrendBucketSet = useMemo(() => new Set(selectedTrendBuckets), [selectedTrendBuckets])
@@ -695,6 +708,7 @@ export function OverviewTaxPage() {
                   <th className={dataTableClasses.headerCellRight}>{ui.colAmount}</th>
                   <th className={dataTableClasses.headerCellRight}>{ui.colRatio}</th>
                   <th className={dataTableClasses.headerCellRight}>{ui.colLines}</th>
+                  <th className={dataTableClasses.headerCell}>{drillUi.drillBtn}</th>
                 </tr>
               )}
             </thead>
@@ -738,11 +752,23 @@ export function OverviewTaxPage() {
                     <td className={dataTableClasses.cellRight}>{formatDwsAmount(r.amount_je)}</td>
                     <td className={dataTableClasses.cellRight}>{(r.amount_ratio * 100).toFixed(2)}%</td>
                     <td className={dataTableClasses.cellRight}>{r.line_cnt.toLocaleString()}</td>
+                    <td className={dataTableClasses.cell}>
+                      <button
+                        type="button"
+                        className="text-accent hover:underline"
+                        onClick={() => {
+                          setDrillSlvNum(taxBucketToSlvNum(r.tax_bucket))
+                          setDrillOpen(true)
+                        }}
+                      >
+                        {drillUi.drillFromTaxBucket}
+                      </button>
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={4} className={dataTableClasses.emptyCell}>
+                  <td colSpan={5} className={dataTableClasses.emptyCell}>
                     {tableEmptyText}
                   </td>
                 </tr>
@@ -751,6 +777,20 @@ export function OverviewTaxPage() {
           </table>
         </div>
       </Card>
+
+      <InvoiceDetailDrillPanel
+        open={drillOpen}
+        onClose={() => setDrillOpen(false)}
+        title={drillUi.drillFromTaxBucket}
+        filters={{
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim() || undefined,
+          slvNum: drillSlvNum,
+          statMonth: deepLink.timeFilterParams.statMonth,
+          dateFrom: deepLink.timeFilterParams.dateFrom,
+          dateTo: deepLink.timeFilterParams.dateTo,
+        }}
+      />
     </div>
   )
 }

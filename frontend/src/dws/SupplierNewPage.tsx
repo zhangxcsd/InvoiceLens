@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsSupplierChurn, type DwsSupplierChurnRow } from '../config/localApi'
+import { fetchDwsCustomerChurn } from '../config/dwsDplusApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams, writeNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
 
@@ -10,7 +12,17 @@ type ChurnKind = 'new' | 'disappeared'
 
 export function SupplierNewPage() {
   const ui = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const [roleMode, setRoleMode] = useState<'supplier' | 'customer'>(() =>
+    urlQuery.role_mode === 'customer' ? 'customer' : 'supplier',
+  )
+  const isCustomer = roleMode === 'customer'
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBuyer: !isCustomer,
+    requireBothRoles: isCustomer,
+    initFromUrl: true,
+  })
   const [kind, setKind] = useState<ChurnKind>('new')
   const [topOnly, setTopOnly] = useState(false)
   const [keyword, setKeyword] = useState('')
@@ -29,47 +41,53 @@ export function SupplierNewPage() {
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
 
-  const caliberHint = ui.analysisSubjectCaliberHint.replace('{n}', String(effectiveN))
+  const caliberHint = (isCustomer ? ui.analysisSubjectBothRolesCaliberHint : ui.analysisSubjectCaliberHint).replace(
+    '{n}',
+    String(effectiveN),
+  )
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    if (!f.effectiveYear || !f.entityId.trim()) {
-      setRows([])
-      setTotal(0)
-      setSummary(null)
-      setHint(null)
-      return
-    }
-    setLoading(true)
-    setErr(null)
-    try {
-      const res = await fetchDwsSupplierChurn(
-        {
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!f.effectiveYear || !f.entityId.trim()) {
+        setRows([])
+        setTotal(0)
+        setSummary(null)
+        setHint(null)
+        return
+      }
+      setLoading(true)
+      setErr(null)
+      try {
+        const params = {
           statYear: f.effectiveYear,
           entityId: f.entityId.trim(),
           kind,
           topOnly: kind === 'new' ? topOnly : false,
           keyword: keyword.trim() || undefined,
           limit: 100,
-        },
-        signal,
-      )
-      if (signal?.aborted || res.aborted) return
-      if (!res.ok) {
-        setErr(res.error?.message ?? ui.loadFailed)
-        setRows([])
-        setTotal(0)
-        setSummary(null)
-        return
+        }
+        const res = isCustomer
+          ? await fetchDwsCustomerChurn(params, signal)
+          : await fetchDwsSupplierChurn(params, signal)
+        if (signal?.aborted || res.aborted) return
+        if (!res.ok) {
+          setErr(res.error?.message ?? ui.loadFailed)
+          setRows([])
+          setTotal(0)
+          setSummary(null)
+          return
+        }
+        setRows(res.rows ?? [])
+        setTotal(res.total ?? 0)
+        setSummary(res.summary ?? null)
+        setPriorYear(res.prior_year ?? '')
+        setHint(res.hint ?? null)
+      } finally {
+        setLoading(false)
       }
-      setRows(res.rows ?? [])
-      setTotal(res.total ?? 0)
-      setSummary(res.summary ?? null)
-      setPriorYear(res.prior_year ?? '')
-      setHint(res.hint ?? null)
-    } finally {
-      setLoading(false)
-    }
-  }, [f.effectiveYear, f.entityId, kind, topOnly, keyword, ui.loadFailed])
+    },
+    [f.effectiveYear, f.entityId, kind, topOnly, keyword, isCustomer, ui.loadFailed],
+  )
 
   useEffect(() => {
     const ac = new AbortController()
@@ -77,19 +95,44 @@ export function SupplierNewPage() {
     return () => ac.abort()
   }, [load])
 
-  const tableTitle =
-    kind === 'new'
+  const tableTitle = isCustomer
+    ? kind === 'new'
+      ? ui.customerNewTableNew.replace('{count}', String(total))
+      : ui.customerNewTableDisappeared.replace('{count}', String(total))
+    : kind === 'new'
       ? ui.supplierNewTableNew.replace('{count}', String(total))
       : ui.supplierNewTableDisappeared.replace('{count}', String(total))
 
   return (
     <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.supplierNewTitle} note={ui.supplierNewDesc} noteTone="plain" />
+      <PrototypePageHeader
+        title={isCustomer ? ui.customerNewTitle : ui.supplierNewTitle}
+        note={isCustomer ? ui.customerNewDesc : ui.supplierNewDesc}
+        noteTone="plain"
+      />
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
+        <div className="mb-3 flex gap-2">
+          {(['supplier', 'customer'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={[
+                'rounded border px-2 py-1 text-il-meta',
+                roleMode === mode ? 'border-accent bg-accent/5 text-accent' : 'border-border-light text-text-3',
+              ].join(' ')}
+              onClick={() => {
+                setRoleMode(mode)
+                writeNavQueryParams({ role_mode: mode })
+              }}
+            >
+              {mode === 'supplier' ? ui.roleSupplier : ui.roleCustomer}
+            </button>
+          ))}
+        </div>
         <DwsFilterBar
           effectiveYear={f.effectiveYear}
           yearOptions={f.yearOptions}
@@ -109,10 +152,16 @@ export function SupplierNewPage() {
         <Card title={ui.supplierNewSummaryTitle}>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {[
-              { label: ui.supplierNewKpiNew, value: summary ? String(summary.new_total) : '—' },
-              { label: ui.supplierNewKpiNewTop10, value: summary ? String(summary.new_top10) : '—' },
               {
-                label: ui.supplierNewKpiDisappeared,
+                label: isCustomer ? ui.customerNewKpiNew : ui.supplierNewKpiNew,
+                value: summary ? String(summary.new_total) : '—',
+              },
+              {
+                label: isCustomer ? ui.customerNewKpiNewTop10 : ui.supplierNewKpiNewTop10,
+                value: summary ? String(summary.new_top10) : '—',
+              },
+              {
+                label: isCustomer ? ui.customerNewKpiDisappeared : ui.supplierNewKpiDisappeared,
                 value: summary ? String(summary.disappeared_total) : '—',
               },
               {
@@ -150,18 +199,20 @@ export function SupplierNewPage() {
                       ].join(' ')}
                       onClick={() => setKind(k)}
                     >
-                      {k === 'new' ? ui.supplierNewTabNew : ui.supplierNewTabDisappeared}
+                      {k === 'new'
+                        ? isCustomer
+                          ? ui.customerNewTabNew
+                          : ui.supplierNewTabNew
+                        : isCustomer
+                          ? ui.customerNewTabDisappeared
+                          : ui.supplierNewTabDisappeared}
                     </button>
                   ))}
                 </div>
               </div>
               {kind === 'new' ? (
                 <label className="flex items-center gap-2 text-il-page-desc text-text-2">
-                  <input
-                    type="checkbox"
-                    checked={topOnly}
-                    onChange={(e) => setTopOnly(e.target.checked)}
-                  />
+                  <input type="checkbox" checked={topOnly} onChange={(e) => setTopOnly(e.target.checked)} />
                   {ui.supplierNewTopOnly}
                 </label>
               ) : null}
@@ -169,7 +220,7 @@ export function SupplierNewPage() {
                 <label className="mb-1 block text-il-label font-medium text-text-2">{ui.supplierNewKeywordLabel}</label>
                 <input
                   className="w-full rounded-sm border border-border bg-white px-2.5 py-1.5 text-il-page-desc text-text outline-none focus:border-accent"
-                  placeholder={ui.supplierNewKeywordPlaceholder}
+                  placeholder={isCustomer ? ui.customerNewKeywordPlaceholder : ui.supplierNewKeywordPlaceholder}
                   value={keyword}
                   onChange={(e) => setKeyword(e.target.value)}
                 />
@@ -215,7 +266,7 @@ export function SupplierNewPage() {
                   ) : (
                     <tr>
                       <td colSpan={9} className="px-3 py-6 text-center text-text-3">
-                        {loading ? ui.loading : ui.emptySupplierChurn}
+                        {loading ? ui.loading : isCustomer ? ui.emptyCustomerChurn : ui.emptySupplierChurn}
                       </td>
                     </tr>
                   )}

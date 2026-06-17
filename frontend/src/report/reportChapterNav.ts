@@ -16,6 +16,11 @@ export const REPORT_CHAPTER_NAV: Partial<Record<string, NavKey>> = {
   data_quality_summary: 'import_quality_overview',
   tax_code_analysis: 'tax_enterprise_structure',
   tax_risk_exposure: 'tax_risk_exposure',
+  goods_category: 'goods_category',
+  red_offset_analysis: 'red_offset_analysis',
+  counterparty_risk: 'counterparty_risk',
+  invoice_timing: 'invoice_timing',
+  year_over_year: 'year_over_year_compare',
 }
 
 export function reportChapterNavKey(chapterId: string): NavKey | undefined {

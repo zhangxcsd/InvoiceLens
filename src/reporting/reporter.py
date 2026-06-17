@@ -24,6 +24,11 @@ DEFAULT_CHAPTERS: dict[str, bool] = {
     "data_quality_summary": False,
     "tax_code_analysis": False,
     "tax_risk_exposure": False,
+    "goods_category": False,
+    "red_offset_analysis": False,
+    "counterparty_risk": False,
+    "invoice_timing": False,
+    "year_over_year": False,
 }
 
 
@@ -180,6 +185,93 @@ def _query_supplier_new(conn: Any, stat_year: int, limit: int = 20) -> list[tupl
         [stat_year, limit],
     ).fetchall()
     return [(str(r[0] or ""), str(r[1] or ""), float(r[2] or 0)) for r in rows or []]
+
+
+def _query_goods_category_top(conn: Any, stat_year: int, limit: int = 20) -> list[tuple[str, str, str, float, int]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT entity_id, tax_code_short, tax_code_level2, sum(net_jshj), sum(invoice_cnt)::BIGINT
+            FROM dws_goods_cat
+            WHERE stat_year = ?
+            GROUP BY entity_id, tax_code_short, tax_code_level2
+            ORDER BY sum(net_jshj) DESC NULLS LAST
+            LIMIT ?
+            """,
+            [stat_year, limit],
+        ).fetchall()
+        return [
+            (str(r[0] or ""), str(r[1] or ""), str(r[2] or ""), float(r[3] or 0), int(r[4] or 0))
+            for r in rows or []
+        ]
+    except Exception:
+        return []
+
+
+def _query_red_offset_summary(conn: Any, stat_year: int, limit: int = 15) -> list[tuple[str, int, int, float]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT coalesce(h.gfsbh, h.xfsbh, ''),
+                   count(*)::BIGINT,
+                   sum(CASE WHEN coalesce(h.fpzt, '') LIKE '%红%' OR coalesce(h.is_orphan_red, FALSE) THEN 1 ELSE 0 END)::BIGINT,
+                   coalesce(sum(abs(coalesce(h.net_jshj, h.jshj, 0))) FILTER (WHERE coalesce(h.fpzt, '') LIKE '%红%' OR coalesce(h.is_orphan_red, FALSE)), 0)
+            FROM dwd_inv_header h
+            WHERE h.stat_year = ?
+            GROUP BY 1
+            HAVING sum(CASE WHEN coalesce(h.fpzt, '') LIKE '%红%' OR coalesce(h.is_orphan_red, FALSE) THEN 1 ELSE 0 END) > 0
+            ORDER BY 3 DESC
+            LIMIT ?
+            """,
+            [stat_year, limit],
+        ).fetchall()
+        return [
+            (str(r[0] or ""), int(r[1] or 0), int(r[2] or 0), float(r[3] or 0))
+            for r in rows or []
+        ]
+    except Exception:
+        return []
+
+
+def _query_counterparty_risk_top(
+    conn: Any, stat_year: int, limit: int = 20
+) -> list[tuple[str, str, str, float, int, float]]:
+    try:
+        from src.local_api.counterparty_risk_api import api_dws_counterparty_risk_list
+
+        entity_rows = conn.execute(
+            """
+            SELECT DISTINCT entity_id
+            FROM dm_audit_flag
+            WHERE group_id = ?
+            UNION
+            SELECT DISTINCT entity_id FROM dws_trade_sum WHERE stat_year = ?
+            """,
+            [f"Y{stat_year}", stat_year],
+        ).fetchall()
+        scored: list[tuple[str, str, str, float, int, float]] = []
+        for (eid_raw,) in entity_rows or []:
+            eid = str(eid_raw or "").strip()
+            if not eid:
+                continue
+            res = api_dws_counterparty_risk_list(conn, stat_year=str(stat_year), entity_id=eid, limit=3)
+            if not res.get("ok"):
+                continue
+            for row in res.get("rows") or []:
+                scored.append(
+                    (
+                        eid,
+                        str(row.get("counterparty_id") or ""),
+                        str(row.get("counterparty_name") or row.get("counterparty_id") or ""),
+                        float(row.get("risk_score") or 0),
+                        int(row.get("flag_count") or 0),
+                        float(row.get("trade_amount") or 0),
+                    )
+                )
+        scored.sort(key=lambda x: (-x[3], -x[5], x[1]))
+        return scored[:limit]
+    except Exception:
+        return []
 
 
 def _query_trade_top(conn: Any, stat_year: int, limit: int = 20) -> list[tuple[str, str, str, float]]:
@@ -752,6 +844,68 @@ def generate_audit_report_docx(
                 table.rows[i].cells[4].text = _fmt_amount(coding)
         else:
             doc.add_paragraph("（暂无税风险敞口数据，请先完成 DWS 聚合与进销偏离分析。）")
+
+    if _chapter_enabled(chapters, "goods_category"):
+        _add_heading(doc, "专题  品类结构分析", 1)
+        cat_rows = _query_goods_category_top(conn, stat_year)
+        if cat_rows:
+            table = doc.add_table(rows=len(cat_rows) + 1, cols=5)
+            table.style = "Table Grid"
+            hdr = ("主体税号", "税码前缀", "二级前缀", "净额", "行数")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (eid, short, lvl2, amt, cnt) in enumerate(cat_rows, start=1):
+                table.rows[i].cells[0].text = eid or "—"
+                table.rows[i].cells[1].text = short or "—"
+                table.rows[i].cells[2].text = lvl2 or "—"
+                table.rows[i].cells[3].text = _fmt_amount(amt)
+                table.rows[i].cells[4].text = str(cnt)
+        else:
+            doc.add_paragraph("（暂无品类结构数据，请先执行 DWS 品类汇总刷新。）")
+
+    if _chapter_enabled(chapters, "red_offset_analysis"):
+        _add_heading(doc, "专题  红冲/作废分析", 1)
+        red_rows = _query_red_offset_summary(conn, stat_year)
+        if red_rows:
+            table = doc.add_table(rows=len(red_rows) + 1, cols=4)
+            table.style = "Table Grid"
+            hdr = ("主体税号", "发票张数", "红票张数", "红冲金额")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (eid, header_cnt, red_cnt, red_amt) in enumerate(red_rows, start=1):
+                table.rows[i].cells[0].text = eid or "—"
+                table.rows[i].cells[1].text = str(header_cnt)
+                table.rows[i].cells[2].text = str(red_cnt)
+                table.rows[i].cells[3].text = _fmt_amount(red_amt)
+        else:
+            doc.add_paragraph("（暂无红冲/作废专题数据。）")
+
+    if _chapter_enabled(chapters, "counterparty_risk"):
+        _add_heading(doc, "专题  对手风险聚合", 1)
+        risk_rows = _query_counterparty_risk_top(conn, stat_year)
+        if risk_rows:
+            table = doc.add_table(rows=len(risk_rows) + 1, cols=6)
+            table.style = "Table Grid"
+            hdr = ("主体税号", "对手税号", "对手名称", "风险分", "疑点数", "交易金额")
+            for j, h in enumerate(hdr):
+                table.rows[0].cells[j].text = h
+            for i, (eid, cp_id, cp_name, score, flags, trade) in enumerate(risk_rows, start=1):
+                table.rows[i].cells[0].text = eid or "—"
+                table.rows[i].cells[1].text = cp_id or "—"
+                table.rows[i].cells[2].text = cp_name or "—"
+                table.rows[i].cells[3].text = f"{score:.2f}"
+                table.rows[i].cells[4].text = str(flags)
+                table.rows[i].cells[5].text = _fmt_amount(trade)
+        else:
+            doc.add_paragraph("（暂无对手风险聚合数据。）")
+
+    if _chapter_enabled(chapters, "invoice_timing"):
+        _add_heading(doc, "专题  开票时间行为", 1)
+        doc.add_paragraph("（开票时间行为专题请在线查看「开票时间行为」分析页；报告导出暂未嵌入明细表。）")
+
+    if _chapter_enabled(chapters, "year_over_year"):
+        _add_heading(doc, "专题  跨年结构对比", 1)
+        doc.add_paragraph("（跨年结构对比专题请在线查看「跨年对比」分析页；报告导出暂未嵌入明细表。）")
 
     if _chapter_enabled(chapters, "related"):
         _add_heading(doc, "第五章  关联交易分析", 1)

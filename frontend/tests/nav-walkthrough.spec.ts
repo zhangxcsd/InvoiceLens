@@ -40,6 +40,7 @@ const NAV_KEYS = [
   'overview_trend',
   'overview_tax',
   'health_score',
+  'entity_profile',
   'supplier_cr',
   'supplier_top',
   'supplier_new',

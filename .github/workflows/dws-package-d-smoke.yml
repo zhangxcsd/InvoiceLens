@@ -1,0 +1,118 @@
+name: DWS Package D Smoke
+
+on:
+  push:
+    paths:
+      - 'src/local_api/entity_profile_api.py'
+      - 'src/local_api/dws_invoice_detail_api.py'
+      - 'src/local_api/dws_goods_cat_api.py'
+      - 'src/local_api/red_offset_api.py'
+      - 'src/local_api/invoice_timing_api.py'
+      - 'src/local_api/counterparty_risk_api.py'
+      - 'src/local_api/year_over_year_api.py'
+      - 'src/local_api/dws_dplus_routes.py'
+      - 'src/local_api/dws_enterprise_behavior_api.py'
+      - 'frontend/src/dws/EntityProfilePage.tsx'
+      - 'frontend/src/dws/InvoiceDetailDrillPanel.tsx'
+      - 'frontend/src/dws/OverviewSummaryPage.tsx'
+      - 'frontend/src/dws/SupplierTopPage.tsx'
+      - 'frontend/src/dws/OverviewTaxPage.tsx'
+      - 'frontend/src/dws/GoodsCategoryPage.tsx'
+      - 'frontend/src/dws/RedOffsetAnalysisPage.tsx'
+      - 'frontend/src/dws/CounterpartyRiskPage.tsx'
+      - 'frontend/src/dws/YearOverYearComparePage.tsx'
+      - 'frontend/src/dws/InvoiceTimingPage.tsx'
+      - 'frontend/src/dim/TaxCodeAnalysisPage.tsx'
+      - 'frontend/tests/package-d-profile-drill.spec.ts'
+      - 'frontend/tests/dplus-analysis.spec.ts'
+      - 'frontend/playwright.package-d.config.ts'
+      - 'frontend/playwright.dplus.config.ts'
+      - 'scripts/test_dws_package_d_smoke.py'
+      - 'scripts/test_dws_dplus_smoke.py'
+      - '.github/workflows/dws-package-d-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/local_api/entity_profile_api.py'
+      - 'src/local_api/dws_invoice_detail_api.py'
+      - 'src/local_api/dws_goods_cat_api.py'
+      - 'src/local_api/red_offset_api.py'
+      - 'src/local_api/invoice_timing_api.py'
+      - 'src/local_api/counterparty_risk_api.py'
+      - 'src/local_api/year_over_year_api.py'
+      - 'src/local_api/dws_dplus_routes.py'
+      - 'src/local_api/dws_enterprise_behavior_api.py'
+      - 'frontend/src/dws/EntityProfilePage.tsx'
+      - 'frontend/src/dws/InvoiceDetailDrillPanel.tsx'
+      - 'frontend/src/dws/OverviewSummaryPage.tsx'
+      - 'frontend/src/dws/SupplierTopPage.tsx'
+      - 'frontend/src/dws/OverviewTaxPage.tsx'
+      - 'frontend/src/dws/GoodsCategoryPage.tsx'
+      - 'frontend/src/dws/RedOffsetAnalysisPage.tsx'
+      - 'frontend/src/dws/CounterpartyRiskPage.tsx'
+      - 'frontend/src/dws/YearOverYearComparePage.tsx'
+      - 'frontend/src/dws/InvoiceTimingPage.tsx'
+      - 'frontend/src/dim/TaxCodeAnalysisPage.tsx'
+      - 'frontend/tests/package-d-profile-drill.spec.ts'
+      - 'frontend/tests/dplus-analysis.spec.ts'
+      - 'frontend/playwright.package-d.config.ts'
+      - 'frontend/playwright.dplus.config.ts'
+      - 'scripts/test_dws_package_d_smoke.py'
+      - 'scripts/test_dws_dplus_smoke.py'
+      - '.github/workflows/dws-package-d-smoke.yml'
+
+jobs:
+  package-d-api-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run package D API smoke
+        run: python scripts/test_dws_package_d_smoke.py
+
+      - name: Run D+ analysis API smoke
+        run: python scripts/test_dws_dplus_smoke.py
+
+  package-d-playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend for serve-ui-test
+        working-directory: frontend
+        run: npm run build:serve-ui-test
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install chromium --with-deps
+
+      - name: Package D profile & drill Playwright
+        working-directory: frontend
+        run: npm run test:package-d
+
+      - name: D+ analysis pages Playwright
+        working-directory: frontend
+        run: npm run test:dplus

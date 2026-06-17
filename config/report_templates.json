@@ -20,7 +20,12 @@
         "finance_reconcile": true,
         "data_quality_summary": true,
         "tax_code_analysis": true,
-        "tax_risk_exposure": true
+        "tax_risk_exposure": true,
+        "goods_category": false,
+        "red_offset_analysis": false,
+        "counterparty_risk": false,
+        "invoice_timing": false,
+        "year_over_year": false
       },
       "is_builtin": true,
       "updated_at": "2026-01-01T00:00:00Z"
@@ -86,7 +91,12 @@
         "tax_risk_exposure": true,
         "finance_reconcile": true,
         "data_quality_summary": false,
-        "tax_code_analysis": false
+        "tax_code_analysis": false,
+        "goods_category": true,
+        "red_offset_analysis": true,
+        "counterparty_risk": true,
+        "invoice_timing": false,
+        "year_over_year": false
       },
       "is_builtin": true,
       "updated_at": "2026-06-08T00:00:00Z"

@@ -34,6 +34,8 @@ const flagActionLabels: FlagActionLabels = {
   viewSupplierTopBtn: t.auditFlagUi.viewSupplierTopBtn,
   viewSupplierCrBtn: t.auditFlagUi.viewSupplierCrBtn,
   viewOverviewTrendBtn: t.auditFlagUi.viewOverviewTrendBtn,
+  viewInvoiceTimingBtn: t.auditFlagUi.viewInvoiceTimingBtn,
+  viewRedOffsetBtn: t.auditFlagUi.viewRedOffsetBtn,
   viewTaxInOutDevBtn: t.auditFlagUi.viewTaxInOutDevBtn,
   viewTaxRiskExposureBtn: t.auditFlagUi.viewTaxRiskExposureBtn,
   viewTrackBtn: t.auditFlagUi.viewTrackBtn,

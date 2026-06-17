@@ -4,6 +4,7 @@ import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsOverviewSummary, postDwsRebuild } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
+import { InvoiceDetailDrillPanel } from './InvoiceDetailDrillPanel'
 import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
 
 export function OverviewSummaryPage() {
@@ -27,6 +28,8 @@ export function OverviewSummaryPage() {
   } | null>(null)
   const [rebuildBusy, setRebuildBusy] = useState(false)
   const [rebuildMsg, setRebuildMsg] = useState<string | null>(null)
+  const [drillOpen, setDrillOpen] = useState(false)
+  const drillUi = t.invoiceDetailDrillUi
 
   const load = useCallback(async (signal?: AbortSignal) => {
     if (!f.effectiveYear) return
@@ -139,6 +142,16 @@ export function OverviewSummaryPage() {
 
       <Card title={ui.kpiCardTitle}>
         {loading || f.loadingMeta ? <p className="text-il-meta text-text-3">{ui.loading}</p> : null}
+        <div className="mb-3">
+          <button
+            type="button"
+            className="rounded-sm border border-border bg-white px-2.5 py-1 text-il-page-desc text-accent hover:border-accent disabled:opacity-50"
+            disabled={!f.effectiveYear || loading}
+            onClick={() => setDrillOpen(true)}
+          >
+            {drillUi.drillFromSummary}
+          </button>
+        </div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {[
             { label: ui.kpiTotalNet, value: formatDwsAmount(summary?.total_net_jshj) },
@@ -157,6 +170,17 @@ export function OverviewSummaryPage() {
           ))}
         </div>
       </Card>
+
+      <InvoiceDetailDrillPanel
+        open={drillOpen}
+        onClose={() => setDrillOpen(false)}
+        title={drillUi.drillFromSummary}
+        filters={{
+          statYear: f.effectiveYear,
+          entityId: f.entityId.trim() || undefined,
+          ...deepLink.timeFilterParams,
+        }}
+      />
     </div>
   )
 }

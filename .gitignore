@@ -19,6 +19,7 @@ data/database/*
 data/tmp/*
 data/config/
 data/logs/
+config/build_meta.json
 data/warehouse.duckdb
 *.duckdb
 output/*

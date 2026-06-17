@@ -8,6 +8,18 @@ import { navigateToFlagsList, readNavQueryParams } from '../utils/navHelpers'
 import type { NavKey } from '../types'
 import { scorecardRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
+import {
+  getFlagActionLinks,
+  minimalFlagRowForRule,
+  navigateFlagAction,
+} from '../dm/flagActionHelpers'
+
+type FlagBreakdownRow = {
+  rule_id: string
+  risk_level: string
+  count: number
+  amount: number
+}
 
 type Level = 'normal' | 'warning' | 'alert'
 
@@ -42,6 +54,7 @@ export function HealthScorePage({ onNav }: Props) {
   const [dimensions, setDimensions] = useState<Array<{ dimension_name: string; weight: number; score: number }>>([])
   const [indicators, setIndicators] = useState<HealthIndicatorRow[]>([])
   const [topDeductions, setTopDeductions] = useState<Array<{ indicator_name: string; explain_text: string }>>([])
+  const [flagBreakdown, setFlagBreakdown] = useState<FlagBreakdownRow[]>([])
   const [selected, setSelected] = useState<HealthIndicatorRow | null>(null)
   const [onlyAbnormal, setOnlyAbnormal] = useState(false)
   const [levelFilter, setLevelFilter] = useState<'all' | Level>('all')
@@ -72,6 +85,7 @@ export function HealthScorePage({ onNav }: Props) {
         setDimensions([])
         setIndicators([])
         setTopDeductions([])
+        setFlagBreakdown([])
         setDataSource(null)
         setErr('')
         return
@@ -110,6 +124,14 @@ export function HealthScorePage({ onNav }: Props) {
         (res.top_deductions ?? []).map((x) => ({
           indicator_name: x.indicator_name,
           explain_text: x.explain_text,
+        })),
+      )
+      setFlagBreakdown(
+        (res.flag_breakdown ?? []).map((x) => ({
+          rule_id: String(x.rule_id ?? ''),
+          risk_level: String(x.risk_level ?? ''),
+          count: Number(x.count ?? 0),
+          amount: Number(x.amount ?? 0),
         })),
       )
     },
@@ -158,6 +180,32 @@ export function HealthScorePage({ onNav }: Props) {
     const el = rowRefs.current[selected.indicator_code]
     el?.scrollIntoView({ block: 'nearest' })
   }, [selected])
+
+  const flagActionLabels = useMemo(
+    () => ({
+      viewFinanceDiffBtn: t.auditFlagUi.viewFinanceDiffBtn,
+      viewTaxCodeBtn: t.auditFlagUi.viewTaxCodeBtn,
+      viewSemanticDetailBtn: t.auditFlagUi.viewSemanticDetailBtn,
+      viewQualityTrendBtn: t.auditFlagUi.viewQualityTrendBtn,
+      viewQualityBtn: t.auditTrackUi.viewQualityBtn,
+      viewInvoiceBtn: t.auditTrackUi.exportInvoiceBtn,
+      viewRelatedPairsBtn: t.auditFlagUi.viewRelatedPairsBtn,
+      viewRelatedShellBtn: t.auditFlagUi.viewRelatedShellBtn,
+      viewRelatedGraphBtn: t.auditFlagUi.viewRelatedGraphBtn,
+      viewTradeRelationshipsBtn: t.auditFlagUi.viewTradeRelationshipsBtn,
+      viewSupplierTopBtn: t.auditFlagUi.viewSupplierTopBtn,
+      viewSupplierCrBtn: t.auditFlagUi.viewSupplierCrBtn,
+      viewOverviewTrendBtn: t.auditFlagUi.viewOverviewTrendBtn,
+      viewInvoiceTimingBtn: t.auditFlagUi.viewInvoiceTimingBtn,
+      viewRedOffsetBtn: t.auditFlagUi.viewRedOffsetBtn,
+      viewTaxInOutDevBtn: t.auditFlagUi.viewTaxInOutDevBtn,
+      viewTaxRiskExposureBtn: t.auditFlagUi.viewTaxRiskExposureBtn,
+      viewTrackBtn: t.auditFlagUi.viewTrackBtn,
+      viewFlagsListBtn: t.auditTrackUi.viewFlagsListBtn,
+      genReportBtn: t.auditFlagUi.genReportBtn,
+    }),
+    [],
+  )
 
   return (
     <div className="w-full px-5 py-6">
@@ -273,6 +321,76 @@ export function HealthScorePage({ onNav }: Props) {
                   </li>
                 ))}
               </ul>
+            )}
+          </Card>
+
+          <Card title={q.flagBreakdownTitle}>
+            <p className="mb-3 text-il-meta text-text-3">{q.flagBreakdownLead}</p>
+            {flagBreakdown.length === 0 ? (
+              <p className="text-il-meta text-text-3">{q.noFlagBreakdown}</p>
+            ) : (
+              <div className="overflow-auto rounded-sm border border-border-light">
+                <table className="w-full min-w-[720px] border-collapse text-il-page-desc">
+                  <thead>
+                    <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
+                      <th className="px-2 py-2 font-medium">{q.colRuleId}</th>
+                      <th className="px-2 py-2 font-medium">{q.colRiskLevel}</th>
+                      <th className="px-2 py-2 font-medium">{q.colFlagCount}</th>
+                      <th className="px-2 py-2 font-medium">{q.colFlagAmount}</th>
+                      {onNav ? <th className="px-2 py-2 font-medium">{q.colAction}</th> : null}
+                    </tr>
+                  </thead>
+                  <tbody className="text-text-2">
+                    {flagBreakdown.map((row) => {
+                      const mockFlag = minimalFlagRowForRule(row.rule_id, f.entityId.trim())
+                      const analysisLinks = getFlagActionLinks(mockFlag, f.effectiveYear, flagActionLabels).filter(
+                        (l) => l.id !== 'health_score',
+                      )
+                      const primaryLink = analysisLinks[0]
+                      return (
+                        <tr key={`${row.rule_id}::${row.risk_level}`} className="border-b border-border-light last:border-0">
+                          <td className="whitespace-nowrap px-2 py-2 font-mono text-[12px]">{row.rule_id}</td>
+                          <td className="whitespace-nowrap px-2 py-2">{row.risk_level || '—'}</td>
+                          <td className="whitespace-nowrap px-2 py-2 tabular-nums">{row.count}</td>
+                          <td className="whitespace-nowrap px-2 py-2 tabular-nums">
+                            {row.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          {onNav ? (
+                            <td className="px-2 py-2">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="text-il-meta text-accent hover:underline"
+                                  onClick={() =>
+                                    navigateToFlagsList(onNav, {
+                                      statYear: f.effectiveYear,
+                                      entityId: f.entityId.trim(),
+                                      ruleId: row.rule_id,
+                                    })
+                                  }
+                                >
+                                  {q.viewFlagsForRuleBtn}
+                                </button>
+                                {primaryLink ? (
+                                  <button
+                                    type="button"
+                                    className="text-il-meta text-accent hover:underline"
+                                    onClick={() =>
+                                      navigateFlagAction(onNav, primaryLink.id, mockFlag, f.effectiveYear)
+                                    }
+                                  >
+                                    {primaryLink.label || q.viewAnalysisBtn}
+                                  </button>
+                                ) : null}
+                              </div>
+                            </td>
+                          ) : null}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Card>
 

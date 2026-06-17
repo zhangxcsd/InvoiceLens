@@ -702,6 +702,11 @@ def _delivery_chapter_labels() -> dict[str, str]:
         "data_quality_summary": "专题 数据质量域摘要",
         "tax_code_analysis": "专题 税收分类编码分析",
         "tax_risk_exposure": "专题 税风险敞口",
+        "goods_category": "专题 品类结构分析",
+        "red_offset_analysis": "专题 红冲/作废分析",
+        "counterparty_risk": "专题 对手风险聚合",
+        "invoice_timing": "专题 开票时间行为",
+        "year_over_year": "专题 跨年结构对比",
     }
 
 

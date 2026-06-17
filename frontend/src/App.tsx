@@ -42,6 +42,12 @@ import { DataQualityOverviewPage } from './quality/DataQualityOverviewPage'
 import { DataQualityDetailPage } from './quality/DataQualityDetailPage'
 import { DataQualityTrendPage } from './quality/DataQualityTrendPage'
 import { HealthScorePage } from './quality/HealthScorePage'
+import { EntityProfilePage } from './dws/EntityProfilePage'
+import { GoodsCategoryPage } from './dws/GoodsCategoryPage'
+import { RedOffsetAnalysisPage } from './dws/RedOffsetAnalysisPage'
+import { InvoiceTimingPage } from './dws/InvoiceTimingPage'
+import { CounterpartyRiskPage } from './dws/CounterpartyRiskPage'
+import { YearOverYearComparePage } from './dws/YearOverYearComparePage'
 import { EnterpriseLibraryPage } from './dim/EnterpriseLibraryPage'
 import { OverviewSummaryPage } from './dws/OverviewSummaryPage'
 import { OverviewTrendPage } from './dws/OverviewTrendPage'
@@ -938,6 +944,9 @@ function Sidebar(props: {
           {navChildNav('overview_summary', 'ov1', t.sidebar.ovSummary, <span />)}
           {navChildNav('overview_trend', 'ov2', t.sidebar.ovTrend, <span />)}
           {navChildNav('overview_tax', 'ov3', t.sidebar.ovTax, <span />)}
+          {navChildNav('goods_category', 'ov4', t.sidebar.goodsCategory, <span />)}
+          {navChildNav('red_offset_analysis', 'ov5', t.sidebar.redOffsetAnalysis, <span />)}
+          {navChildNav('invoice_timing', 'ov6', t.sidebar.invoiceTiming, <span />)}
         </div>
 
         {navParent('tax_analysis', t.sidebar.taxAnalysis, <IconChartBars className="h-[15px] w-[15px]" />)}
@@ -958,6 +967,9 @@ function Sidebar(props: {
         </div>
 
         {navStandalone('health_score', t.sidebar.healthScore, <IconMiniCheck className="h-[15px] w-[15px]" />)}
+        {navStandalone('entity_profile', t.sidebar.entityProfile, <IconUser className="h-[15px] w-[15px]" />)}
+        {navStandalone('counterparty_risk', t.sidebar.counterpartyRisk, <IconAlert className="h-[15px] w-[15px]" />)}
+        {navStandalone('year_over_year_compare', t.sidebar.yearOverYearCompare, <IconCompare className="h-[15px] w-[15px]" />)}
 
         {navParent(
           'flags',
@@ -3027,6 +3039,12 @@ function AppShell(props: {
           {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.healthScore}</b>
         </>
       )
+    if (props.nav === 'entity_profile')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.sidebar.entityProfile}</b>
+        </>
+      )
     if (props.nav === 'overview_summary')
       return (
         <>
@@ -3046,6 +3064,39 @@ function AppShell(props: {
         <>
           {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
           <b className="text-text font-medium">{t.sidebar.ovTax}</b>
+        </>
+      )
+    if (props.nav === 'goods_category')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.goodsCategory}</b>
+        </>
+      )
+    if (props.nav === 'red_offset_analysis')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.redOffsetAnalysis}</b>
+        </>
+      )
+    if (props.nav === 'invoice_timing')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          <b className="text-text font-medium">{t.sidebar.invoiceTiming}</b>
+        </>
+      )
+    if (props.nav === 'counterparty_risk')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.sidebar.counterpartyRisk}</b>
+        </>
+      )
+    if (props.nav === 'year_over_year_compare')
+      return (
+        <>
+          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.sidebar.yearOverYearCompare}</b>
         </>
       )
     if (props.nav === 'supplier_cr')
@@ -3377,6 +3428,18 @@ function AppShell(props: {
             <DataQualityTrendPage onNav={props.onNav} />
           ) : props.nav === 'health_score' ? (
             <HealthScorePage onNav={props.onNav} />
+          ) : props.nav === 'entity_profile' ? (
+            <EntityProfilePage onNav={props.onNav} />
+          ) : props.nav === 'goods_category' ? (
+            <GoodsCategoryPage onNav={props.onNav} />
+          ) : props.nav === 'red_offset_analysis' ? (
+            <RedOffsetAnalysisPage onNav={props.onNav} />
+          ) : props.nav === 'invoice_timing' ? (
+            <InvoiceTimingPage onNav={props.onNav} />
+          ) : props.nav === 'counterparty_risk' ? (
+            <CounterpartyRiskPage onNav={props.onNav} />
+          ) : props.nav === 'year_over_year_compare' ? (
+            <YearOverYearComparePage onNav={props.onNav} />
           ) : props.nav === 'dim_enterprise_library' ? (
             <EnterpriseLibraryPage onNav={props.onNav} />
           ) : props.nav === 'dim_audit_related_library' ? (
@@ -3426,7 +3489,7 @@ function AppShell(props: {
           ) : props.nav === 'supplier_cr' ? (
             <SupplierCrPage />
           ) : props.nav === 'supplier_top' ? (
-            <SupplierTopPage />
+            <SupplierTopPage onNav={props.onNav} />
           ) : props.nav === 'supplier_new' ? (
             <SupplierNewPage />
           ) : props.nav === 'flags_list' ? (

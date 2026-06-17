@@ -730,6 +730,101 @@ def list_ods_preview_batches(conn: Any, *, limit: int = 80) -> dict[str, Any]:
     return {"ok": True, "batches": batches, "ods_dir_hint": _effective_ods_dir()}
 
 
+def load_ods_import_session_summary(
+    conn: Any,
+    *,
+    batch_id: str,
+    session_id: str,
+    sample_limit: int = 30,
+) -> dict[str, Any]:
+    """读取导入会话的格式检测快照（字段映射模板）与失败/拒收聚合（只读）。"""
+    b = str(batch_id or "").strip()
+    s = str(session_id or "").strip()
+    if not b or not s:
+        return {"ok": False, "error": {"message": "batch_id 与 session_id 均不能为空"}}
+
+    try:
+        from src.local_api.data_quality import (
+            _fetch_ods_import_file_logs,
+            _fetch_ods_import_template_meta,
+            _summarize_lineage_reject,
+        )
+
+        file_logs, fetch_err = _fetch_ods_import_file_logs(conn, batch_id=b, session_id=s)
+        template_meta = _fetch_ods_import_template_meta(conn, batch_id=b, session_id=s)
+        failure_summary = _summarize_lineage_reject(file_logs)
+
+        fail_files: list[dict[str, Any]] = []
+        reject_samples: list[dict[str, Any]] = []
+        reject_ranges: list[dict[str, Any]] = []
+        lim = max(1, min(int(sample_limit or 30), 100))
+
+        for log in file_logs:
+            status = str(log.get("status") or "")
+            blocking = bool(log.get("file_blocking"))
+            if blocking or status in {"失败", "failed", "失败(阻断)"}:
+                fail_files.append(
+                    {
+                        "file_name": str(log.get("file_name") or log.get("source_excel_file") or ""),
+                        "status": status or ("阻断" if blocking else "失败"),
+                        "file_blocking": blocking,
+                        "reason": str(log.get("reason") or log.get("detail") or ""),
+                        "exception_type": str(log.get("exception_type") or "") or None,
+                    }
+                )
+            for sample in log.get("reject_row_samples") or []:
+                if not isinstance(sample, dict) or len(reject_samples) >= lim:
+                    continue
+                reject_samples.append(
+                    {
+                        "seq_no": sample.get("seq_no"),
+                        "sheet": str(sample.get("sheet") or ""),
+                        "field": str(sample.get("field") or "") or None,
+                        "reason": str(sample.get("reason") or ""),
+                        "exception_type": str(sample.get("exception_type") or "") or None,
+                        "source_excel_file": str(
+                            log.get("source_excel_file") or log.get("file_name") or ""
+                        )
+                        or None,
+                    }
+                )
+            for rng in log.get("reject_row_ranges") or []:
+                if not isinstance(rng, dict) or len(reject_ranges) >= lim:
+                    continue
+                reject_ranges.append(
+                    {
+                        "seq_no_start": rng.get("seq_no_start"),
+                        "seq_no_end": rng.get("seq_no_end"),
+                        "reason": str(rng.get("reason") or ""),
+                        "source_excel_file": str(
+                            log.get("source_excel_file") or log.get("file_name") or ""
+                        )
+                        or None,
+                    }
+                )
+
+        return {
+            "ok": True,
+            "batch_id": b,
+            "session_id": s,
+            "field_mapping_template": template_meta,
+            "failure_summary": failure_summary,
+            "fail_files": fail_files,
+            "reject_row_samples": reject_samples,
+            "reject_row_ranges": reject_ranges,
+            "fetch_warning": fetch_err,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": {
+                "message": "读取导入会话摘要失败",
+                "exception_type": type(exc).__name__,
+                "detail": str(exc),
+            },
+        }
+
+
 def load_ods_preview_session(
     conn: Any,
     *,
