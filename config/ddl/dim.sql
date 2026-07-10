@@ -3,12 +3,9 @@ CREATE TABLE IF NOT EXISTS dim_org_sys (
     sys_name     VARCHAR NOT NULL,
     admin_level  VARCHAR NOT NULL,
     gov_owner    VARCHAR,
+    description  VARCHAR,
     sort_no      INTEGER,
     is_active    BOOLEAN DEFAULT TRUE
-);
-
-INSERT OR IGNORE INTO dim_org_sys VALUES (
-    'PROV_SD', '山东省属企业', '省', '山东省国有资产监督管理委员会', 1, TRUE
 );
 
 CREATE TABLE IF NOT EXISTS dim_org_node (
@@ -29,11 +26,6 @@ CREATE TABLE IF NOT EXISTS dim_org_node (
 
 CREATE INDEX IF NOT EXISTS idx_node_sys      ON dim_org_node (sys_id);
 CREATE INDEX IF NOT EXISTS idx_node_industry ON dim_org_node (sys_id, industry_id);
-
-INSERT OR IGNORE INTO dim_org_node
-    (entity_id, sys_id, entity_fullname, entity_shortname, entity_type, is_stat_inc)
-VALUES
-    ('ROOT_PROV_SD', 'PROV_SD', '山东省国有资产监督管理委员会', '省国资委', '根节点', FALSE);
 
 CREATE TABLE IF NOT EXISTS dim_org_hier (
     hier_id              VARCHAR NOT NULL PRIMARY KEY,
@@ -63,6 +55,8 @@ CREATE TABLE IF NOT EXISTS dim_org_hier (
     eq_is_leaf           BOOLEAN DEFAULT TRUE,
     is_hier_diff         BOOLEAN DEFAULT FALSE,
     hier_diff_note       VARCHAR,
+    state_investor_id    VARCHAR,
+    state_investor_name  VARCHAR,
     updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_by           VARCHAR DEFAULT 'SYSTEM',
     UNIQUE (entity_id, stat_year)
@@ -75,6 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_hier_eq_parent ON dim_org_hier (eq_parent_id, sta
 CREATE INDEX IF NOT EXISTS idx_hier_mg_root   ON dim_org_hier (mg_root_group_id, stat_year);
 CREATE INDEX IF NOT EXISTS idx_hier_eq_root   ON dim_org_hier (eq_root_group_id, stat_year);
 CREATE INDEX IF NOT EXISTS idx_hier_diff      ON dim_org_hier (is_hier_diff, stat_year);
+CREATE INDEX IF NOT EXISTS idx_hier_state_inv ON dim_org_hier (state_investor_id, stat_year);
 
 -- 集团年度成员与双树关系（管理/产权）权威口径
 -- 规则：

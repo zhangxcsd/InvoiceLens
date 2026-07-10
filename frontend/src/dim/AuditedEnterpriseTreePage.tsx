@@ -1,14 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AuditedEnterpriseFilters } from '../components/AuditedEnterpriseFilters'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
+import { SearchableCombobox, type SearchableComboboxOption } from '../components/SearchableCombobox'
 import {
-  fetchDimOrgHierTree,
-  postDimOrgHierImport,
-  type DimOrgHierTreeNode,
+  fetchAuditedEnterpriseRelationTree,
+  postAuditedEnterpriseRegistryBootstrapDemo,
+  postAuditedEnterpriseRegistryHierarchyUpdate,
+  postAuditedEnterpriseRegistryImportExcel,
+  type AuditedEnterpriseRegistryRow,
+  type AuditedEnterpriseRelationTreeNode,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
+import { buildStatYearOptions } from '../utils/statYearOptions'
+import {
+  parseFirstShareholder,
+  registryRowsToRelationRows,
+} from './auditedEnterpriseRegistryHelpers'
 
 type TreeMode = 'management' | 'equity'
 
@@ -30,20 +39,72 @@ function exportStamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
-function flattenTree(nodes: DimOrgHierTreeNode[], statYear: string): FlatFilterRow[] {
-  const out: FlatFilterRow[] = []
-  const walk = (list: DimOrgHierTreeNode[]) => {
+function normEnterpriseName(value: string): string {
+  return value
+    .trim()
+    .replace(/[（(][^）)]*[）)]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function computeHierDiff(reg?: AuditedEnterpriseRegistryRow): { isDiff: boolean; note: string } {
+  if (!reg) return { isDiff: false, note: '' }
+  const mgmt = normEnterpriseName(reg.mgmtParent)
+  const equity = normEnterpriseName(parseFirstShareholder(reg.shareholders).name)
+  const isDiff = mgmt !== equity && Boolean(mgmt || equity)
+  if (!isDiff) return { isDiff: false, note: '' }
+  const eqParent = parseFirstShareholder(reg.shareholders).name || '—'
+  return {
+    isDiff: true,
+    note: `管理上级：${reg.mgmtParent.trim() || '—'}；产权上级：${eqParent}`,
+  }
+}
+
+function collectRegistryRows(nodes: AuditedEnterpriseRelationTreeNode[]): AuditedEnterpriseRegistryRow[] {
+  const out: AuditedEnterpriseRegistryRow[] = []
+  const walk = (list: AuditedEnterpriseRelationTreeNode[]) => {
     for (const node of list) {
+      if (node.registry) out.push(node.registry)
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(nodes)
+  return out
+}
+
+function buildPathMap(
+  nodes: AuditedEnterpriseRelationTreeNode[],
+  isManage: boolean,
+): Map<string, string> {
+  const regs = collectRegistryRows(nodes)
+  const relRows = registryRowsToRelationRows(regs)
+  const map = new Map<string, string>()
+  regs.forEach((reg, index) => {
+    const id = reg.rowId || `${reg.code}-${reg.snapshotYear}`
+    map.set(id, isManage ? relRows[index]?.mgmtPath ?? '' : relRows[index]?.equityPath ?? '')
+  })
+  return map
+}
+
+function flattenTree(
+  nodes: AuditedEnterpriseRelationTreeNode[],
+  pathMap: Map<string, string>,
+): FlatFilterRow[] {
+  const out: FlatFilterRow[] = []
+  const walk = (list: AuditedEnterpriseRelationTreeNode[]) => {
+    for (const node of list) {
+      const reg = node.registry
+      const { isDiff, note } = computeHierDiff(reg)
       out.push({
         id: node.id,
         name: node.name,
         level: node.level,
         parentName: node.parent_name || '—',
-        snapshotYear: statYear,
-        path: node.path || '',
-        sortNo: node.sort_no ?? 0,
-        isHierDiff: Boolean(node.is_hier_diff),
-        note: node.hier_diff_note?.trim() || node.entity_fullname?.trim() || '—',
+        snapshotYear: reg?.snapshotYear ?? '',
+        path: pathMap.get(node.id) ?? '',
+        sortNo: node.level,
+        isHierDiff: isDiff,
+        note: note || reg?.mainBusiness?.trim() || reg?.enterpriseCategory?.trim() || '—',
       })
       if (node.children?.length) walk(node.children)
     }
@@ -52,9 +113,9 @@ function flattenTree(nodes: DimOrgHierTreeNode[], statYear: string): FlatFilterR
   return out
 }
 
-function collectExpandableIds(nodes: DimOrgHierTreeNode[]): string[] {
+function collectExpandableIds(nodes: AuditedEnterpriseRelationTreeNode[]): string[] {
   const ids: string[] = []
-  const walk = (list: DimOrgHierTreeNode[]) => {
+  const walk = (list: AuditedEnterpriseRelationTreeNode[]) => {
     for (const n of list) {
       if (n.children?.length) {
         ids.push(n.id)
@@ -67,7 +128,7 @@ function collectExpandableIds(nodes: DimOrgHierTreeNode[]): string[] {
 }
 
 function TreeBranch(props: {
-  node: DimOrgHierTreeNode
+  node: AuditedEnterpriseRelationTreeNode
   depth: number
   expanded: Set<string>
   activeId: string
@@ -77,6 +138,7 @@ function TreeBranch(props: {
   const { node, depth, expanded, activeId, onToggle, onSelect } = props
   const hasChildren = (node.children?.length ?? 0) > 0
   const isOpen = expanded.has(node.id)
+  const isHierDiff = computeHierDiff(node.registry).isDiff
 
   return (
     <div>
@@ -101,7 +163,7 @@ function TreeBranch(props: {
           ].join(' ')}
           onClick={() => onSelect(node.id)}
         >
-          {node.is_hier_diff ? <span className="text-danger" title="管产分离">●</span> : null}
+          {isHierDiff ? <span className="text-danger" title="管产分离">●</span> : null}
           {node.name}
         </button>
       </div>
@@ -122,7 +184,7 @@ function TreeBranch(props: {
   )
 }
 
-function findNodeById(nodes: DimOrgHierTreeNode[], id: string): DimOrgHierTreeNode | null {
+function findNodeById(nodes: AuditedEnterpriseRelationTreeNode[], id: string): AuditedEnterpriseRelationTreeNode | null {
   for (const n of nodes) {
     if (n.id === id) return n
     if (n.children?.length) {
@@ -133,12 +195,262 @@ function findNodeById(nodes: DimOrgHierTreeNode[], id: string): DimOrgHierTreeNo
   return null
 }
 
+type TreeUi = typeof t.auditedEnterpriseManageTreeUi
+
+function DetailField(props: { label: string; children: ReactNode }) {
+  return (
+    <div>
+      <span className="text-text-3">{props.label}：</span>
+      {props.children}
+    </div>
+  )
+}
+
+function DetailPlaceholder() {
+  return <span className="text-text-3">—</span>
+}
+
+function TreeSkeletonExample(props: { ui: TreeUi; importUi: typeof t.auditedEnterpriseTreeImportUi; message: string }) {
+  const { ui, importUi, message } = props
+  return (
+    <div className="select-none">
+      <div className="mb-2 flex items-center justify-center gap-2">
+        <span className="rounded-sm border border-border-light bg-[#f5f7fa] px-2 py-0.5 text-il-meta text-text-3">
+          {importUi.treePreviewBadge}
+        </span>
+      </div>
+      <div className="mb-3 text-center text-il-page-desc text-text-3">{message}</div>
+      <div className="border-t border-dashed border-border-light pt-3 opacity-70">
+        <div className="flex items-center">
+          <span className="mr-1 inline-block w-5 shrink-0 text-center text-text-3">▾</span>
+          <span className="rounded-sm px-2 py-1.5 text-il-page-desc text-text-3">{ui.treeSkeletonGroup}</span>
+        </div>
+        <div className="flex items-center" style={{ paddingLeft: '16px' }}>
+          <span className="mr-1 inline-block w-5 shrink-0 text-center text-text-3">▾</span>
+          <span className="rounded-sm px-2 py-1.5 text-il-page-desc text-text-3">{ui.treeSkeletonChild}</span>
+        </div>
+        <div className="flex items-center" style={{ paddingLeft: '32px' }}>
+          <span className="mr-1 inline-block w-5 shrink-0 text-center text-text-3">·</span>
+          <span className="flex min-w-0 items-center gap-1 rounded-sm px-2 py-1.5 text-il-page-desc text-text-3">
+            <span className="text-danger">●</span>
+            {ui.treeSkeletonChild}
+          </span>
+        </div>
+      </div>
+      <p className="mt-3 text-center text-il-meta text-text-3">{ui.treeEmptyLegend}</p>
+    </div>
+  )
+}
+
+function MockPreviewValue(props: { children: ReactNode }) {
+  return <span className="text-text-3 italic">{props.children}</span>
+}
+
+function NodeDetailPanel(props: {
+  ui: TreeUi
+  importUi: typeof t.auditedEnterpriseTreeImportUi
+  isManage: boolean
+  activeNode: AuditedEnterpriseRelationTreeNode | null
+  activePath?: string
+  snapshotYear: string
+  hasTreeData: boolean
+  showMockPreview: boolean
+  parentOptions: SearchableComboboxOption[]
+  editParentName: string
+  editShareRatio: string
+  onEditParentName: (value: string) => void
+  onEditShareRatio: (value: string) => void
+  onSaveHierarchy: () => void
+  hierarchySaveBusy: boolean
+  hierarchySaveMsg: string
+  hierarchySaveErr: string
+}) {
+  const {
+    ui,
+    importUi,
+    isManage,
+    activeNode,
+    activePath,
+    snapshotYear,
+    hasTreeData,
+    showMockPreview,
+    parentOptions,
+    editParentName,
+    editShareRatio,
+    onEditParentName,
+    onEditShareRatio,
+    onSaveHierarchy,
+    hierarchySaveBusy,
+    hierarchySaveMsg,
+    hierarchySaveErr,
+  } = props
+  const reg = activeNode?.registry
+  const { isDiff, note } = computeHierDiff(reg)
+  const emptyHint = hasTreeData ? ui.nodeDetailEmptySelect : ui.nodeDetailEmptyNoData
+
+  const shareRatio = (() => {
+    if (isManage || !reg) return null
+    const { ratio } = parseFirstShareholder(reg.shareholders)
+    if (!ratio) return null
+    return ratio.includes('%') ? ratio : `${ratio}%`
+  })()
+
+  return (
+    <div>
+      {showMockPreview ? (
+        <div className="mb-2">
+          <span className="rounded-sm border border-border-light bg-[#f5f7fa] px-2 py-0.5 text-il-meta text-text-3">
+            {importUi.treePreviewBadge}
+          </span>
+        </div>
+      ) : null}
+      {!activeNode && !showMockPreview ? <p className="mb-2 text-il-meta text-text-3">{emptyHint}</p> : null}
+      {!activeNode && showMockPreview ? (
+        <p className="mb-2 text-il-meta text-text-3">{emptyHint}</p>
+      ) : null}
+      <div className="space-y-3 text-il-page-desc text-text-2">
+        <div>
+          <div className="mb-1.5 text-il-label font-medium text-text-3">{ui.nodeDetailGroupOrg}</div>
+          <div className="space-y-2">
+            <DetailField label={ui.nodeNameLabel}>
+              {activeNode ? (
+                activeNode.name
+              ) : showMockPreview ? (
+                <MockPreviewValue>{ui.treeSkeletonChild}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodeLevelLabel}>
+              {activeNode ? (
+                activeNode.level
+              ) : showMockPreview ? (
+                <MockPreviewValue>{importUi.treeMockLevel}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodeParentLabel}>
+              {activeNode?.parent_name ? (
+                activeNode.parent_name
+              ) : showMockPreview ? (
+                <MockPreviewValue>{importUi.treeMockParent}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodeSnapshotLabel}>
+              {reg?.snapshotYear ? (
+                reg.snapshotYear
+              ) : showMockPreview ? (
+                <MockPreviewValue>{importUi.treeMockSnapshotYear}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodePathLabel}>
+              {activePath ? (
+                activePath
+              ) : showMockPreview ? (
+                <MockPreviewValue>{importUi.treeMockPath}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodeSortLabel}>
+              {activeNode ? (
+                activeNode.level
+              ) : showMockPreview ? (
+                <MockPreviewValue>{importUi.treeMockSort}</MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            <DetailField label={ui.nodeCodeLabel}>
+              {reg?.code ? (
+                <span className="font-mono text-[12px]">{reg.code}</span>
+              ) : showMockPreview ? (
+                <MockPreviewValue>
+                  <span className="font-mono text-[12px]">{importUi.treeMockCode}</span>
+                </MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+          </div>
+        </div>
+        <div>
+          <div className="mb-1.5 text-il-label font-medium text-text-3">{ui.nodeDetailGroupMark}</div>
+          <div className="space-y-2">
+            <DetailField label={ui.nodeHierDiffLabel}>
+              {isDiff ? (
+                <span className="text-danger">{note || '未填写说明'}</span>
+              ) : showMockPreview ? (
+                <MockPreviewValue>
+                  <span className="text-danger">{importUi.treeMockHierDiff}</span>
+                </MockPreviewValue>
+              ) : (
+                <DetailPlaceholder />
+              )}
+            </DetailField>
+            {!isManage ? (
+              <DetailField label={ui.nodeShareRatioLabel}>
+                {shareRatio ?? (showMockPreview ? <MockPreviewValue>{importUi.treeMockShareRatio}</MockPreviewValue> : <DetailPlaceholder />)}
+              </DetailField>
+            ) : null}
+          </div>
+        </div>
+        {activeNode && !showMockPreview ? (
+          <div className="mt-4 border-t border-border-light pt-3">
+            <div className="mb-2 text-il-label font-medium text-text-2">{importUi.hierarchyEditTitle}</div>
+            <div className="space-y-2">
+              <label className="block text-il-meta text-text-3">
+                <div className="mb-1">{importUi.hierarchyEditParentLabel}</div>
+                <SearchableCombobox
+                  options={parentOptions}
+                  value={editParentName}
+                  onChange={onEditParentName}
+                  placeholder={importUi.hierarchyEditParentPlaceholder}
+                  allowEmpty
+                  emptyLabel="（无上级 / 一级企业）"
+                />
+              </label>
+              {!isManage ? (
+                <label className="block text-il-meta text-text-3">
+                  <div className="mb-1">{importUi.hierarchyEditShareRatioLabel}</div>
+                  <input
+                    type="text"
+                    className="h-9 w-full rounded-sm border border-border bg-white px-2.5 text-il-page-desc text-text outline-none focus:border-accent"
+                    value={editShareRatio}
+                    onChange={(e) => onEditShareRatio(e.target.value)}
+                    placeholder={importUi.hierarchyEditShareRatioPlaceholder}
+                  />
+                </label>
+              ) : null}
+              {hierarchySaveErr ? <p className="text-il-meta text-red-600">{hierarchySaveErr}</p> : null}
+              {hierarchySaveMsg ? <p className="text-il-meta text-[#1b6b3a]">{hierarchySaveMsg}</p> : null}
+              <button
+                type="button"
+                disabled={hierarchySaveBusy}
+                className="rounded-sm bg-accent px-3 py-1.5 text-il-meta font-medium text-white hover:bg-accent-mid disabled:opacity-60"
+                onClick={onSaveHierarchy}
+              >
+                {hierarchySaveBusy ? importUi.hierarchyEditSaving : importUi.hierarchyEditSave}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: NavKey) => void }) {
   const isManage = props.mode === 'management'
   const ui = isManage ? t.auditedEnterpriseManageTreeUi : t.auditedEnterpriseEquityTreeUi
-  const importUi = t.dimOrgHierImportUi
+  const importUi = t.auditedEnterpriseTreeImportUi
 
-  const [treeNodes, setTreeNodes] = useState<DimOrgHierTreeNode[]>([])
+  const [treeNodes, setTreeNodes] = useState<AuditedEnterpriseRelationTreeNode[]>([])
   const [statYears, setStatYears] = useState<string[]>([])
   const [selectedYear, setSelectedYear] = useState<string>(ui.filterYearAll)
   const [enterpriseKeyword, setEnterpriseKeyword] = useState('')
@@ -150,21 +462,21 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
   const [exportError, setExportError] = useState('')
   const [exported, setExported] = useState(false)
   const [importBusy, setImportBusy] = useState(false)
-  const [importDryRun, setImportDryRun] = useState(false)
   const [importMsg, setImportMsg] = useState('')
   const [importErr, setImportErr] = useState('')
+  const [bootstrapBusy, setBootstrapBusy] = useState(false)
+  const [hierarchySaveBusy, setHierarchySaveBusy] = useState(false)
+  const [hierarchySaveMsg, setHierarchySaveMsg] = useState('')
+  const [hierarchySaveErr, setHierarchySaveErr] = useState('')
+  const [editParentName, setEditParentName] = useState('')
+  const [editShareRatio, setEditShareRatio] = useState('')
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const effectiveYear = selectedYear === ui.filterYearAll ? undefined : selectedYear
-  const flatRows = useMemo(
-    () => flattenTree(treeNodes, effectiveYear || statYears[0] || ''),
-    [treeNodes, effectiveYear, statYears],
-  )
+  const pathMap = useMemo(() => buildPathMap(treeNodes, isManage), [treeNodes, isManage])
+  const flatRows = useMemo(() => flattenTree(treeNodes, pathMap), [treeNodes, pathMap])
 
-  const years = useMemo(() => {
-    const fromApi = statYears.length ? statYears : Array.from(new Set(flatRows.map((r) => r.snapshotYear).filter(Boolean)))
-    return fromApi.sort((a, b) => Number(b) - Number(a))
-  }, [flatRows, statYears])
+  const years = useMemo(() => buildStatYearOptions(statYears), [statYears])
 
   const filteredFlat = useMemo(
     () =>
@@ -183,7 +495,7 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
 
   const visibleTree = useMemo(() => {
     if (filteredIdSet.size === flatRows.length) return treeNodes
-    const filterNodes = (nodes: DimOrgHierTreeNode[]): DimOrgHierTreeNode[] =>
+    const filterNodes = (nodes: AuditedEnterpriseRelationTreeNode[]): AuditedEnterpriseRelationTreeNode[] =>
       nodes
         .map((n) => {
           const children = filterNodes(n.children ?? [])
@@ -192,7 +504,7 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
           }
           return null
         })
-        .filter(Boolean) as DimOrgHierTreeNode[]
+        .filter(Boolean) as AuditedEnterpriseRelationTreeNode[]
     return filterNodes(treeNodes)
   }, [filteredIdSet, flatRows.length, treeNodes])
 
@@ -207,10 +519,9 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
   const loadTree = useCallback(async () => {
     setLoading(true)
     setLoadError('')
-    const res = await fetchDimOrgHierTree({
-      tree: isManage ? 'mg' : 'eq',
-      statYear: effectiveYear,
-      keyword: enterpriseKeyword.trim() || undefined,
+    const res = await fetchAuditedEnterpriseRelationTree({
+      mode: isManage ? 'management' : 'equity',
+      snapshotYear: effectiveYear,
     })
     if (!res.ok) {
       setLoadError(res.error?.message ?? ui.loadFailed)
@@ -218,7 +529,7 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
       setLoading(false)
       return
     }
-    setStatYears(res.stat_years ?? [])
+    setStatYears(res.snapshot_years ?? [])
     setTreeNodes(res.nodes ?? [])
     setEmptyHint(res.empty_hint ?? '')
     if (res.selected_year && selectedYear === ui.filterYearAll) {
@@ -226,26 +537,92 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
     }
     setExpanded(new Set(collectExpandableIds(res.nodes ?? [])))
     setLoading(false)
-  }, [effectiveYear, enterpriseKeyword, isManage, selectedYear, ui.filterYearAll, ui.loadFailed])
+  }, [effectiveYear, isManage, selectedYear, ui.filterYearAll, ui.loadFailed])
 
   useEffect(() => {
     void loadTree()
   }, [loadTree])
 
   useEffect(() => {
-    if (filteredFlat.length === 0) {
+    if (treeNodes.length === 0) {
       setActiveNodeId('')
       return
     }
-    if (!filteredFlat.some((node) => node.id === activeNodeId)) {
-      setActiveNodeId(filteredFlat[0].id)
-    }
-  }, [activeNodeId, filteredFlat])
+    setActiveNodeId((prev) => {
+      if (prev && findNodeById(treeNodes, prev)) return prev
+      const first = flattenTree(treeNodes, pathMap)[0]
+      return first?.id ?? ''
+    })
+  }, [treeNodes, pathMap])
+
+  useEffect(() => {
+    if (!activeNodeId) return
+    if (filteredIdSet.has(activeNodeId)) return
+    setActiveNodeId('')
+  }, [activeNodeId, filteredIdSet])
 
   const activeNode = useMemo(
     () => (activeNodeId ? findNodeById(treeNodes, activeNodeId) : null),
     [activeNodeId, treeNodes],
   )
+
+  const parentOptions = useMemo((): SearchableComboboxOption[] => {
+    const regs = collectRegistryRows(treeNodes)
+    const sy = activeNode?.registry?.snapshotYear
+    const seen = new Set<string>()
+    const opts: SearchableComboboxOption[] = []
+    for (const reg of regs) {
+      if (sy && reg.snapshotYear !== sy) continue
+      const name = reg.name.trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      opts.push({ value: name, label: name, searchText: `${name} ${reg.code}` })
+    }
+    opts.sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
+    return opts
+  }, [activeNode?.registry?.snapshotYear, treeNodes])
+
+  useEffect(() => {
+    setHierarchySaveMsg('')
+    setHierarchySaveErr('')
+    if (!activeNode?.registry) {
+      setEditParentName('')
+      setEditShareRatio('')
+      return
+    }
+    const reg = activeNode.registry
+    if (isManage) {
+      setEditParentName(reg.mgmtParent.trim())
+    } else {
+      const { name, ratio } = parseFirstShareholder(reg.shareholders)
+      setEditParentName(name)
+      setEditShareRatio(ratio.replace(/%$/, '').trim())
+    }
+  }, [activeNode, isManage])
+
+  const saveHierarchy = useCallback(async () => {
+    const rowId = activeNode?.registry?.rowId
+    if (!rowId) {
+      setHierarchySaveErr(importUi.hierarchyEditNeedNode)
+      return
+    }
+    setHierarchySaveBusy(true)
+    setHierarchySaveErr('')
+    setHierarchySaveMsg('')
+    const res = await postAuditedEnterpriseRegistryHierarchyUpdate({
+      rowId,
+      mode: isManage ? 'management' : 'equity',
+      parentName: editParentName.trim(),
+      shareRatio: isManage ? undefined : editShareRatio.trim() || undefined,
+    })
+    setHierarchySaveBusy(false)
+    if (!res.ok) {
+      setHierarchySaveErr(res.error?.message ?? importUi.hierarchyEditFailed)
+      return
+    }
+    setHierarchySaveMsg(importUi.hierarchyEditSuccess)
+    void loadTree()
+  }, [activeNode, editParentName, editShareRatio, importUi, isManage, loadTree])
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => {
@@ -281,31 +658,49 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
     setImportBusy(true)
     setImportErr('')
     setImportMsg('')
-    const res = await postDimOrgHierImport({ file, dryRun: importDryRun })
+    const res = await postAuditedEnterpriseRegistryImportExcel(file)
     setImportBusy(false)
     if (!res.ok) {
-      setImportErr(res.errors?.join('；') || res.error?.message || importUi.importFailed)
-      return
-    }
-    if (res.dry_run) {
-      setImportMsg(
-        importUi.dryRunSuccess
-          .replace('{count}', String(res.row_count ?? res.success ?? 0))
-          .replace('{diff}', String(res.hier_diff_count ?? 0)),
+      setImportErr(
+        (res.file_blocking ? importUi.importFileBlocking : importUi.importFailed) +
+          (res.error?.message ? `：${res.error.message}` : ''),
       )
       return
     }
     setImportMsg(
       importUi.importSuccess
-        .replace('{count}', String(res.success ?? 0))
-        .replace('{updated}', String(res.updated ?? 0))
-        .replace('{diff}', String(res.hier_diff_count ?? 0)),
+        .replace('{imported}', String(res.imported ?? 0))
+        .replace('{rejected}', String(res.rejected ?? 0)),
     )
-    if (res.stat_year) setSelectedYear(String(res.stat_year))
+    if ((res.rejected ?? 0) > 0 && res.reject_row_samples?.length) {
+      const sample = res.reject_row_samples[0]
+      setImportMsg(
+        (prev) =>
+          `${prev} ${importUi.importRejectSample.replace('{seq}', String(sample.seq_no ?? '')).replace('{reason}', String(sample.reason ?? ''))}`,
+      )
+    }
+    void loadTree()
+  }
+
+  const runBootstrapDemo = async () => {
+    setBootstrapBusy(true)
+    setImportErr('')
+    setImportMsg('')
+    const res = await postAuditedEnterpriseRegistryBootstrapDemo()
+    setBootstrapBusy(false)
+    if (!res.ok) {
+      setImportErr(res.error?.message || importUi.bootstrapDemoFail)
+      return
+    }
+    setImportMsg(importUi.bootstrapDemoOk)
     void loadTree()
   }
 
   const emptyMessage = loading ? '…' : loadError || emptyHint || (flatRows.length === 0 ? ui.loadEmptyHint : ui.filterEmpty)
+  const hasTreeData = flatRows.length > 0
+  const showStructurePreview = !loading && !hasTreeData
+  const noTreeData = showStructurePreview && !loadError
+  const snapshotYear = effectiveYear || years[0] || ''
 
   return (
     <div className="w-full px-5 py-6">
@@ -348,7 +743,25 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
         }
       />
 
-      <Card title={importUi.cardTitle} className="mb-4">
+      <Card
+        title={importUi.cardTitle}
+        className={[
+          'mb-4',
+          noTreeData ? 'border-accent/30 bg-[#f8fbff] ring-1 ring-accent/15' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {noTreeData ? (
+          <div className="mb-3 rounded-sm border border-border-light bg-white px-3 py-2.5">
+            <div className="mb-1.5 text-il-label font-medium text-text-2">{importUi.importChecklistTitle}</div>
+            <ol className="list-inside list-decimal space-y-0.5 text-il-meta text-text-2">
+              <li>{importUi.importChecklistLedger}</li>
+              <li>{importUi.importChecklistImport}</li>
+              <li>{importUi.importChecklistDemo}</li>
+            </ol>
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-il-label text-text-2">
             <div className="mb-1 text-text-3">{importUi.fileLabel}</div>
@@ -364,10 +777,6 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
               }}
             />
           </label>
-          <label className="inline-flex items-center gap-2 text-il-page-desc text-text-2">
-            <input type="checkbox" checked={importDryRun} onChange={(e) => setImportDryRun(e.target.checked)} />
-            {importUi.dryRunLabel}
-          </label>
           <button
             type="button"
             disabled={importBusy}
@@ -376,6 +785,25 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
           >
             {importBusy ? importUi.importing : importUi.importButton}
           </button>
+          {noTreeData ? (
+            <button
+              type="button"
+              disabled={bootstrapBusy || importBusy}
+              className="rounded-sm border border-accent/40 bg-white px-3 py-1.5 text-il-meta text-accent hover:bg-[#f0f7ff] disabled:opacity-60"
+              onClick={() => void runBootstrapDemo()}
+            >
+              {bootstrapBusy ? '…' : importUi.bootstrapDemoButton}
+            </button>
+          ) : null}
+          {props.onNav ? (
+            <button
+              type="button"
+              className="rounded-sm border border-border-light bg-white px-3 py-1.5 text-il-meta text-accent hover:bg-[#f8fafc]"
+              onClick={() => props.onNav?.('dim_audited_registry')}
+            >
+              {importUi.goToLedgerLink}
+            </button>
+          ) : null}
         </div>
         {importMsg ? <p className="mt-2 text-il-meta text-[#1b6b3a]">{importMsg}</p> : null}
         {importErr ? <p className="mt-2 text-il-meta text-red-600">{importErr}</p> : null}
@@ -389,7 +817,7 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
           hideStateInvestor
           yearLabel={ui.filterYearLabel}
           yearAllLabel={ui.filterYearAll}
-          years={years}
+          years={statYears}
           selectedYear={selectedYear}
           onYearChange={setSelectedYear}
           stateInvestorLabel={ui.filterStateInvestorLabel}
@@ -411,11 +839,15 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
         </div>
         {exportError ? <div className="mb-2 text-il-meta text-[#c2410c]">{exportError}</div> : null}
         <div className="grid gap-3 lg:grid-cols-[1fr_340px]">
-          <div className="rounded-sm border border-border-light bg-white px-3 py-3">
+          <div className="min-h-[280px] rounded-sm border border-border-light bg-white px-3 py-3">
             {visibleTree.length === 0 ? (
-              <div className="rounded-sm border border-dashed border-border-light bg-[#fafbfd] px-3 py-4 text-center text-il-page-desc text-text-3">
-                {emptyMessage}
-              </div>
+              showStructurePreview ? (
+                <TreeSkeletonExample ui={ui} importUi={importUi} message={emptyMessage} />
+              ) : (
+                <div className="rounded-sm border border-dashed border-border-light bg-[#fafbfd] px-3 py-4 text-center text-il-page-desc text-text-3">
+                  {emptyMessage}
+                </div>
+              )
             ) : (
               visibleTree.map((node) => (
                 <TreeBranch
@@ -432,52 +864,25 @@ export function AuditedEnterpriseTreePage(props: { mode: TreeMode; onNav?: (k: N
           </div>
           <aside className="rounded-sm border border-border-light bg-[#fafbfd] px-3 py-3">
             <div className="mb-2 text-il-label font-medium text-text-2">{ui.nodeDetailTitle}</div>
-            {activeNode ? (
-              <div className="space-y-2 text-il-page-desc text-text-2">
-                <div>
-                  <span className="text-text-3">{ui.nodeNameLabel}：</span>
-                  {activeNode.name}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodeLevelLabel}：</span>
-                  {activeNode.level}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodeParentLabel}：</span>
-                  {activeNode.parent_name}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodeSnapshotLabel}：</span>
-                  {effectiveYear || years[0] || '—'}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodePathLabel ?? '组织路径'}：</span>
-                  {activeNode.path || '—'}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodeSortLabel ?? '排序号'}：</span>
-                  {activeNode.sort_no ?? '—'}
-                </div>
-                <div>
-                  <span className="text-text-3">{ui.nodeCodeLabel}：</span>
-                  <span className="font-mono text-[12px]">{activeNode.id}</span>
-                </div>
-                {activeNode.is_hier_diff ? (
-                  <div className="text-danger">
-                    <span className="text-text-3">{ui.nodeHierDiffLabel ?? '管产差异'}：</span>
-                    {activeNode.hier_diff_note || '未填写说明'}
-                  </div>
-                ) : null}
-                {!isManage && activeNode.eq_shareholding_ratio != null ? (
-                  <div>
-                    <span className="text-text-3">{ui.nodeShareRatioLabel ?? '持股比例'}：</span>
-                    {(activeNode.eq_shareholding_ratio * 100).toFixed(2)}%
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <div className="text-il-page-desc text-text-3">{ui.nodeDetailEmpty}</div>
-            )}
+            <NodeDetailPanel
+              ui={ui}
+              importUi={importUi}
+              isManage={isManage}
+              activeNode={activeNode}
+              activePath={activeNodeId ? pathMap.get(activeNodeId) : undefined}
+              snapshotYear={snapshotYear}
+              hasTreeData={hasTreeData}
+              showMockPreview={showStructurePreview && !activeNode}
+              parentOptions={parentOptions}
+              editParentName={editParentName}
+              editShareRatio={editShareRatio}
+              onEditParentName={setEditParentName}
+              onEditShareRatio={setEditShareRatio}
+              onSaveHierarchy={() => void saveHierarchy()}
+              hierarchySaveBusy={hierarchySaveBusy}
+              hierarchySaveMsg={hierarchySaveMsg}
+              hierarchySaveErr={hierarchySaveErr}
+            />
           </aside>
         </div>
       </Card>

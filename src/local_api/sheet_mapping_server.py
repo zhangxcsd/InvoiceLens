@@ -14,7 +14,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, quote, urlparse
 
 import yaml
 
@@ -403,6 +403,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raise
 
+    @staticmethod
+    def _attachment_content_disposition(filename: str) -> str:
+        """RFC 5987：非 ASCII 文件名用 filename*，避免 HTTP 头 latin-1 编码失败。"""
+        name = (filename or "download").replace('"', "").replace("\\", "")
+        if name.isascii():
+            return f'attachment; filename="{name}"'
+        path = Path(name)
+        ext = path.suffix
+        ascii_stem = "".join(
+            ch for ch in path.stem if ch.isascii() and ch not in {'"', "\\"}
+        ).strip("._")
+        ascii_fallback = f"{ascii_stem or 'download'}{ext or '.bin'}"
+        encoded = quote(name, safe="")
+        return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+
     def _send_file(
         self,
         status: int,
@@ -416,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Disposition", self._attachment_content_disposition(filename))
             if cors:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -2176,6 +2191,42 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/audited-enterprise/invoice-to-enterprise":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            min_raw = (qs.get("min_invoice_count", [""])[0] or "").strip()
+            min_invoice_count: int | None = None
+            if min_raw.isdigit():
+                min_invoice_count = int(min_raw)
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.audited_enterprise_invoice_to_enterprise import (
+                    api_audited_enterprise_invoice_to_enterprise,
+                )
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_audited_enterprise_invoice_to_enterprise(
+                    conn,
+                    stat_year=stat_year,
+                    min_invoice_count=min_invoice_count,
+                )
+                self._send(200 if payload.get("ok") else 500, payload)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {
+                        "ok": False,
+                        "error": {
+                            "message": f"读取票→企业清单失败：{type(exc).__name__}: {exc}",
+                            "exception_type": type(exc).__name__,
+                            "detail": str(exc),
+                        },
+                    },
+                )
+            return
+
         if path == "/api/dim/caliber-versions":
             try:
                 from db.duckdb_conn import get_conn
@@ -2277,6 +2328,48 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        if path == "/api/dim/org-sys/list":
+            qs = parse_qs(parsed.query or "")
+            active_only_raw = (qs.get("active_only", ["false"])[0] or "false").strip().lower()
+            active_only = active_only_raw in ("1", "true", "yes")
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_sys_api import api_org_sys_list
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_org_sys_list(conn, active_only=active_only)
+                self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/org-sys/export":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_sys_api import api_org_sys_export
+
+                conn = get_conn()
+                init_all_tables(conn)
+                status, payload, ctype, fname = api_org_sys_export(conn)
+                if isinstance(payload, bytes):
+                    self._send_file(status, payload, content_type=ctype, filename=fname or "监管体系清单.xlsx")
+                else:
+                    self._send(status if status >= 400 else 500, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
         if path == "/api/dim/org-hier/meta":
             try:
                 from db.duckdb_conn import get_conn
@@ -2287,6 +2380,27 @@ class Handler(BaseHTTPRequestHandler):
                 init_all_tables(conn)
                 payload = api_org_hier_meta(conn)
                 self._send(200 if payload.get("ok") else 500, payload, cors=True)
+            except Exception as exc:
+                self._send(
+                    500,
+                    {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}},
+                    cors=True,
+                )
+            return
+
+        if path == "/api/dim/org-hier/template-download":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_hier_api import api_org_hier_template_download
+
+                conn = get_conn()
+                init_all_tables(conn)
+                status, payload, ctype, fname = api_org_hier_template_download(conn)
+                if isinstance(payload, bytes):
+                    self._send_file(status, payload, content_type=ctype, filename=fname or "组织维度导入模板.xlsx")
+                else:
+                    self._send(status if status >= 400 else 500, payload, cors=True)
             except Exception as exc:
                 self._send(
                     500,
@@ -2723,6 +2837,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/dws/analysis-subject/options":
             qs = parse_qs(parsed.query or "")
             stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            source = (qs.get("source", [""])[0] or "").strip().lower()
             require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
                 "1",
                 "true",
@@ -2739,21 +2854,225 @@ class Handler(BaseHTTPRequestHandler):
                 from db.schema_sqlfiles import init_all_tables
                 from src.local_api.analysis_subject_pool import (
                     _parse_min_invoice_count,
+                    api_analysis_scope_entity_options,
                     api_analysis_subject_options,
                 )
 
                 conn = get_conn()
                 init_all_tables(conn)
-                self._send(
-                    200,
-                    api_analysis_subject_options(
+                if source in ("org_union", "union", "scope"):
+                    payload = api_analysis_scope_entity_options(conn, stat_year=stat_year)
+                else:
+                    payload = api_analysis_subject_options(
                         conn,
                         stat_year=stat_year,
                         require_buyer=require_buyer,
                         require_both_roles=require_both_roles,
                         min_invoice_count=_parse_min_invoice_count(raw_min_n),
-                    ),
+                    )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/analysis-subject/org-members":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            member_source = (qs.get("member_source", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import (
+                    _parse_min_invoice_count,
+                    api_analysis_org_scope_members,
                 )
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_analysis_org_scope_members(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    member_source=member_source,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/cr-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_cr_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_cr_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/churn-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            member_source = (qs.get("member_source", [""])[0] or "").strip() or None
+            excluded_entity_ids = (qs.get("excluded_entity_ids", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_churn_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_churn_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    member_source=member_source,
+                    excluded_entity_ids=excluded_entity_ids,
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/top-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_top_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_top_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return
@@ -3285,6 +3604,7 @@ class Handler(BaseHTTPRequestHandler):
             keyword = (qs.get("keyword", [""])[0] or "").strip() or None
             track_status = (qs.get("track_status", [""])[0] or "").strip() or None
             batch_id = (qs.get("batch_id", [""])[0] or "").strip() or None
+            flag_id = (qs.get("flag_id", [""])[0] or "").strip() or None
             limit = (qs.get("limit", ["100"])[0] or "100").strip()
             offset = (qs.get("offset", ["0"])[0] or "0").strip()
             try:
@@ -3302,6 +3622,7 @@ class Handler(BaseHTTPRequestHandler):
                     keyword=keyword,
                     track_status=track_status,
                     batch_id=batch_id,
+                    flag_id=flag_id,
                     limit=int(limit or 100),
                     offset=int(offset or 0),
                 )
@@ -3376,6 +3697,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/compare/meta":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
@@ -3384,7 +3707,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 conn = get_conn()
                 init_all_tables(conn)
-                payload = api_compare_meta(conn)
+                payload = api_compare_meta(conn, stat_year=stat_year)
                 self._send(license_gate_http_status(payload), payload)
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
@@ -3395,6 +3718,9 @@ class Handler(BaseHTTPRequestHandler):
             stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
             risk_level = (qs.get("risk_level", [""])[0] or "").strip() or None
             keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            soe_anchor_id = (qs.get("soe_anchor_id", [""])[0] or "").strip() or None
+            soe_anchor_kw = (qs.get("soe_anchor_kw", [""])[0] or "").strip() or None
+            level1_group_kw = (qs.get("level1_group_kw", [""])[0] or "").strip() or None
             limit = (qs.get("limit", ["200"])[0] or "200").strip()
             offset = (qs.get("offset", ["0"])[0] or "0").strip()
             try:
@@ -3410,6 +3736,9 @@ class Handler(BaseHTTPRequestHandler):
                     stat_year=stat_year,
                     risk_level=risk_level,
                     keyword=keyword,
+                    soe_anchor_id=soe_anchor_id,
+                    soe_anchor_kw=soe_anchor_kw,
+                    level1_group_kw=level1_group_kw,
                     limit=int(limit or 200),
                     offset=int(offset or 0),
                 )
@@ -3423,6 +3752,9 @@ class Handler(BaseHTTPRequestHandler):
             stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
             metric = (qs.get("metric", ["amount"])[0] or "amount").strip()
             limit = (qs.get("limit", ["15"])[0] or "15").strip()
+            soe_anchor_id = (qs.get("soe_anchor_id", [""])[0] or "").strip() or None
+            soe_anchor_kw = (qs.get("soe_anchor_kw", [""])[0] or "").strip() or None
+            level1_group_kw = (qs.get("level1_group_kw", [""])[0] or "").strip() or None
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
@@ -3432,7 +3764,13 @@ class Handler(BaseHTTPRequestHandler):
                 conn = get_conn()
                 init_all_tables(conn)
                 payload = api_compare_charts_series(
-                    conn, stat_year=stat_year, metric=metric, limit=int(limit or 15)
+                    conn,
+                    stat_year=stat_year,
+                    metric=metric,
+                    limit=int(limit or 15),
+                    soe_anchor_id=soe_anchor_id,
+                    soe_anchor_kw=soe_anchor_kw,
+                    level1_group_kw=level1_group_kw,
                 )
                 self._send(license_gate_http_status(payload), payload)
             except Exception as exc:
@@ -3789,21 +4127,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}, cors=True)
             return
 
-        try:
-            from src.local_api.static_ui import try_serve_static
-
-            static = try_serve_static(path)
-            if static is not None:
-                status, ctype, data = static
-                self.send_response(status)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
-        except Exception:
-            pass
-
         from src.local_api.dws_dplus_routes import DWS_DPLUS_GET_PATHS, dispatch_dws_dplus_get
 
         if path in DWS_DPLUS_GET_PATHS:
@@ -3843,6 +4166,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return
+
+        try:
+            from src.local_api.static_ui import try_serve_static
+
+            static = try_serve_static(path)
+            if static is not None:
+                status, ctype, data = static
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        except Exception:
+            pass
 
         self._send(404, {"ok": False, "error": {"message": "Not Found"}}, cors=True)
 
@@ -5120,6 +5458,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/dws/analysis-subject/options":
             qs = parse_qs(parsed.query or "")
             stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            source = (qs.get("source", [""])[0] or "").strip().lower()
             require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
                 "1",
                 "true",
@@ -5136,21 +5475,225 @@ class Handler(BaseHTTPRequestHandler):
                 from db.schema_sqlfiles import init_all_tables
                 from src.local_api.analysis_subject_pool import (
                     _parse_min_invoice_count,
+                    api_analysis_scope_entity_options,
                     api_analysis_subject_options,
                 )
 
                 conn = get_conn()
                 init_all_tables(conn)
-                self._send(
-                    200,
-                    api_analysis_subject_options(
+                if source in ("org_union", "union", "scope"):
+                    payload = api_analysis_scope_entity_options(conn, stat_year=stat_year)
+                else:
+                    payload = api_analysis_subject_options(
                         conn,
                         stat_year=stat_year,
                         require_buyer=require_buyer,
                         require_both_roles=require_both_roles,
                         min_invoice_count=_parse_min_invoice_count(raw_min_n),
-                    ),
+                    )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/analysis-subject/org-members":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            member_source = (qs.get("member_source", [""])[0] or "").strip() or None
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import (
+                    _parse_min_invoice_count,
+                    api_analysis_org_scope_members,
                 )
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_analysis_org_scope_members(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    member_source=member_source,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/cr-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_cr_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_cr_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/churn-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            member_source = (qs.get("member_source", [""])[0] or "").strip() or None
+            excluded_entity_ids = (qs.get("excluded_entity_ids", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_churn_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_churn_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    member_source=member_source,
+                    excluded_entity_ids=excluded_entity_ids,
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
+            except Exception as exc:
+                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
+            return
+
+        if path == "/api/dws/counterparty/top-matrix":
+            qs = parse_qs(parsed.query or "")
+            stat_year = (qs.get("stat_year", [""])[0] or "").strip() or None
+            tree = (qs.get("tree", ["mg"])[0] or "mg").strip() or "mg"
+            scope_entity_id = (qs.get("scope_entity_id", [""])[0] or "").strip() or None
+            role = (qs.get("role", ["supplier"])[0] or "supplier").strip() or "supplier"
+            require_buyer = (qs.get("require_buyer", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            require_both_roles = (qs.get("require_both_roles", ["0"])[0] or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            raw_min_n = (qs.get("min_invoice_count", [""])[0] or "").strip() or None
+            keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            try:
+                limit = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except ValueError:
+                limit = 500
+            try:
+                offset = int((qs.get("offset", ["0"])[0] or "0").strip() or "0")
+            except ValueError:
+                offset = 0
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.analysis_subject_pool import _parse_min_invoice_count
+                from src.local_api.dws_dashboard_api import api_dws_counterparty_top_matrix
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_dws_counterparty_top_matrix(
+                    conn,
+                    stat_year=stat_year,
+                    tree=tree,
+                    scope_entity_id=scope_entity_id,
+                    role=role,
+                    require_buyer=require_buyer,
+                    require_both_roles=require_both_roles,
+                    min_invoice_count=_parse_min_invoice_count(raw_min_n),
+                    keyword=keyword,
+                    limit=limit,
+                    offset=offset,
+                )
+                self._send(200 if payload.get("ok") else 400, payload)
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return
@@ -5408,15 +5951,6 @@ class Handler(BaseHTTPRequestHandler):
                     fpzt=fpzt,
                 )
                 self._send(200 if payload.get("ok") else 400, payload)
-            except Exception as exc:
-                self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
-            return
-
-        if path == "/api/settings/license":
-            try:
-                from src.local_api.license_gate import api_settings_license
-
-                self._send(200, api_settings_license())
             except Exception as exc:
                 self._send(500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}})
             return
@@ -6371,6 +6905,76 @@ class Handler(BaseHTTPRequestHandler):
             self._send(code, payload, cors=True)
             return
 
+        if path == "/api/dim/org-sys/save":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_sys_api import api_org_sys_save
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_org_sys_save(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {"message": str(exc), "exception_type": type(exc).__name__},
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/org-sys/delete":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_sys_api import api_org_sys_delete
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_org_sys_delete(conn, body if isinstance(body, dict) else {})
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {"message": str(exc), "exception_type": type(exc).__name__},
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/org-sys/bootstrap-demo":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_sys_api import api_org_sys_bootstrap_demo
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_org_sys_bootstrap_demo(conn)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {"message": str(exc), "exception_type": type(exc).__name__},
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/org-hier/bootstrap-demo":
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.dim_org_hier_api import api_org_hier_bootstrap_demo
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = api_org_hier_bootstrap_demo(conn)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {"message": str(exc), "exception_type": type(exc).__name__},
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
         if path == "/api/dim/org-hier/rebuild":
             body = self._read_json()
             try:
@@ -6525,6 +7129,29 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": False,
                     "error": {
                         "message": f"保存管理与产权层级信息失败：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 400, payload, cors=True)
+            return
+
+        if path == "/api/dim/audited-enterprise/relation-tree/update-hierarchy":
+            body = self._read_json()
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import ensure_audited_enterprise_registry_table, init_all_tables
+                from src.local_api.audited_enterprise_dims import api_registry_update_hierarchy
+
+                conn = get_conn()
+                init_all_tables(conn)
+                ensure_audited_enterprise_registry_table(conn)
+                payload = api_registry_update_hierarchy(conn, body)
+            except Exception as exc:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "message": f"关系树层级回写失败：{type(exc).__name__}: {exc}",
                         "exception_type": type(exc).__name__,
                         "detail": str(exc),
                     },

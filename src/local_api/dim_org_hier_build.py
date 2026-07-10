@@ -1,7 +1,8 @@
 """
 组织维度双树（dim_org_node + dim_org_hier）Excel 导入与路径重算。
 
-模板 18 列见设计文档；第 1 行表头、第 2 行中文说明、第 3 行起为数据。
+模板 22 列；第 1 行表头、第 2 行中文说明、第 3 行起为数据。
+仍兼容旧版 18/20 列模板（无上级单位名称或国家出资企业列时自动推断）。
 """
 
 from __future__ import annotations
@@ -36,15 +37,58 @@ EXPECTED_COLUMNS = [
     "industry_id",
     "industry_name",
     "is_stat_inc",
+    "state_investor_id",
+    "state_investor_name",
     "mg_parent_id",
+    "mg_parent_name",
     "mg_sort_no",
     "eq_parent_id",
+    "eq_parent_name",
     "eq_sort_no",
     "eq_shareholding_ratio",
     "reg_capital",
     "is_active",
     "hier_diff_note",
 ]
+
+ENTITY_TYPE_OPTIONS = [
+    "有限责任公司",
+    "股份有限公司",
+    "国有独资公司",
+    "全民所有制",
+    "集体所有制",
+    "合伙企业",
+    "个人独资企业",
+    "外商投资企业",
+    "其他",
+]
+
+COLUMN_HINTS_ZH: dict[str, str] = {
+    "entity_id": "统一社会信用代码【必填】18位；根节点填 ROOT_{sys_id}",
+    "entity_fullname": "企业全称【必填】与工商登记一致",
+    "entity_shortname": "企业简称【选填】树节点展示用；无简称时路径自动用全称",
+    "entity_type": "企业组织形态【必填】工商登记类型，如有限责任公司、股份有限公司",
+    "sys_id": "监管体系代码【必填】系统预置字典项，须从下拉或「监管体系说明」页选择，不可自由填写；维护入口：维度管理→监管体系",
+    "stat_year": "统计年度【必填】4位年份；同一文件只允许一个年度",
+    "main_business": "主责主业【选填】",
+    "industry_id": "行业门类代码【选填】",
+    "industry_name": "行业门类名称【选填】",
+    "is_stat_inc": "是否纳入统计【必填】填「是」或「否」；根节点填「否」",
+    "state_investor_id": "国家出资企业代码【条件必填】填一级企业 entity_id；一级企业一般填自身；根节点留空",
+    "state_investor_name": "国家出资企业名称【选填】须与本文件中该代码对应行的 entity_fullname 一致，便于核对",
+    "mg_parent_id": "上级管理单位代码【必填】填上级的 entity_id；根节点填自己的 entity_id",
+    "mg_parent_name": "上级管理单位名称【选填】须与本文件中该代码对应行的 entity_fullname 一致，便于核对",
+    "mg_sort_no": "管理排序号【必填】同一管理上级下从 1 起",
+    "eq_parent_id": "上级产权单位代码【必填】填上级的 entity_id；根节点填自己的 entity_id",
+    "eq_parent_name": "上级产权单位名称【选填】须与本文件中该代码对应行的 entity_fullname 一致，便于核对",
+    "eq_sort_no": "产权排序号【必填】同一产权上级下从 1 起",
+    "eq_shareholding_ratio": "直接持股比例【选填】0.0001~1.0000；留空表示全资",
+    "reg_capital": "注册资本（万元）【选填】",
+    "is_active": "是否在营【必填】填「是」或「否」",
+    "hier_diff_note": "管产差异说明【条件必填】管理/产权上级不一致时建议填写",
+}
+
+ORG_HIER_TEMPLATE_FILENAME = "组织维度导入模板.xlsx"
 
 _BOOL_YES = {"是", "true", "1", "yes", "y"}
 _BOOL_NO = {"否", "false", "0", "no", "n"}
@@ -125,6 +169,150 @@ def _valid_entity_id(raw: str) -> bool:
     return len(compact) == 18
 
 
+def _load_active_sys_ids(conn: Any) -> list[str]:
+    try:
+        rows = conn.execute(
+            "SELECT sys_id FROM dim_org_sys WHERE is_active = TRUE ORDER BY sort_no, sys_id"
+        ).fetchall()
+        sys_ids = [str(r[0]).strip() for r in rows or [] if r[0]]
+        return sys_ids
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 dim_org_sys 失败: %s", exc)
+        return []
+
+
+def _load_sys_catalog(conn: Any) -> list[dict[str, str]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT sys_id, sys_name, admin_level, COALESCE(gov_owner, ''), COALESCE(description, '')
+            FROM dim_org_sys
+            WHERE is_active = TRUE
+            ORDER BY sort_no, sys_id
+            """
+        ).fetchall()
+        return [
+            {
+                "sys_id": str(r[0] or "").strip(),
+                "sys_name": str(r[1] or "").strip(),
+                "admin_level": str(r[2] or "").strip(),
+                "gov_owner": str(r[3] or "").strip(),
+                "description": str(r[4] or "").strip(),
+            }
+            for r in rows or []
+            if r[0]
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取 dim_org_sys 目录失败: %s", exc)
+        return []
+
+
+def _norm_header_cell(v: Any) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v).strip()
+
+
+def generate_org_hier_import_template(conn: Any) -> tuple[bytes, str]:
+    """生成空白组织维度 Excel 导入模板（表头 + 中文说明行 + 监管体系说明页）。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    sys_ids = _load_active_sys_ids(conn)
+    sys_catalog = _load_sys_catalog(conn)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "组织维度"
+
+    gray = Font(color="808080")
+    for col_idx, col_name in enumerate(EXPECTED_COLUMNS, start=1):
+        ws.cell(row=1, column=col_idx, value=col_name)
+        hint_cell = ws.cell(row=2, column=col_idx, value=COLUMN_HINTS_ZH.get(col_name, ""))
+        hint_cell.font = gray
+        width = min(48, max(12, len(col_name) + 2, len(hint_cell.value or "") // 2))
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    bool_dv = DataValidation(type="list", formula1='"是,否"', allow_blank=True)
+    ws.add_data_validation(bool_dv)
+    bool_dv.add("J3:J10000")
+    active_dv = DataValidation(type="list", formula1='"是,否"', allow_blank=True)
+    ws.add_data_validation(active_dv)
+    active_dv.add("U3:U10000")
+    if sys_ids:
+        sys_dv = DataValidation(type="list", formula1=f'"{",".join(sys_ids)}"', allow_blank=True)
+        ws.add_data_validation(sys_dv)
+        sys_dv.add("E3:E10000")
+    if ENTITY_TYPE_OPTIONS:
+        type_dv = DataValidation(
+            type="list",
+            formula1=f'"{",".join(ENTITY_TYPE_OPTIONS)}"',
+            allow_blank=True,
+        )
+        ws.add_data_validation(type_dv)
+        type_dv.add("D3:D10000")
+
+    ref = wb.create_sheet("监管体系说明")
+    ref.append(
+        [
+            "sys_id（监管体系代码）",
+            "sys_name（名称）",
+            "admin_level（层级）",
+            "gov_owner（主管单位）",
+            "description（说明）",
+        ]
+    )
+    for row in sys_catalog:
+        ref.append(
+            [
+                row["sys_id"],
+                row["sys_name"],
+                row["admin_level"],
+                row["gov_owner"],
+                row["description"],
+            ]
+        )
+    ref.append([])
+    if sys_catalog:
+        ref.append(["说明", "sys_id 为系统预置字典项（非自由填写）；导入组织维度时每行须从本页选择对应代码。"])
+        ref.append(["维护入口", "维度管理 → 企业组织维度 → 监管体系（可导出最新清单）"])
+    else:
+        ref.append(["说明", "当前尚无预置监管体系。请先在「维度管理 → 企业组织维度 → 监管体系」维护后再导入。"])
+        ref.append(["维护入口", "维度管理 → 企业组织维度 → 监管体系"])
+    ref_col_widths = (16, 14, 10, 22, 40)
+    for col_idx, width in enumerate(ref_col_widths, start=1):
+        ref.column_dimensions[get_column_letter(col_idx)].width = width
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue(), ORG_HIER_TEMPLATE_FILENAME
+
+
+def _frame_from_org_sheet(raw: pd.DataFrame) -> pd.DataFrame:
+    """按第 1 行英文表头映射列；兼容旧版模板（缺 mg/eq_parent_name、state_investor 等列）。"""
+    if raw.empty:
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
+    headers = [_norm_header_cell(v) for v in raw.iloc[0].tolist()]
+    data = raw.iloc[2:].reset_index(drop=True)
+    if not any(headers):
+        data = data.iloc[:, : len(EXPECTED_COLUMNS)]
+        data.columns = EXPECTED_COLUMNS[: data.shape[1]]
+        return data
+
+    out: dict[str, pd.Series] = {}
+    for col in EXPECTED_COLUMNS:
+        if col in headers:
+            idx = headers.index(col)
+            if idx < data.shape[1]:
+                out[col] = data.iloc[:, idx]
+            else:
+                out[col] = pd.Series([None] * len(data))
+        else:
+            out[col] = pd.Series([None] * len(data))
+    return pd.DataFrame(out)
+
+
 def _read_org_excel(
     *,
     file_bytes: bytes | None = None,
@@ -137,14 +325,8 @@ def _read_org_excel(
         engine = "xlrd" if fn.endswith(".xls") else "openpyxl"
         xls = pd.ExcelFile(bio, engine=engine)
         sheet = xls.sheet_names[0]
-        header_df = pd.read_excel(xls, sheet_name=sheet, header=0, nrows=0, dtype=str)
-        cols = [str(c).strip() for c in header_df.columns.tolist()]
-        if len(cols) < len(EXPECTED_COLUMNS):
-            cols = EXPECTED_COLUMNS[: len(cols)] + EXPECTED_COLUMNS[len(cols) :]
-        df = pd.read_excel(xls, sheet_name=sheet, header=None, skiprows=2, dtype=str)
-        df = df.iloc[:, : len(EXPECTED_COLUMNS)]
-        df.columns = EXPECTED_COLUMNS[: df.shape[1]]
-        return df, sheet
+        raw = pd.read_excel(xls, sheet_name=sheet, header=None, dtype=str)
+        return _frame_from_org_sheet(raw), sheet
 
     assert source_path
     raw = source_path.strip().strip('"').replace("\\", "/")
@@ -157,10 +339,8 @@ def _read_org_excel(
     engine = "xlrd" if suf == ".xls" else "openpyxl"
     xls = pd.ExcelFile(p, engine=engine)
     sheet = xls.sheet_names[0]
-    df = pd.read_excel(p, sheet_name=sheet, header=None, skiprows=2, dtype=str, engine=engine)
-    df = df.iloc[:, : len(EXPECTED_COLUMNS)]
-    df.columns = EXPECTED_COLUMNS[: df.shape[1]]
-    return df, sheet
+    raw_df = pd.read_excel(p, sheet_name=sheet, header=None, dtype=str, engine=engine)
+    return _frame_from_org_sheet(raw_df), sheet
 
 
 def _display_name(shortname: str | None, fullname: str) -> str:
@@ -237,7 +417,7 @@ def _parse_rows_from_frame(df: pd.DataFrame, conn: Any) -> tuple[list[dict[str, 
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 dim_org_sys 失败: %s", exc)
-        sys_ids = {"PROV_SD"}
+        sys_ids = set()
 
     stat_years: set[int] = set()
 
@@ -263,7 +443,10 @@ def _parse_rows_from_frame(df: pd.DataFrame, conn: Any) -> tuple[list[dict[str, 
         if not sys_id:
             row_errors.append(f"第 {excel_row} 行：sys_id 不能为空")
         elif sys_id not in sys_ids:
-            row_errors.append(f"第 {excel_row} 行：sys_id={sys_id} 不在 dim_org_sys 中")
+            row_errors.append(
+                f"第 {excel_row} 行：sys_id={sys_id} 不在已启用的监管体系中，"
+                "请先在「监管体系」维护或从模板「监管体系说明」页查询"
+            )
 
         stat_year, err = _parse_int(raw_row.get("stat_year"), field="stat_year", row_no=excel_row, min_val=1990)
         if err:
@@ -332,9 +515,13 @@ def _parse_rows_from_frame(df: pd.DataFrame, conn: Any) -> tuple[list[dict[str, 
                 "industry_id": _norm_cell(raw_row.get("industry_id")),
                 "industry_name": _norm_cell(raw_row.get("industry_name")),
                 "is_stat_inc": bool(is_stat_inc),
+                "state_investor_id": _norm_cell(raw_row.get("state_investor_id")),
+                "state_investor_name": _norm_cell(raw_row.get("state_investor_name")),
                 "mg_parent_id": mg_parent_id or "",
+                "mg_parent_name": _norm_cell(raw_row.get("mg_parent_name")),
                 "mg_sort_no": int(mg_sort_no or 0),
                 "eq_parent_id": eq_parent_id or "",
+                "eq_parent_name": _norm_cell(raw_row.get("eq_parent_name")),
                 "eq_sort_no": int(eq_sort_no or 0),
                 "eq_shareholding_ratio": float(eq_ratio) if eq_ratio is not None else None,
                 "reg_capital": _norm_cell(raw_row.get("reg_capital")),
@@ -350,12 +537,37 @@ def _parse_rows_from_frame(df: pd.DataFrame, conn: Any) -> tuple[list[dict[str, 
         errors.append("未能解析 stat_year")
 
     entity_ids = {r["entity_id"] for r in parsed}
+    by_id = {r["entity_id"]: r for r in parsed}
     for r in parsed:
         row_no = r["excel_row"]
         if r["mg_parent_id"] not in entity_ids:
             errors.append(f"第 {row_no} 行：mg_parent_id={r['mg_parent_id']} 不在本文件 entity_id 列中")
         if r["eq_parent_id"] not in entity_ids:
             errors.append(f"第 {row_no} 行：eq_parent_id={r['eq_parent_id']} 不在本文件 entity_id 列中")
+        mg_parent = by_id.get(r["mg_parent_id"])
+        if mg_parent and r.get("mg_parent_name"):
+            expected = mg_parent["entity_fullname"]
+            if r["mg_parent_name"] != expected:
+                warnings.append(
+                    f"第 {row_no} 行：mg_parent_name「{r['mg_parent_name']}」与上级 entity_fullname「{expected}」不一致"
+                )
+        eq_parent = by_id.get(r["eq_parent_id"])
+        if eq_parent and r.get("eq_parent_name"):
+            expected = eq_parent["entity_fullname"]
+            if r["eq_parent_name"] != expected:
+                warnings.append(
+                    f"第 {row_no} 行：eq_parent_name「{r['eq_parent_name']}」与上级 entity_fullname「{expected}」不一致"
+                )
+        si_id = r.get("state_investor_id")
+        if si_id and si_id not in entity_ids:
+            errors.append(f"第 {row_no} 行：state_investor_id={si_id} 不在本文件 entity_id 列中")
+        elif si_id:
+            si_row = by_id.get(si_id)
+            si_name = r.get("state_investor_name")
+            if si_row and si_name and si_name != si_row["entity_fullname"]:
+                warnings.append(
+                    f"第 {row_no} 行：state_investor_name「{si_name}」与国家出资企业 entity_fullname「{si_row['entity_fullname']}」不一致"
+                )
 
     if errors:
         return [], errors, warnings, reject_samples
@@ -401,15 +613,55 @@ def _enrich_parsed_rows(parsed: list[dict[str, Any]]) -> tuple[list[dict[str, An
         mg_parent = by_id.get(r["mg_parent_id"])
         eq_parent = by_id.get(r["eq_parent_id"])
         is_hier_diff = r["mg_parent_id"] != r["eq_parent_id"]
+        row_no = r.get("excel_row", "?")
         if is_hier_diff and not r.get("hier_diff_note"):
-            row_no = r.get("excel_row", "?")
             warnings.append(
                 f"第 {row_no} 行：管产分离未填写 hier_diff_note（{r['entity_shortname'] or r['entity_fullname']}）"
             )
+
+        si_id = (r.get("state_investor_id") or "").strip()
+        si_name = (r.get("state_investor_name") or "").strip()
+        mg_level = int(mg["level"])
+        if not si_id:
+            if mg_level == 1:
+                si_id = r["entity_id"]
+                si_name = si_name or r["entity_fullname"]
+            elif mg_level >= 2:
+                si_id = str(mg.get("root_group_id") or "").strip()
+                if si_id:
+                    anchor = by_id.get(si_id)
+                    si_name = si_name or ((anchor or {}).get("entity_fullname") or "")
+        elif mg_level == 1 and si_id != r["entity_id"]:
+            warnings.append(
+                f"第 {row_no} 行：一级企业国家出资企业代码一般填自身 entity_id（当前填 {si_id}）"
+            )
+
+        if r.get("is_stat_inc") and mg_level >= 1:
+            if not si_id:
+                errors.append(f"第 {row_no} 行：纳入统计企业须填写或可推断国家出资企业代码")
+            elif si_id not in by_id:
+                errors.append(f"第 {row_no} 行：state_investor_id={si_id} 不在本文件 entity_id 列中")
+            else:
+                si_anchor_level = int(mg_fields[si_id]["level"])
+                if si_anchor_level != 1:
+                    warnings.append(
+                        f"第 {row_no} 行：国家出资企业「{si_id}」管理层级为 {si_anchor_level}，一般应为一级企业"
+                    )
+                si_row = by_id[si_id]
+                expected_name = si_row["entity_fullname"]
+                if si_name and si_name != expected_name:
+                    warnings.append(
+                        f"第 {row_no} 行：state_investor_name「{si_name}」与国家出资企业 entity_fullname「{expected_name}」不一致"
+                    )
+                elif not si_name:
+                    si_name = expected_name
+
         enriched.append(
             {
                 **r,
-                "mg_level": mg["level"],
+                "state_investor_id": si_id or None,
+                "state_investor_name": si_name or None,
+                "mg_level": mg_level,
                 "mg_path": mg["path"],
                 "mg_path_ids": mg["path_ids"],
                 "mg_root_group_id": mg["root_group_id"],
@@ -534,14 +786,14 @@ def _persist_rows(conn: Any, rows: list[dict[str, Any]], *, stat_year: int, upda
                 mg_level, mg_path, mg_path_ids, mg_root_group_id, mg_is_leaf,
                 eq_parent_id, eq_parent_shortname, eq_parent_fullname, eq_sort_no,
                 eq_shareholding_ratio, eq_level, eq_path, eq_path_ids, eq_root_group_id, eq_is_leaf,
-                is_hier_diff, hier_diff_note, updated_at, updated_by
+                is_hier_diff, hier_diff_note, state_investor_id, state_investor_name, updated_at, updated_by
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, CURRENT_TIMESTAMP, ?
+                ?, ?, ?, ?, CURRENT_TIMESTAMP, ?
             )
             """,
             [
@@ -572,6 +824,8 @@ def _persist_rows(conn: Any, rows: list[dict[str, Any]], *, stat_year: int, upda
                 r.get("eq_is_leaf"),
                 r.get("is_hier_diff", False),
                 r.get("hier_diff_note"),
+                r.get("state_investor_id"),
+                r.get("state_investor_name"),
                 updated_by,
             ],
         )
@@ -717,7 +971,8 @@ def rebuild_org_hierarchy_paths(
                 n.entity_type, n.main_business, n.industry_id, n.industry_name,
                 COALESCE(n.is_stat_inc, TRUE), h.mg_parent_id, h.mg_sort_no,
                 h.eq_parent_id, h.eq_sort_no, h.eq_shareholding_ratio,
-                n.reg_capital, COALESCE(n.is_active, TRUE), h.hier_diff_note
+                n.reg_capital, COALESCE(n.is_active, TRUE), h.hier_diff_note,
+                h.state_investor_id, h.state_investor_name
             FROM dim_org_hier h
             LEFT JOIN dim_org_node n ON n.entity_id = h.entity_id
             WHERE h.stat_year = ?
@@ -745,6 +1000,8 @@ def rebuild_org_hierarchy_paths(
                     "reg_capital": r[14],
                     "is_active": bool(r[15]),
                     "hier_diff_note": r[16],
+                    "state_investor_id": r[17],
+                    "state_investor_name": r[18],
                     "excel_row": i + 1,
                 }
             )
@@ -795,4 +1052,258 @@ def rebuild_org_hierarchy_paths(
         "run_id": build_run_id,
         "years": summaries,
         "rows_affected": sum(int(s.get("row_count") or 0) for s in summaries),
+    }
+
+
+def _parse_share_ratio(shareholders: str) -> float | None:
+    from src.local_api.audited_enterprise_relation_api import _parse_first_shareholder
+
+    _, ratio = _parse_first_shareholder(shareholders)
+    if not ratio:
+        return None
+    s = ratio.strip().rstrip("%").strip()
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def materialize_org_hier_from_registry(
+    conn: Any,
+    *,
+    stat_years: list[int] | None = None,
+    replace_years: bool = True,
+    run_id: str | None = None,
+    on_progress: ProgressFn | None = None,
+    updated_by: str = "REGISTRY_SYNC",
+) -> dict[str, Any]:
+    """
+    从 dim_audited_enterprise_registry 物化 dim_org_node + dim_org_hier。
+
+    台账为权威源：按年度覆盖写入，供 analysis_subject_pool 等仍读 dim_org_hier 的路径使用。
+    """
+    from src.local_api.group_enterprise_year_build import (
+        _norm_id,
+        _norm_name,
+        _parse_equity_parent_name,
+        _registry_years,
+        _resolve_parent_id,
+        _safe_level,
+    )
+
+    def _prog(step: str, msg: str) -> None:
+        if on_progress:
+            on_progress(step, msg)
+
+    years = [int(y) for y in (stat_years or []) if y is not None]
+    if not years:
+        years = _registry_years(conn)
+    if not years:
+        return {
+            "ok": False,
+            "error": {
+                "message": "dim_audited_enterprise_registry 无可用 snapshot_year",
+                "exception_type": "ValidationError",
+            },
+        }
+
+    sys_ids = _load_active_sys_ids(conn)
+    default_sys_id = sys_ids[0] if sys_ids else "DEFAULT"
+    build_run_id = run_id or f"org_hier_mat_{uuid.uuid4().hex[:12]}"
+    summaries: list[dict[str, Any]] = []
+    total_written = 0
+
+    for year_i in years:
+        _prog("load_registry", f"读取 {year_i} 年度台账以物化 dim_org_hier…")
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    unified_social_credit_code,
+                    enterprise_name,
+                    main_business,
+                    enterprise_category,
+                    registered_capital,
+                    state_investor,
+                    mgmt_level,
+                    mgmt_parent,
+                    equity_level,
+                    shareholders
+                FROM dim_audited_enterprise_registry
+                WHERE snapshot_year = ?
+                  AND trim(COALESCE(unified_social_credit_code, '')) <> ''
+                """,
+                [year_i],
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("读取台账失败 year=%s", year_i)
+            return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+        if not rows:
+            summaries.append({"stat_year": year_i, "written": 0, "skipped": True, "reason": "台账无行"})
+            continue
+
+        name_to_id: dict[str, str] = {}
+        id_to_name: dict[str, str] = {}
+        parsed_rows: list[dict[str, Any]] = []
+        for r in rows or []:
+            eid = _norm_id(str(r[0] or ""))
+            if not eid or not _valid_entity_id(eid):
+                continue
+            ename = str(r[1] or "").strip() or eid
+            parsed_rows.append(
+                {
+                    "enterprise_id": eid,
+                    "enterprise_name": ename,
+                    "main_business": str(r[2] or "").strip(),
+                    "enterprise_category": str(r[3] or "").strip() or "企业",
+                    "registered_capital": str(r[4] or "").strip(),
+                    "state_investor": str(r[5] or "").strip(),
+                    "mgmt_level": _safe_level(r[6], 2),
+                    "mgmt_parent_name": str(r[7] or "").strip(),
+                    "equity_level": _safe_level(r[8], 2),
+                    "shareholders": str(r[9] or "").strip(),
+                }
+            )
+            id_to_name[eid] = ename
+            nk = _norm_name(ename)
+            if nk and nk not in name_to_id:
+                name_to_id[nk] = eid
+
+        parsed: list[dict[str, Any]] = []
+        for row in parsed_rows:
+            eid = row["enterprise_id"]
+            mgmt_level = int(row["mgmt_level"])
+            equity_level = int(row["equity_level"])
+            mgmt_parent_name = row["mgmt_parent_name"]
+            equity_parent_name = _parse_equity_parent_name(row["shareholders"])
+
+            mg_parent_id, _ = _resolve_parent_id(
+                mgmt_parent_name,
+                self_id=eid,
+                level=mgmt_level,
+                name_to_id=name_to_id,
+            )
+            eq_parent_id, _ = _resolve_parent_id(
+                equity_parent_name,
+                self_id=eid,
+                level=equity_level,
+                name_to_id=name_to_id,
+            )
+
+            si_name = row["state_investor"]
+            si_id = ""
+            if si_name:
+                si_id = name_to_id.get(_norm_name(si_name), "")
+            if mgmt_level <= 1 and not si_id:
+                si_id = eid
+                si_name = si_name or row["enterprise_name"]
+
+            eq_ratio = _parse_share_ratio(row["shareholders"])
+
+            parsed.append(
+                {
+                    "entity_id": eid,
+                    "entity_fullname": row["enterprise_name"],
+                    "entity_shortname": row["enterprise_name"][:32] if row["enterprise_name"] else eid,
+                    "entity_type": row["enterprise_category"] or "企业",
+                    "sys_id": default_sys_id,
+                    "stat_year": year_i,
+                    "main_business": row["main_business"] or None,
+                    "industry_id": None,
+                    "industry_name": None,
+                    "is_stat_inc": True,
+                    "state_investor_id": si_id or None,
+                    "state_investor_name": si_name or None,
+                    "mg_parent_id": mg_parent_id,
+                    "mg_parent_name": mgmt_parent_name or id_to_name.get(mg_parent_id, ""),
+                    "mg_sort_no": mgmt_level,
+                    "eq_parent_id": eq_parent_id,
+                    "eq_parent_name": equity_parent_name or id_to_name.get(eq_parent_id, ""),
+                    "eq_sort_no": equity_level,
+                    "eq_shareholding_ratio": eq_ratio,
+                    "reg_capital": row["registered_capital"] or None,
+                    "is_active": True,
+                    "hier_diff_note": None,
+                    "excel_row": 0,
+                }
+            )
+
+        entity_ids = {r["entity_id"] for r in parsed}
+        errors: list[str] = []
+        for r in parsed:
+            if r["mg_parent_id"] not in entity_ids:
+                errors.append(f"{r['entity_id']} 的管理上级未在台账中匹配")
+            if r["eq_parent_id"] not in entity_ids:
+                errors.append(f"{r['entity_id']} 的产权上级未在台账中匹配")
+        if errors:
+            summaries.append(
+                {
+                    "stat_year": year_i,
+                    "written": 0,
+                    "skipped": True,
+                    "reason": errors[0],
+                    "errors": errors[:5],
+                }
+            )
+            continue
+
+        enriched, enrich_errors, warnings = _enrich_parsed_rows(parsed)
+        if enrich_errors:
+            summaries.append(
+                {
+                    "stat_year": year_i,
+                    "written": 0,
+                    "skipped": True,
+                    "reason": enrich_errors[0],
+                    "errors": enrich_errors[:5],
+                }
+            )
+            continue
+
+        _prog("write_org_hier", f"写入 {year_i} 年度 dim_org_hier（{len(enriched)} 行）…")
+        try:
+            conn.execute("BEGIN")
+            if replace_years:
+                conn.execute("DELETE FROM dim_org_hier WHERE stat_year = ?", [year_i])
+            log_count = _write_yoy_logs(conn, enriched, stat_year=year_i, changed_by=updated_by)
+            inserted, updated = _persist_rows(conn, enriched, stat_year=year_i, updated_by=updated_by)
+            conn.execute("COMMIT")
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001
+                pass
+            logger.exception("物化 dim_org_hier 失败 year=%s", year_i)
+            return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+        total_written += len(enriched)
+        hier_diff_count = sum(1 for x in enriched if x.get("is_hier_diff"))
+        summaries.append(
+            {
+                "stat_year": year_i,
+                "written": len(enriched),
+                "inserted": inserted,
+                "updated": updated,
+                "log_count": log_count,
+                "hier_diff_count": hier_diff_count,
+                "warnings": warnings[:10],
+            }
+        )
+
+    if total_written == 0 and any(s.get("skipped") for s in summaries):
+        first_err = next((s.get("reason") for s in summaries if s.get("skipped")), "物化失败")
+        return {
+            "ok": False,
+            "error": {"message": str(first_err), "exception_type": "MaterializeError"},
+            "run_id": build_run_id,
+            "year_summaries": summaries,
+        }
+
+    return {
+        "ok": True,
+        "run_id": build_run_id,
+        "rows_written": total_written,
+        "stat_years": years,
+        "year_summaries": summaries,
     }

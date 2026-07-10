@@ -571,6 +571,38 @@ def migrate_dm_audit_flag_columns(conn) -> None:
             logger.warning("dm_audit_flag 补列失败：detail_json (%s)", exc)
 
 
+def migrate_dim_org_sys_description_column(conn) -> None:
+    """监管体系表补列：说明（业务含义，如某省金融类国资）。"""
+    tbl = "dim_org_sys"
+    if not _table_exists(conn, tbl):
+        return
+    if not _column_exists(conn, tbl, "description"):
+        try:
+            conn.execute("ALTER TABLE dim_org_sys ADD COLUMN description VARCHAR")
+            logger.info("已迁移：%s.description", tbl)
+        except Exception as exc:
+            logger.warning("dim_org_sys 补列失败：description (%s)", exc)
+
+
+def migrate_dim_org_hier_state_investor_columns(conn) -> None:
+    """组织层级表补列：国家出资企业代码与名称。"""
+    tbl = "dim_org_hier"
+    if not _table_exists(conn, tbl):
+        return
+    cols = (
+        ("state_investor_id", "VARCHAR"),
+        ("state_investor_name", "VARCHAR"),
+    )
+    for col, ddl in cols:
+        if _column_exists(conn, tbl, col):
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
+            logger.info("已迁移：%s.%s", tbl, col)
+        except Exception as exc:
+            logger.warning("dim_org_hier 补列失败：%s.%s (%s)", tbl, col, exc)
+
+
 def migrate_dim_enterprise_year_rel_columns(conn) -> None:
     """
     企业-年度关系表补列迁移：
@@ -676,6 +708,8 @@ def _init_all_tables_impl(conn) -> dict:
     migrate_dim_subject_display_cache_columns(conn)
     migrate_dim_enterprise_year_rel_columns(conn)
     migrate_dm_audit_flag_columns(conn)
+    migrate_dim_org_sys_description_column(conn)
+    migrate_dim_org_hier_state_investor_columns(conn)
     migrate_dim_enterprise_year_roster_schema(conn)
     ddl = get_all_ddl()
     stmts = [s.strip() for s in ddl.split(";") if s.strip()]

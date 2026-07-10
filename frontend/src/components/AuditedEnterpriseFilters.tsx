@@ -1,3 +1,6 @@
+import { useMemo } from 'react'
+import { buildStatYearOptions } from '../utils/statYearOptions'
+
 type AuditedEnterpriseFiltersProps = {
   yearLabel: string
   yearAllLabel: string
@@ -20,6 +23,7 @@ type AuditedEnterpriseFiltersProps = {
 }
 
 export function AuditedEnterpriseFilters(props: AuditedEnterpriseFiltersProps) {
+  const yearOptions = useMemo(() => buildStatYearOptions(props.years), [props.years])
   const gridCls = props.hideStateInvestor
     ? 'mb-3 grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end'
     : 'mb-3 grid gap-3 md:grid-cols-[1fr_1fr_1fr_auto] md:items-end'
@@ -33,7 +37,7 @@ export function AuditedEnterpriseFilters(props: AuditedEnterpriseFiltersProps) {
           onChange={(event) => props.onYearChange(event.target.value)}
         >
           <option value={props.yearAllLabel}>{props.yearAllLabel}</option>
-          {props.years.map((year) => (
+          {yearOptions.map((year) => (
             <option key={year} value={year}>
               {year}
             </option>

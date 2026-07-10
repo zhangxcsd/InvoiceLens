@@ -319,7 +319,7 @@ def _merge_shareholders(name: str, ratio: str) -> str:
     return f"{n}（{rt}%）"
 
 
-def api_registry_insert(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
+def api_registry_insert(conn: Any, body: dict[str, Any], *, sync_derivatives: bool = True) -> dict[str, Any]:
     code = _norm_str(body.get("code") or body.get("unifiedSocialCreditCode"))
     name = _norm_str(body.get("name") or body.get("enterpriseName"))
     sy = _norm_str(body.get("snapshotYear") or body.get("snapshot_year"))
@@ -376,19 +376,28 @@ def api_registry_insert(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
     )
     try:
         conn.execute(sql, list(fields.values()))
-        from src.local_api.enterprise_year_roster_build import sync_enterprise_year_roster_for_snapshot_year
-
-        roster_sync = sync_enterprise_year_roster_for_snapshot_year(conn, year_i)
         out: dict[str, Any] = {"ok": True, "row_id": row_id}
-        if roster_sync.get("ok"):
-            out["roster_rows_written"] = roster_sync.get("rows_written", 0)
-            rel = roster_sync.get("enterprise_year_rel_rebuild")
-            if isinstance(rel, dict):
-                out["enterprise_year_rel_rebuild"] = rel
-        else:
-            out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
-        if roster_sync.get("rel_rebuild_warning"):
-            out["rel_rebuild_warning"] = roster_sync["rel_rebuild_warning"]
+        if sync_derivatives:
+            from src.local_api.registry_derivative_sync import sync_registry_derivatives_for_snapshot_year
+
+            sync_payload = sync_registry_derivatives_for_snapshot_year(conn, year_i)
+            if sync_payload.get("ok"):
+                group = sync_payload.get("group_enterprise_year") or {}
+                out["roster_rows_written"] = group.get("rows_written", 0)
+                rel = group.get("enterprise_year_rel_rebuild")
+                if isinstance(rel, dict):
+                    out["enterprise_year_rel_rebuild"] = rel
+                org_mat = sync_payload.get("org_hier_materialize")
+                if isinstance(org_mat, dict) and org_mat.get("rows_written") is not None:
+                    out["org_hier_rows_written"] = org_mat.get("rows_written")
+            else:
+                out["derivative_sync_warning"] = (sync_payload.get("error") or {}).get(
+                    "message", "派生表同步失败"
+                )
+            if sync_payload.get("rel_rebuild_warning"):
+                out["rel_rebuild_warning"] = sync_payload["rel_rebuild_warning"]
+            if sync_payload.get("org_hier_sync_warning"):
+                out["org_hier_sync_warning"] = sync_payload["org_hier_sync_warning"]
         return out
     except Exception as exc:
         logger.exception("registry insert failed: %s", exc)
@@ -493,20 +502,26 @@ def api_registry_bootstrap_demo(conn: Any) -> dict[str, Any]:
                 years_synced.add(int(item.get("snapshotYear") or 0) - 1)
             except (TypeError, ValueError):
                 pass
-        from src.local_api.enterprise_year_roster_build import rebuild_enterprise_year_roster_from_registry
+        from src.local_api.registry_derivative_sync import sync_registry_derivatives
 
         roster_years = sorted(y for y in years_synced if 1990 <= y <= 2100)
-        roster_sync = rebuild_enterprise_year_roster_from_registry(conn, stat_years=roster_years, replace_years=True)
+        roster_sync = sync_registry_derivatives(conn, stat_years=roster_years, replace_years=True)
         out: dict[str, Any] = {"ok": True, "inserted": n}
         if roster_sync.get("ok"):
-            out["roster_rows_written"] = roster_sync.get("rows_written", 0)
-            rel = roster_sync.get("enterprise_year_rel_rebuild")
+            group = roster_sync.get("group_enterprise_year") or roster_sync
+            out["roster_rows_written"] = group.get("rows_written", 0)
+            rel = group.get("enterprise_year_rel_rebuild")
             if isinstance(rel, dict):
                 out["enterprise_year_rel_rebuild"] = rel
+            org_mat = roster_sync.get("org_hier_materialize")
+            if isinstance(org_mat, dict) and org_mat.get("rows_written") is not None:
+                out["org_hier_rows_written"] = org_mat.get("rows_written")
         else:
-            out["roster_sync_warning"] = (roster_sync.get("error") or {}).get("message", "花名册同步失败")
+            out["derivative_sync_warning"] = (roster_sync.get("error") or {}).get("message", "派生表同步失败")
         if roster_sync.get("rel_rebuild_warning"):
             out["rel_rebuild_warning"] = roster_sync["rel_rebuild_warning"]
+        if roster_sync.get("org_hier_sync_warning"):
+            out["org_hier_sync_warning"] = roster_sync["org_hier_sync_warning"]
         return out
     except Exception as exc:
         logger.exception("registry bootstrap: %s", exc)
@@ -838,6 +853,88 @@ def _read_audited_excel_sheet(
     return df, sheet
 
 
+def api_registry_update_hierarchy(conn: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """
+    关系树内维护层级：回写台账 mgmt_parent / shareholders（产权上级）。
+
+    mode: management | equity
+    """
+    row_id = _norm_str(body.get("rowId") or body.get("row_id"))
+    mode = _norm_str(body.get("mode") or "management").lower()
+    parent_name = _norm_str(body.get("parentName") or body.get("parent_name"))
+    if not row_id:
+        return {
+            "ok": False,
+            "error": {"message": "缺少 rowId", "exception_type": "ValidationError"},
+        }
+
+    try:
+        row = conn.execute(
+            f"""
+            SELECT {_REGISTRY_SELECT_COLS}
+            FROM dim_audited_enterprise_registry
+            WHERE row_id = ?
+            LIMIT 1
+            """,
+            [row_id],
+        ).fetchone()
+    except Exception as exc:
+        logger.exception("registry hierarchy lookup failed: %s", exc)
+        return {
+            "ok": False,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+
+    if not row:
+        return {
+            "ok": False,
+            "error": {"message": f"未找到台账行 row_id={row_id}", "exception_type": "NotFoundError"},
+        }
+
+    reg = _row_to_registry_dict(row)
+    update_body: dict[str, Any] = {
+        "rowId": reg["rowId"],
+        "snapshotYear": reg["snapshotYear"],
+        "code": reg["code"],
+        "name": reg["name"],
+        "domesticOverseas": reg["domesticOverseas"],
+        "detailAddress": reg.get("detailAddress", ""),
+        "currency": reg.get("currency", ""),
+        "registeredCapital": reg.get("registeredCapital", ""),
+        "registrationDate": reg.get("registrationDate", ""),
+        "nationalEconomyIndustryMajor": reg.get("nationalEconomyIndustryMajor", ""),
+        "enterpriseCategory": reg.get("enterpriseCategory", ""),
+        "sasacAuthority": reg.get("sasacAuthority", ""),
+        "sasacRelation": reg.get("sasacRelation", ""),
+        "consolidatedReporting": reg.get("consolidatedReporting", ""),
+        "listedCompany": reg.get("listedCompany", ""),
+        "mainBusiness": reg.get("mainBusiness", ""),
+        "stateInvestor": reg.get("stateInvestor", ""),
+        "mgmtLevel": reg.get("mgmtLevel", 1),
+        "mgmtParent": reg.get("mgmtParent", ""),
+        "equityLevel": reg.get("equityLevel", 1),
+        "shareholders": reg.get("shareholders", ""),
+    }
+
+    if mode == "equity":
+        from src.local_api.audited_enterprise_relation_api import _parse_first_shareholder
+
+        sh_name, sh_ratio = _parse_first_shareholder(reg.get("shareholders") or "")
+        ratio = _norm_str(body.get("shareRatio") or body.get("share_ratio")) or sh_ratio
+        if parent_name:
+            update_body["shareholders"] = _merge_shareholders(parent_name, ratio)
+        elif ratio and sh_name:
+            update_body["shareholders"] = _merge_shareholders(sh_name, ratio)
+        if body.get("equityLevel") is not None or body.get("equity_level") is not None:
+            update_body["equityLevel"] = _safe_int(body.get("equityLevel") or body.get("equity_level"), reg.get("equityLevel", 1))
+    else:
+        update_body["mgmtParent"] = parent_name
+        if body.get("mgmtLevel") is not None or body.get("mgmt_level") is not None:
+            update_body["mgmtLevel"] = _safe_int(body.get("mgmtLevel") or body.get("mgmt_level"), reg.get("mgmtLevel", 1))
+
+    return api_registry_insert(conn, update_body, sync_derivatives=True)
+
+
 def api_registry_import_excel(
     conn: Any,
     *,
@@ -956,7 +1053,7 @@ def api_registry_import_excel(
                 "equityLevel": _safe_int(_cell("equity_level"), 1),
                 "shareholders": _cell("shareholders"),
             }
-            res = api_registry_insert(conn, body)
+            res = api_registry_insert(conn, body, sync_derivatives=False)
             if not res.get("ok"):
                 reject_rows.append(
                     {
@@ -982,7 +1079,22 @@ def api_registry_import_excel(
 
     reject_ranges, reject_samples = _build_row_reject_summary(reject_rows, sheet)
     rejected = len(reject_rows)
-    return {
+
+    derivative_sync: dict[str, Any] | None = None
+    if years_sync:
+        try:
+            from src.local_api.registry_derivative_sync import sync_registry_derivatives
+
+            derivative_sync = sync_registry_derivatives(
+                conn,
+                stat_years=sorted(years_sync),
+                replace_years=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("台账导入后派生同步失败: %s", exc)
+            derivative_sync = {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+    out: dict[str, Any] = {
         "ok": imported > 0 or rejected == 0,
         "imported": imported,
         "rejected": rejected,
@@ -991,6 +1103,19 @@ def api_registry_import_excel(
         "sheet": sheet,
         "snapshot_years": sorted(years_sync),
     }
+    if derivative_sync:
+        out["derivative_sync"] = derivative_sync
+        if derivative_sync.get("ok"):
+            group = derivative_sync.get("group_enterprise_year") or derivative_sync
+            out["roster_rows_written"] = group.get("rows_written")
+            org_mat = derivative_sync.get("org_hier_materialize")
+            if isinstance(org_mat, dict):
+                out["org_hier_rows_written"] = org_mat.get("rows_written")
+        elif derivative_sync.get("error"):
+            out["derivative_sync_warning"] = derivative_sync["error"].get("message")
+        if derivative_sync.get("org_hier_sync_warning"):
+            out["org_hier_sync_warning"] = derivative_sync["org_hier_sync_warning"]
+    return out
 
 
 def api_contribution_import_excel(

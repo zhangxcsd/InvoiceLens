@@ -260,7 +260,8 @@ def api_org_hier_rows(
                 h.is_hier_diff,
                 h.hier_diff_note,
                 h.mg_level,
-                h.eq_level
+                h.eq_level,
+                COALESCE(h.state_investor_name, h.state_investor_id, '')
             FROM dim_org_hier h
             WHERE {where_sql}
             ORDER BY {order_sql}
@@ -283,7 +284,7 @@ def api_org_hier_rows(
             "hier_diff_note": r[8],
             "mgmt_level": int(r[9] or 0),
             "equity_level": int(r[10] or 0),
-            "state_investor_enterprise": "—",
+            "state_investor_enterprise": str(r[11] or "—") if str(r[11] or "").strip() else "—",
         }
         for r in raw or []
     ]
@@ -436,6 +437,25 @@ def api_org_hier_import(
     return result
 
 
+def api_org_hier_template_download(conn: Any) -> tuple[int, bytes | dict[str, Any], str, str]:
+    """生成组织维度导入模板：(status, body_or_error, content_type, download_name)。"""
+    try:
+        from src.local_api.dim_org_hier_build import generate_org_hier_import_template
+
+        data, fname = generate_org_hier_import_template(conn)
+        return (
+            200,
+            data,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            fname,
+        )
+    except ImportError as exc:
+        return 500, {"ok": False, "error": {"message": "缺少 openpyxl 依赖"}}, "", ""
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("org_hier template download")
+        return 500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}, "", ""
+
+
 def api_org_hier_rebuild(
     conn: Any,
     *,
@@ -468,3 +488,172 @@ def api_org_hier_rebuild(
         except Exception as exc:  # noqa: BLE001
             logger.warning("record org_hier rebuild run failed: %s", exc)
     return result
+
+
+_DEMO_STAT_YEAR = 2024
+_DEMO_SYS_ID = "PROV_SD"
+_DEMO_ROOT_ID = "ROOT_DEMO_SD"
+_DEMO_GROUP_ID = "91110000DEMO000001"
+_DEMO_SUB_ID = "91110000DEMO000002"
+_DEMO_ENTITY_IDS = (_DEMO_ROOT_ID, _DEMO_GROUP_ID, _DEMO_SUB_ID)
+
+
+def _seed_demo_org_sys(conn: Any) -> None:
+    conn.execute(
+        """
+        INSERT INTO dim_org_sys (sys_id, sys_name, admin_level, gov_owner, description, sort_no, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, TRUE)
+        ON CONFLICT (sys_id) DO UPDATE SET is_active = TRUE
+        """,
+        [
+            _DEMO_SYS_ID,
+            "山东省属企业",
+            "省",
+            "山东省国有资产监督管理委员会",
+            "演示种子用监管体系（组织层级演示数据）",
+            1,
+        ],
+    )
+
+
+def _demo_org_hier_xlsx_bytes() -> bytes:
+    import io
+
+    import pandas as pd
+
+    header = [
+        "entity_id",
+        "entity_fullname",
+        "entity_shortname",
+        "entity_type",
+        "sys_id",
+        "stat_year",
+        "main_business",
+        "industry_id",
+        "industry_name",
+        "is_stat_inc",
+        "state_investor_id",
+        "state_investor_name",
+        "mg_parent_id",
+        "mg_parent_name",
+        "mg_sort_no",
+        "eq_parent_id",
+        "eq_parent_name",
+        "eq_sort_no",
+        "eq_shareholding_ratio",
+        "reg_capital",
+        "is_active",
+        "hier_diff_note",
+    ]
+    desc = ["统一社会信用代码"] * len(header)
+    root = _DEMO_ROOT_ID
+    group = _DEMO_GROUP_ID
+    sub = _DEMO_SUB_ID
+    rows = [
+        [
+            root,
+            "示例监管根节点",
+            "示例根节点",
+            "其他",
+            _DEMO_SYS_ID,
+            str(_DEMO_STAT_YEAR),
+            "",
+            "",
+            "",
+            "否",
+            "",
+            "",
+            root,
+            "示例监管根节点",
+            "0",
+            root,
+            "示例监管根节点",
+            "0",
+            "",
+            "",
+            "是",
+            "",
+        ],
+        [
+            group,
+            "示例：集团总部",
+            "示例：集团总部",
+            "有限责任公司",
+            _DEMO_SYS_ID,
+            str(_DEMO_STAT_YEAR),
+            "",
+            "",
+            "",
+            "是",
+            group,
+            "示例：集团总部",
+            root,
+            "示例监管根节点",
+            "1",
+            root,
+            "示例监管根节点",
+            "1",
+            "",
+            "",
+            "是",
+            "",
+        ],
+        [
+            sub,
+            "示例子公司",
+            "示例子公司",
+            "有限责任公司",
+            _DEMO_SYS_ID,
+            str(_DEMO_STAT_YEAR),
+            "",
+            "",
+            "",
+            "是",
+            group,
+            "示例：集团总部",
+            group,
+            "示例：集团总部",
+            "1",
+            root,
+            "示例监管根节点",
+            "2",
+            "0.51",
+            "",
+            "是",
+            "示例：产权上挂集团总部，管理上挂示例子公司",
+        ],
+    ]
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        pd.DataFrame([header, desc, *rows]).to_excel(writer, index=False, header=False)
+    return bio.getvalue()
+
+
+def api_org_hier_bootstrap_demo(conn: Any) -> dict[str, Any]:
+    """写入组织层级演示种子（demo_seed_ 前缀，重复加载会先清除旧演示行）。"""
+    from src.local_api.dim_org_hier_build import import_org_hierarchy_from_excel
+
+    try:
+        _seed_demo_org_sys(conn)
+        for eid in _DEMO_ENTITY_IDS:
+            conn.execute("DELETE FROM dim_org_hier WHERE entity_id = ?", [eid])
+            conn.execute("DELETE FROM dim_org_node WHERE entity_id = ?", [eid])
+        result = import_org_hierarchy_from_excel(
+            conn,
+            file_bytes=_demo_org_hier_xlsx_bytes(),
+            upload_filename="org_hier_demo_seed.xlsx",
+            updated_by="DEMO_SEED",
+        )
+        if not result.get("ok"):
+            return result
+        return {
+            "ok": True,
+            "stat_year": result.get("stat_year") or _DEMO_STAT_YEAR,
+            "success": int(result.get("success") or 0),
+            "updated": int(result.get("updated") or 0),
+            "hier_diff_count": int(result.get("hier_diff_count") or 0),
+            "message": f"已写入 {_DEMO_STAT_YEAR} 年组织层级演示数据 {int(result.get('success') or 0)} 条（管产分离 {int(result.get('hier_diff_count') or 0)} 家）",
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("org_hier bootstrap demo")
+        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}

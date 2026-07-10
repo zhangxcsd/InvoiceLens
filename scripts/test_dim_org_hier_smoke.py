@@ -11,8 +11,24 @@ import duckdb
 import pandas as pd
 
 from db.schema_sqlfiles import init_all_tables
-from src.local_api.dim_org_hier_api import api_org_hier_diff_summary, api_org_hier_rows, api_org_hier_tree
-from src.local_api.dim_org_hier_build import import_org_hierarchy_from_excel
+from src.local_api.dim_org_hier_api import (
+    api_org_hier_diff_summary,
+    api_org_hier_rows,
+    api_org_hier_template_download,
+    api_org_hier_tree,
+)
+from src.local_api.dim_org_hier_build import generate_org_hier_import_template, import_org_hierarchy_from_excel
+
+
+def _seed_prov_sd(conn) -> None:
+    conn.execute(
+        """
+        INSERT INTO dim_org_sys (sys_id, sys_name, admin_level, gov_owner, description, sort_no, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, TRUE)
+        ON CONFLICT (sys_id) DO NOTHING
+        """,
+        ["PROV_SD", "山东省属企业", "省", "山东省国有资产监督管理委员会", "山东省省属国有企业，由省国资委统一监管", 1],
+    )
 
 
 def _sample_xlsx() -> bytes:
@@ -27,9 +43,13 @@ def _sample_xlsx() -> bytes:
         "industry_id",
         "industry_name",
         "is_stat_inc",
+        "state_investor_id",
+        "state_investor_name",
         "mg_parent_id",
+        "mg_parent_name",
         "mg_sort_no",
         "eq_parent_id",
+        "eq_parent_name",
         "eq_sort_no",
         "eq_shareholding_ratio",
         "reg_capital",
@@ -42,16 +62,20 @@ def _sample_xlsx() -> bytes:
             "ROOT_PROV_SD",
             "山东省国有资产监督管理委员会",
             "省国资委",
-            "根节点",
+            "其他",
             "PROV_SD",
             "2024",
             "",
             "",
             "",
             "否",
+            "",
+            "",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "0",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "0",
             "",
             "",
@@ -62,16 +86,20 @@ def _sample_xlsx() -> bytes:
             "913700001630477270",
             "浪潮集团有限公司",
             "浪潮集团",
-            "一级集团",
+            "有限责任公司",
             "PROV_SD",
             "2024",
             "",
             "",
             "",
             "是",
+            "913700001630477270",
+            "浪潮集团有限公司",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "1",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "1",
             "",
             "",
@@ -82,7 +110,7 @@ def _sample_xlsx() -> bytes:
             "913700140000000001",
             "浪潮信息技术股份有限公司",
             "浪潮信息",
-            "二级及以下",
+            "股份有限公司",
             "PROV_SD",
             "2024",
             "",
@@ -90,8 +118,12 @@ def _sample_xlsx() -> bytes:
             "",
             "是",
             "913700001630477270",
+            "浪潮集团有限公司",
+            "913700001630477270",
+            "浪潮集团有限公司",
             "1",
             "913700001630477270",
+            "浪潮集团有限公司",
             "1",
             "0.51",
             "",
@@ -108,6 +140,12 @@ def _sample_xlsx() -> bytes:
 def main() -> None:
     conn = duckdb.connect(":memory:")
     init_all_tables(conn)
+    _seed_prov_sd(conn)
+
+    tpl_bytes, tpl_name = generate_org_hier_import_template(conn)
+    assert tpl_bytes and tpl_name.endswith(".xlsx"), tpl_name
+    tpl_status, tpl_body, _, _ = api_org_hier_template_download(conn)
+    assert tpl_status == 200 and isinstance(tpl_body, bytes) and len(tpl_body) > 100
 
     dry = import_org_hierarchy_from_excel(conn, file_bytes=_sample_xlsx(), upload_filename="org.xlsx", dry_run=True)
     assert dry.get("ok"), dry
@@ -120,6 +158,16 @@ def main() -> None:
     cnt = conn.execute("SELECT COUNT(*) FROM dim_org_hier WHERE stat_year = 2024").fetchone()[0]
     assert int(cnt) == 3
 
+    si = conn.execute(
+        """
+        SELECT state_investor_id, state_investor_name
+        FROM dim_org_hier
+        WHERE entity_id = '913700140000000001' AND stat_year = 2024
+        """
+    ).fetchone()
+    assert si[0] == "913700001630477270"
+    assert si[1] == "浪潮集团有限公司"
+
     tree = api_org_hier_tree(conn, stat_year="2024", tree="mg")
     assert tree.get("ok"), tree
     assert len(tree.get("nodes") or []) >= 1
@@ -127,6 +175,8 @@ def main() -> None:
     rows = api_org_hier_rows(conn, stat_year="2024", page=1, page_size=20)
     assert rows.get("ok"), rows
     assert int(rows.get("total") or 0) == 3
+    sub_row = next(r for r in rows["rows"] if r["code"] == "913700140000000001")
+    assert sub_row["state_investor_enterprise"] == "浪潮集团有限公司"
 
     summary = api_org_hier_diff_summary(conn, stat_year="2024")
     assert summary.get("ok"), summary
@@ -138,16 +188,20 @@ def main() -> None:
             "ROOT_PROV_SD",
             "山东省国有资产监督管理委员会",
             "省国资委",
-            "根节点",
+            "其他",
             "PROV_SD",
             "2025",
             "",
             "",
             "",
             "否",
+            "",
+            "",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "0",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "0",
             "",
             "",
@@ -158,16 +212,20 @@ def main() -> None:
             "913700001630477270",
             "浪潮集团有限公司",
             "浪潮集团",
-            "一级集团",
+            "有限责任公司",
             "PROV_SD",
             "2025",
             "",
             "",
             "",
             "是",
+            "913700001630477270",
+            "浪潮集团有限公司",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "1",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "1",
             "",
             "",
@@ -178,16 +236,20 @@ def main() -> None:
             "913700140000000001",
             "浪潮信息技术股份有限公司",
             "浪潮信息",
-            "二级及以下",
+            "股份有限公司",
             "PROV_SD",
             "2025",
             "",
             "",
             "",
             "是",
+            "913700001630477270",
+            "浪潮集团有限公司",
             "ROOT_PROV_SD",
+            "山东省国有资产监督管理委员会",
             "1",
             "913700001630477270",
+            "浪潮集团有限公司",
             "1",
             "0.51",
             "",
@@ -207,9 +269,13 @@ def main() -> None:
         "industry_id",
         "industry_name",
         "is_stat_inc",
+        "state_investor_id",
+        "state_investor_name",
         "mg_parent_id",
+        "mg_parent_name",
         "mg_sort_no",
         "eq_parent_id",
+        "eq_parent_name",
         "eq_sort_no",
         "eq_shareholding_ratio",
         "reg_capital",
@@ -225,7 +291,19 @@ def main() -> None:
     ).fetchone()[0]
     assert int(log_cnt) >= 1
 
-    print("ok", "rows=", cnt, "log=", log_cnt)
+    # 旧版 20 列模板（无国家出资企业列）仍可导入并自动推断
+    legacy_header = [c for c in header if c not in ("state_investor_id", "state_investor_name")]
+    skip = {i for i, c in enumerate(header) if c in ("state_investor_id", "state_investor_name")}
+    legacy_rows = [[v for i, v in enumerate(row) if i not in skip] for row in rows_2025]
+    bio_legacy = io.BytesIO()
+    with pd.ExcelWriter(bio_legacy, engine="openpyxl") as writer:
+        pd.DataFrame([legacy_header, legacy_header, *legacy_rows]).to_excel(writer, index=False, header=False)
+    legacy = import_org_hierarchy_from_excel(
+        conn, file_bytes=bio_legacy.getvalue(), upload_filename="legacy.xlsx", dry_run=True
+    )
+    assert legacy.get("ok"), legacy
+
+    print("ok", "rows=", cnt, "log=", log_cnt, "legacy=", legacy.get("row_count"))
 
 
 if __name__ == "__main__":
