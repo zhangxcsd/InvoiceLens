@@ -1,24 +1,63 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsInvoiceTimingOverview } from '../config/dwsDplusApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import { readNavQueryParams } from '../utils/navHelpers'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
 const DOW_LABELS = ['', '周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
-export function InvoiceTimingPage({ onNav }: { onNav?: (key: NavKey) => void }) {
+export function InvoiceTimingPage({ onNav, embedMode }: { onNav?: (key: NavKey) => void } & EmbedModeProps) {
   const ui = t.invoiceTimingUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
-  const [roleType, setRoleType] = useState<'进项' | '销项'>('进项')
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('invoice_timing', embedMode)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBuyer: true,
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
+  const [roleType, setRoleType] = useState<'进项' | '销项'>(() => {
+    const saved = savedUi?.extra?.roleType
+    return saved === '销项' ? '销项' : '进项'
+  })
   const [stats, setStats] = useState<Record<string, number | null>>({})
   const [dow, setDow] = useState<Array<{ dow: number; cnt: number }>>([])
   const [monthly, setMonthly] = useState<Array<{ stat_month: number; holiday_cnt: number; weekend_large_cnt: number }>>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { goAnalysis, shellProps } = useDwsPageAnalysisShell({
+    host: 'invoice_timing',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+      extra: { roleType },
+    },
+  })
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -52,8 +91,9 @@ export function InvoiceTimingPage({ onNav }: { onNav?: (key: NavKey) => void }) 
   }, [load])
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
@@ -86,7 +126,11 @@ export function InvoiceTimingPage({ onNav }: { onNav?: (key: NavKey) => void }) 
             type="button"
             className="mt-2 text-il-meta text-accent hover:underline"
             onClick={() =>
-              navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-02', entityId: f.entityId.trim() })
+              goAnalysis('flags_list', {
+                stat_year: f.effectiveYear,
+                rule_id: 'RULE-02',
+                entity_id: f.entityId.trim(),
+              })
             }
           >
             {ui.linkRule02}
@@ -146,5 +190,7 @@ export function InvoiceTimingPage({ onNav }: { onNav?: (key: NavKey) => void }) 
         </>
       )}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

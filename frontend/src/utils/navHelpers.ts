@@ -1,4 +1,8 @@
 import type { NavKey } from '../types'
+import { bridgeSessionForNewTab } from '../config/localApi'
+import { readEffectiveNavQuery } from './embedNavQuery'
+import { isEmbedShellActive, navigateEmbedShell } from './embedShellNav'
+import { stripPanelParamsFromUrl } from './panelNavQuery'
 
 /** 带 query 参数导航（同步 URL，便于深链与刷新恢复）。 */
 export function navigateWithQuery(
@@ -6,6 +10,15 @@ export function navigateWithQuery(
   nav: NavKey,
   params?: Record<string, string | undefined>,
 ) {
+  const compact: Record<string, string> = {}
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v != null && v !== '') compact[k] = v
+    }
+  }
+  if (isEmbedShellActive()) {
+    if (navigateEmbedShell(nav, compact)) return
+  }
   try {
     const url = new URL(window.location.href)
     url.searchParams.set('nav', nav)
@@ -48,6 +61,7 @@ const NAV_QUERY_KEYS = [
   'track_status',
   'track_tab',
   'batch_id',
+  'flag_id',
   'domain',
   'chapters',
   'title',
@@ -55,9 +69,16 @@ const NAV_QUERY_KEYS = [
   'date_to',
   'fpzt',
   'source',
+  'diff_type',
+  'tax_bucket',
+  'session_id',
 ] as const
 
 export function readNavQueryParams(): Record<string, string> {
+  return readEffectiveNavQuery(readNavQueryParamsFromUrl)
+}
+
+function readNavQueryParamsFromUrl(): Record<string, string> {
   try {
     const sp = new URL(window.location.href).searchParams
     const out: Record<string, string> = {}
@@ -69,6 +90,43 @@ export function readNavQueryParams(): Record<string, string> {
   } catch {
     return {}
   }
+}
+
+/** 构造带 nav 与 query 的完整 URL（不触发导航，供新窗口/新标签打开）。 */
+export function buildNavUrl(nav: NavKey, params?: Record<string, string | undefined>): string {
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('nav', nav)
+    for (const key of NAV_QUERY_KEYS) {
+      url.searchParams.delete(key)
+    }
+    url.searchParams.delete('diff_type')
+    url.searchParams.delete('tax_bucket')
+    url.searchParams.delete('session_id')
+    stripPanelParamsFromUrl(url)
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') url.searchParams.set(k, v)
+        else url.searchParams.delete(k)
+      }
+    }
+    return url.toString()
+  } catch {
+    return `${window.location.pathname}?nav=${nav}`
+  }
+}
+
+/** 在新标签打开指定 nav 页面。 */
+export function openNavInNewTab(nav: NavKey, params?: Record<string, string | undefined>) {
+  bridgeSessionForNewTab()
+  const href = buildNavUrl(nav, params)
+  window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+/** 在新标签打开任意 URL（含会话桥接，供非 nav 深链使用）。 */
+export function openUrlInNewTab(href: string) {
+  bridgeSessionForNewTab()
+  window.open(href, '_blank', 'noopener,noreferrer')
 }
 
 /** 同步 URL 查询参数（不切换 nav）。 */
@@ -125,8 +183,6 @@ export function navigateToReportConfig(
     title: params?.title,
   })
 }
-
-
 
 export type OrgHierTreeMode = 'management' | 'equity' | 'relation'
 

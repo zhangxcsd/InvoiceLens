@@ -14,20 +14,17 @@ import {
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
-import {
-  navigateToFlagsList,
-  navigateToFlagsTrack,
-  navigateToInvoiceExport,
-  navigateToRelatedGraph,
-  navigateToReportConfig,
-  navigateToTaxRiskExposure,
-} from '../utils/navHelpers'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import { downloadFinanceReconcileDetailsCsv } from './financeExport'
-import { navigateToFinancePage, readFinanceFilterParams } from './financeNav'
+import { readFinanceFilterParams } from './financeNav'
 import { useFinanceFilters } from './useFinanceFilters'
 import { useLicense } from '../settings/useLicense'
 
-type Props = { onNav?: (key: NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
+
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
 
 function fmt(n: number) {
   return n.toLocaleString('zh-CN')
@@ -70,10 +67,29 @@ function monthDateRange(year: number, month: number | null): { dateFrom: string;
   }
 }
 
-export function FinanceDiffPage({ onNav }: Props) {
+export function FinanceDiffPage({ onNav, embedMode }: Props) {
   const ui = t.financeDiffUi
   const license = useLicense()
   const filters = useFinanceFilters()
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'finance_diff',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
   const [batches, setBatches] = useState<FinanceLedgerBatch[]>([])
   const [summary, setSummary] = useState<FinanceDiffSummary | null>(null)
   const [rows, setRows] = useState<FinanceReconcileDetailRow[]>([])
@@ -234,7 +250,9 @@ export function FinanceDiffPage({ onNav }: Props) {
   const showActions = Boolean(onNav)
 
   return (
-    <div className="w-full px-5 py-6">
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? (
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.pageDesc}
@@ -243,13 +261,20 @@ export function FinanceDiffPage({ onNav }: Props) {
             <button
               type="button"
               className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
-              onClick={() => navigateToFinancePage(onNav, 'finance_reconcile')}
+              onClick={() =>
+                goAnalysis('finance_reconcile', {
+                  batch_id: filters.batchId,
+                  stat_year: filters.effectiveYear,
+                  entity_id: filters.entityId,
+                })
+              }
             >
               {ui.backReconcileBtn}
             </button>
           ) : null
         }
       />
+      ) : null}
 
       <LicenseGateBanner hint={license.trialHint} />
 
@@ -445,9 +470,9 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToTaxRiskExposure(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
+                                goAnalysis('tax_risk_exposure', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
                                 })
                               }
                             >
@@ -457,9 +482,9 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToRelatedGraph(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
+                                goAnalysis('related_graph', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
                                 })
                               }
                             >
@@ -469,11 +494,11 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToFlagsList(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
-                                  ruleId,
-                                  batchId: filters.batchId,
+                                goAnalysis('flags_list', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
+                                  rule_id: ruleId,
+                                  batch_id: filters.batchId,
                                 })
                               }
                             >
@@ -483,11 +508,11 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToFlagsTrack(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
-                                  ruleId,
-                                  trackTab: 'pending',
+                                goAnalysis('flags_track', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
+                                  rule_id: ruleId,
+                                  track_tab: 'pending',
                                 })
                               }
                             >
@@ -497,11 +522,11 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToInvoiceExport(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
-                                  dateFrom,
-                                  dateTo,
+                                goAnalysis('import_invoice_export', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
+                                  date_from: dateFrom,
+                                  date_to: dateTo,
                                 })
                               }
                             >
@@ -511,10 +536,10 @@ export function FinanceDiffPage({ onNav }: Props) {
                               type="button"
                               className="text-il-soon text-accent hover:underline"
                               onClick={() =>
-                                navigateToReportConfig(onNav!, {
-                                  statYear: String(r.stat_year),
-                                  entityId: r.tax_id,
-                                  chapters: ['finance_reconcile', 'flags_track', 'audit_flags'],
+                                goAnalysis('report_config', {
+                                  stat_year: String(r.stat_year),
+                                  entity_id: r.tax_id,
+                                  chapters: 'finance_reconcile,flags_track,audit_flags',
                                   title: `${r.stat_year}年度财务账票核对差异报告`,
                                 })
                               }
@@ -533,5 +558,7 @@ export function FinanceDiffPage({ onNav }: Props) {
         </div>
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

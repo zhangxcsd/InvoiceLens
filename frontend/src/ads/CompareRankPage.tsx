@@ -7,39 +7,61 @@ import {
   fetchCompareMeta,
   fetchCompareRankList,
   postCompareRebuild,
+  type CompareSoeOption,
   type ScorecardRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import { formatDwsAmount } from '../dws/useDwsFilters'
-import { navigateToFlagsList, navigateToHealthScore, navigateToTaxRiskExposure, navigateToEntityProfile, navigateWithQuery } from '../utils/navHelpers'
-import { scorecardRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { ScorecardRiskLevelBadge, SCORECARD_RISK_COL_CLASS } from '../dm/auditRiskBadge'
 import { useLicense } from '../settings/useLicense'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
-type Props = { onNav?: (key: NavKey) => void }
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
 
 type RiskTab = 'all' | string
-
-function levelBadgeClass(level: string): string {
-  return scorecardRiskLevelBadgeClass(level)
-}
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return '—'
   return `${(v * 100).toFixed(2)}%`
 }
 
-export function CompareRankPage({ onNav }: Props) {
+export function CompareRankPage({ onNav, embedMode }: Props) {
   const ui = t.compareRankUi
   const pagUi = t.dimDataTableUi
   const license = useLicense()
   const crossGroupAllowed = license.crossGroupAllowed
   const crossGroupHint = license.crossGroupHint
   const scorecardRiskDict = useDimDictDomain('scorecard_risk_level')
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'compare_rank',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
   const [statYears, setStatYears] = useState<string[]>([])
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [metaHint, setMetaHint] = useState<string | null>(null)
+  const [soeOptions, setSoeOptions] = useState<CompareSoeOption[]>([])
+  const [soeSelectId, setSoeSelectId] = useState('')
+  const [soeKw, setSoeKw] = useState('')
   const [riskTab, setRiskTab] = useState<RiskTab>('all')
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -58,9 +80,9 @@ export function CompareRankPage({ onNav }: Props) {
     return statYears[0] ?? y
   }, [statYear, statYears])
 
-  const loadMeta = useCallback(async (signal?: AbortSignal) => {
+  const loadMeta = useCallback(async (year: string, signal?: AbortSignal) => {
     if (!crossGroupAllowed) return
-    const res = await fetchCompareMeta(signal)
+    const res = await fetchCompareMeta({ statYear: year || undefined }, signal)
     if (signal?.aborted || res.aborted) return
     if (!res.ok) {
       setMetaHint(res.error?.message ?? ui.loadFailed)
@@ -72,6 +94,7 @@ export function CompareRankPage({ onNav }: Props) {
       const cy = String(new Date().getFullYear())
       setStatYear((prev) => (years.includes(prev) ? prev : years.includes(cy) ? cy : years[0]))
     }
+    setSoeOptions(res.soe_options ?? [])
     setMetaHint(res.hint ?? null)
   }, [ui.loadFailed, crossGroupAllowed])
 
@@ -85,6 +108,8 @@ export function CompareRankPage({ onNav }: Props) {
           statYear: effectiveYear,
           riskLevel: riskTab === 'all' ? undefined : riskTab,
           keyword: keyword.trim() || undefined,
+          soeAnchorId: soeSelectId.trim() || undefined,
+          soeAnchorKw: soeSelectId.trim() ? undefined : soeKw.trim() || undefined,
           limit: pageSize,
           offset: (page - 1) * pageSize,
         },
@@ -102,13 +127,13 @@ export function CompareRankPage({ onNav }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, riskTab, keyword, page, pageSize, ui.loadFailed, crossGroupAllowed])
+  }, [effectiveYear, riskTab, keyword, soeSelectId, soeKw, page, pageSize, ui.loadFailed, crossGroupAllowed])
 
   useEffect(() => {
     const ac = new AbortController()
-    void loadMeta(ac.signal)
+    void loadMeta(effectiveYear, ac.signal)
     return () => ac.abort()
-  }, [loadMeta])
+  }, [loadMeta, effectiveYear])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -118,7 +143,7 @@ export function CompareRankPage({ onNav }: Props) {
 
   useEffect(() => {
     setPage(1)
-  }, [effectiveYear, riskTab, keyword])
+  }, [effectiveYear, riskTab, keyword, soeSelectId, soeKw])
 
   const onRebuild = async () => {
     if (!crossGroupAllowed) return
@@ -132,7 +157,7 @@ export function CompareRankPage({ onNav }: Props) {
       }
       const cnt = res.total_inserted ?? res.year_results?.[0]?.inserted ?? 0
       setRebuildMsg(ui.rebuildSuccess.replace('{year}', effectiveYear).replace('{count}', String(cnt)))
-      await loadMeta()
+      await loadMeta(effectiveYear)
       await loadList()
     } finally {
       setRebuildBusy(false)
@@ -153,8 +178,11 @@ export function CompareRankPage({ onNav }: Props) {
   }, [crossGroupAllowed, license.maxEntities])
 
   return (
+    <>
     <div className="flex flex-col gap-4 p-4 md:p-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? (
+        <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      ) : null}
       <LicenseGateBanner hint={crossGroupHint} />
       <LicenseGateBanner hint={entityCapHint} />
       {metaHint ? <p className="text-sm text-warn">{metaHint}</p> : null}
@@ -180,6 +208,32 @@ export function CompareRankPage({ onNav }: Props) {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm min-w-[220px]">
+            <span className="text-text-2">{ui.soeSelectLabel}</span>
+            <select
+              className="rounded border border-border bg-surface px-2 py-1.5 text-sm"
+              value={soeSelectId}
+              onChange={(e) => setSoeSelectId(e.target.value)}
+              disabled={!effectiveYear}
+            >
+              <option value="">{ui.soeSelectAll}</option>
+              {soeOptions.map((o) => (
+                <option key={o.soe_anchor_enterprise_id} value={o.soe_anchor_enterprise_id}>
+                  {o.soe_anchor_enterprise_name || o.soe_anchor_enterprise_id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm min-w-[200px]">
+            <span className="text-text-2">{ui.soeKwLabel}</span>
+            <input
+              className="rounded border border-border bg-surface px-2 py-1.5 text-sm disabled:opacity-60"
+              placeholder={ui.soeKwPlaceholder}
+              value={soeKw}
+              onChange={(e) => setSoeKw(e.target.value)}
+              disabled={Boolean(soeSelectId.trim())}
+            />
           </label>
           <label className="flex flex-col gap-1 text-sm min-w-[200px]">
             <span className="text-text-2">{ui.keywordLabel}</span>
@@ -233,10 +287,11 @@ export function CompareRankPage({ onNav }: Props) {
           <p className="text-sm text-text-2">{ui.emptyHint}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] text-left text-sm">
+            <table className="w-full min-w-[1100px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border text-text-2">
                   <th className="py-2 pr-3 font-medium">#</th>
+                  <th className="py-2 pr-3 font-medium">{ui.colStateInvestor}</th>
                   <th className="py-2 pr-3 font-medium">{ui.colEntity}</th>
                   <th className="py-2 pr-3 font-medium text-right">{ui.colAmount}</th>
                   <th className="py-2 pr-3 font-medium text-right">{ui.colCount}</th>
@@ -246,7 +301,7 @@ export function CompareRankPage({ onNav }: Props) {
                   <th className="py-2 pr-3 font-medium text-right">{ui.colCr1}</th>
                   <th className="py-2 pr-3 font-medium text-right">{ui.colCancel}</th>
                   <th className="py-2 pr-3 font-medium text-right">{ui.colScore}</th>
-                  <th className="py-2 font-medium">{ui.colLevel}</th>
+                  <th className={`py-2 font-medium ${SCORECARD_RISK_COL_CLASS}`}>{ui.colLevel}</th>
                   {onNav ? <th className="py-2 font-medium">{ui.colAction}</th> : null}
                 </tr>
               </thead>
@@ -254,6 +309,14 @@ export function CompareRankPage({ onNav }: Props) {
                 {rows.map((r, idx) => (
                   <tr key={r.scorecard_id} className="border-b border-border/60">
                     <td className="py-2 pr-3 text-text-2">{(page - 1) * pageSize + idx + 1}</td>
+                    <td className="py-2 pr-3">
+                      <div className="font-medium text-text">
+                        {r.soe_anchor_enterprise_name?.trim() || ui.colStateInvestorUnassigned}
+                      </div>
+                      {r.soe_anchor_enterprise_id?.trim() ? (
+                        <div className="text-xs text-text-3">{r.soe_anchor_enterprise_id}</div>
+                      ) : null}
+                    </td>
                     <td className="py-2 pr-3">
                       <div className="font-medium text-text">{r.entity_name || r.entity_id}</div>
                       <div className="text-xs text-text-3">{r.entity_id}</div>
@@ -266,10 +329,11 @@ export function CompareRankPage({ onNav }: Props) {
                     <td className="py-2 pr-3 text-right tabular-nums">{fmtPct(r.cr1)}</td>
                     <td className="py-2 pr-3 text-right tabular-nums">{fmtPct(r.cancel_ratio)}</td>
                     <td className="py-2 pr-3 text-right tabular-nums font-medium">{r.risk_score.toFixed(0)}</td>
-                    <td className="py-2">
-                      <span className={`rounded px-2 py-0.5 text-xs ${levelBadgeClass(r.risk_level)}`}>
-                        {scorecardRiskDict.getLabel(r.risk_level)}
-                      </span>
+                    <td className={`py-2 ${SCORECARD_RISK_COL_CLASS}`}>
+                      <ScorecardRiskLevelBadge
+                        level={r.risk_level}
+                        label={scorecardRiskDict.getLabel(r.risk_level)}
+                      />
                     </td>
                     {onNav ? (
                       <td className="py-2">
@@ -278,9 +342,9 @@ export function CompareRankPage({ onNav }: Props) {
                             type="button"
                             className="text-left text-accent hover:underline"
                             onClick={() =>
-                              navigateToEntityProfile(onNav, {
-                                statYear: String(r.stat_year),
-                                entityId: r.entity_id,
+                              goAnalysis('entity_profile', {
+                                stat_year: String(r.stat_year),
+                                entity_id: r.entity_id,
                               })
                             }
                           >
@@ -290,9 +354,9 @@ export function CompareRankPage({ onNav }: Props) {
                             type="button"
                             className="text-left text-accent hover:underline"
                             onClick={() =>
-                              navigateToHealthScore(onNav, {
-                                statYear: String(r.stat_year),
-                                entityId: r.entity_id,
+                              goAnalysis('health_score', {
+                                stat_year: String(r.stat_year),
+                                entity_id: r.entity_id,
                               })
                             }
                           >
@@ -302,9 +366,9 @@ export function CompareRankPage({ onNav }: Props) {
                             type="button"
                             className="text-left text-accent hover:underline"
                             onClick={() =>
-                              navigateToTaxRiskExposure(onNav, {
-                                statYear: String(r.stat_year),
-                                entityId: r.entity_id,
+                              goAnalysis('tax_risk_exposure', {
+                                stat_year: String(r.stat_year),
+                                entity_id: r.entity_id,
                               })
                             }
                           >
@@ -314,7 +378,7 @@ export function CompareRankPage({ onNav }: Props) {
                             type="button"
                             className="text-left text-accent hover:underline"
                             onClick={() =>
-                              navigateWithQuery(onNav, 'supplier_top', {
+                              goAnalysis('supplier_top', {
                                 stat_year: String(r.stat_year),
                                 entity_id: r.entity_id,
                               })
@@ -326,9 +390,9 @@ export function CompareRankPage({ onNav }: Props) {
                             type="button"
                             className="text-left text-accent hover:underline"
                             onClick={() =>
-                              navigateToFlagsList(onNav, {
-                                statYear: String(r.stat_year),
-                                entityId: r.entity_id,
+                              goAnalysis('flags_list', {
+                                stat_year: String(r.stat_year),
+                                entity_id: r.entity_id,
                               })
                             }
                           >
@@ -355,5 +419,7 @@ export function CompareRankPage({ onNav }: Props) {
         </>
       )}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

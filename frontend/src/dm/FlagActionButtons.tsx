@@ -2,18 +2,20 @@ import type { ReactNode } from 'react'
 import type { AuditFlagRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
-import { navigateToReportConfig } from '../utils/navHelpers'
 import {
   getFlagActionLinks,
-  navigateFlagAction,
   reportChaptersForRule,
   type FlagActionLabels,
 } from './flagActionHelpers'
+import { handleFlagActionOrNavigate, type FlagAnalysisHandlers } from './flagAnalysisNavigate'
+import { resolveFlagActionTarget, tierForAction } from './flagActionTarget'
+import { navigateToReportConfig, openNavInNewTab } from '../utils/navHelpers'
 
 type Props = {
   row: AuditFlagRow
   statYear: string
   onNav?: (key: NavKey) => void
+  analysisHandlers?: FlagAnalysisHandlers | null
   extraBefore?: ReactNode
   extraAfter?: ReactNode
   showReport?: boolean
@@ -47,6 +49,7 @@ export function FlagActionButtons({
   row,
   statYear,
   onNav,
+  analysisHandlers = null,
   extraBefore,
   extraAfter,
   showReport = true,
@@ -55,17 +58,34 @@ export function FlagActionButtons({
   if (!onNav) return null
 
   const links = getFlagActionLinks(row, statYear, flagActionLabels)
+  const shellLinks = links.filter((link) => tierForAction(link.id) !== 'newTab')
+  const newTabLinks = links.filter((link) => tierForAction(link.id) === 'newTab')
   const btnClass = 'text-accent underline-offset-2 hover:underline'
+
+  const runAction = (actionId: string) => {
+    handleFlagActionOrNavigate(actionId, row, statYear, flagActionLabels, onNav, analysisHandlers)
+  }
 
   return (
     <div className={className}>
       {extraBefore}
-      {links.map((link) => (
+      {shellLinks.map((link) => (
         <button
           key={link.id}
           type="button"
           className={btnClass}
-          onClick={() => navigateFlagAction(onNav, link.id, row, statYear)}
+          onClick={() => runAction(link.id)}
+        >
+          {link.label}
+        </button>
+      ))}
+      {extraAfter}
+      {newTabLinks.map((link) => (
+        <button
+          key={link.id}
+          type="button"
+          className={btnClass}
+          onClick={() => runAction(link.id)}
         >
           {link.label}
         </button>
@@ -74,18 +94,22 @@ export function FlagActionButtons({
         <button
           type="button"
           className={btnClass}
-          onClick={() =>
+          onClick={() => {
+            if (analysisHandlers) {
+              const target = resolveFlagActionTarget('report_config', row, statYear, flagActionLabels)
+              if (target) openNavInNewTab(target.nav, target.params)
+              return
+            }
             navigateToReportConfig(onNav, {
               statYear,
               entityId: row.entity_id ?? undefined,
               chapters: reportChaptersForRule(row.rule_id),
             })
-          }
+          }}
         >
           {flagActionLabels.genReportBtn}
         </button>
       ) : null}
-      {extraAfter}
     </div>
   )
 }

@@ -145,10 +145,15 @@ def _audit_flags_where(
     keyword: str | None = None,
     track_status: str | None = None,
     batch_id: str | None = None,
+    flag_id: str | None = None,
 ) -> tuple[str, list[Any], str]:
     group_id = group_id_for_year(stat_year)
     clauses = ["group_id = ?"]
     params: list[Any] = [group_id]
+    fid = (flag_id or "").strip()
+    if fid:
+        clauses.append("flag_id = ?")
+        params.append(fid)
     if risk_level and risk_level.strip() and risk_level.strip() != "all":
         clauses.append("risk_level = ?")
         params.append(risk_level.strip())
@@ -265,6 +270,7 @@ def api_audit_flags_list(
     keyword: str | None = None,
     track_status: str | None = None,
     batch_id: str | None = None,
+    flag_id: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -277,6 +283,7 @@ def api_audit_flags_list(
             keyword=keyword,
             track_status=track_status,
             batch_id=batch_id,
+            flag_id=flag_id,
         )
         total = int(
             conn.execute(f"SELECT COUNT(*)::BIGINT FROM dm_audit_flag WHERE {where}", params).fetchone()[0] or 0
@@ -462,6 +469,7 @@ RULE_MODULE_MAP: dict[str, list[str]] = {
 }
 
 _EXECUTION_MODE_ORDER = {"sql_scan": 0, "post_scan": 1, "sync": 2}
+_RULE_META_KEYS = frozenset({"enabled", "name", "description", "logic"})
 
 
 def _rule_execution_meta(rule_id: str) -> dict[str, Any]:
@@ -537,14 +545,18 @@ def _validate_audit_rules_data(data: dict[str, Any]) -> tuple[list[str], list[di
         name = str(rc.get("name") or rule_id)
         risk_keys = [k for k in rc if k.startswith("risk_level")]
         risk_level = str(rc.get("risk_level") or (rc.get(risk_keys[0]) if risk_keys else "") or "")
+        description = str(rc.get("description") or "").strip()
+        logic = str(rc.get("logic") or "").strip()
         rules_list.append(
             {
                 "rule_id": rule_id,
                 "name": name,
                 "enabled": bool(enabled) if enabled is not None else True,
                 "risk_level": risk_level,
+                "description": description,
+                "logic": logic,
                 "modules": RULE_MODULE_MAP.get(rule_id, ["疑点清单"]),
-                "param_keys": sorted(k for k in rc if k not in ("enabled", "name")),
+                "param_keys": sorted(k for k in rc if k not in _RULE_META_KEYS),
                 **_rule_execution_meta(rule_id),
             }
         )

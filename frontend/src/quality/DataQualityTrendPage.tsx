@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import {
   fetchDwdLineageQualityTrend,
@@ -13,9 +13,12 @@ import {
   type StructuredDqTrendRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 import { QualityBatchSelect } from './QualityBatchSelect'
-import { navigateToQualityPage } from './qualityNav'
 import { useQualityBatchFilter } from './useQualityBatchFilter'
 
 const q = t.dataQualityPrototype
@@ -37,8 +40,34 @@ type BarChartRow = {
   coverage?: number
 }
 
-export function DataQualityTrendPage(props: { onNav: (k: NavKey) => void }) {
+export function DataQualityTrendPage(props: { onNav?: (k: NavKey) => void } & EmbedModeProps) {
+  const { onNav, embedMode } = props
   const { batchId, sessionId, setBatchId, batchOptions, batchesLoading } = useQualityBatchFilter()
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'import_quality_trend',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: q.trendTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
+  const qualityParams = useCallback(() => {
+    const out: Record<string, string> = {}
+    if (batchId) out.batch_id = batchId
+    if (sessionId) out.session_id = sessionId
+    return out
+  }, [batchId, sessionId])
   const [trendDomain, setTrendDomain] = useState<TrendDomain>('red_link')
   const [granularity, setGranularity] = useState<'week' | 'month'>('week')
   const [redRows, setRedRows] = useState<RedInvoiceQualityTrendRow[]>([])
@@ -323,6 +352,7 @@ export function DataQualityTrendPage(props: { onNav: (k: NavKey) => void }) {
   }
 
   return (
+    <>
     <div className="mx-auto max-w-[900px] px-5 py-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -342,7 +372,7 @@ export function DataQualityTrendPage(props: { onNav: (k: NavKey) => void }) {
           <button
             type="button"
             className="rounded-sm border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
-            onClick={() => navigateToQualityPage(props.onNav, 'import_quality_overview', { batchId })}
+            onClick={() => goAnalysis('import_quality_overview', qualityParams())}
           >
             ← {q.linkBackOverview}
           </button>
@@ -483,5 +513,7 @@ export function DataQualityTrendPage(props: { onNav: (k: NavKey) => void }) {
         )}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

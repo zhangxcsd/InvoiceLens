@@ -9,6 +9,11 @@ import { zhCN as t } from '../copy/zh-CN'
 import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
 type RoleFilter = 'all' | '供应商' | '客户' | '往来单位'
 
@@ -18,14 +23,32 @@ const ROLE_BADGE: Record<string, string> = {
   往来单位: 'bg-[#fff8ef] text-[#c05621]',
 }
 
-export function TradeRelationshipsPage() {
+export function TradeRelationshipsPage({
+  onNav,
+  embedMode,
+}: { onNav?: (key: NavKey) => void } & EmbedModeProps = {}) {
   const ui = t.tradeRelationshipsUi
   const dash = t.dwsDashboardUi
   const urlQuery = useMemo(() => readNavQueryParams(), [])
-  const f = useDwsFilters(true, { entityPool: 'analysis', initFromUrl: true })
-  const [roleFilter, setRoleFilter] = useState<RoleFilter>('all')
+  const savedUi = useDwsPageSavedUi('trade_relationships', embedMode)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>(() => {
+    const saved = savedUi?.extra?.roleFilter
+    if (saved === '供应商' || saved === '客户' || saved === '往来单位') return saved
+    return 'all'
+  })
   const [keyword, setKeyword] = useState(
-    urlQuery.keyword ?? urlQuery.seller_tax_no ?? urlQuery.buyer_tax_no ?? '',
+    () =>
+      urlQuery.keyword ??
+      urlQuery.seller_tax_no ??
+      urlQuery.buyer_tax_no ??
+      String(savedUi?.extra?.keyword ?? ''),
   )
   const [rows, setRows] = useState<DwsTradeRelationshipRow[]>([])
   const [total, setTotal] = useState(0)
@@ -33,6 +56,29 @@ export function TradeRelationshipsPage() {
   const [hint, setHint] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellProps } = useDwsPageAnalysisShell({
+    host: 'trade_relationships',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+      extra: { roleFilter, keyword },
+    },
+  })
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
   const caliberHint = dash.analysisSubjectCaliberHint.replace('{n}', String(effectiveN)).replace(
@@ -112,8 +158,9 @@ export function TradeRelationshipsPage() {
   ]
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
@@ -252,5 +299,7 @@ export function TradeRelationshipsPage() {
         )}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

@@ -11,7 +11,9 @@ import { zhCN as t } from '../copy/zh-CN'
 import { formatDwsPct, useDwsFilters } from '../dws/useDwsFilters'
 import { readNavQueryParams } from '../utils/navHelpers'
 
-export function TaxCodeEnterpriseAnalysisPage() {
+import type { EmbedModeProps } from '../types/embedMode'
+
+export function TaxCodeEnterpriseAnalysisPage({ embedMode }: EmbedModeProps = {}) {
   const ui = t.taxCodeEnterpriseUi
   const pagUi = t.dimDataTableUi
   const dash = t.dwsDashboardUi
@@ -183,7 +185,7 @@ export function TaxCodeEnterpriseAnalysisPage() {
 
   return (
     <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}

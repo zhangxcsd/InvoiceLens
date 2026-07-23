@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
@@ -8,28 +8,48 @@ import {
   type CircularInvRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList, navigateWithQuery, readNavQueryParams } from '../utils/navHelpers'
+import { readNavQueryParams } from '../utils/navHelpers'
+import { handleNavAnalysisAction } from './flagAnalysisNavigate'
+import { FlagAnalysisShell } from './FlagAnalysisShell'
+import { useFlagAnalysisShell } from './useFlagAnalysisShell'
 import { DwsFilterBar } from '../dws/DwsFilterBar'
 import { useDwsFilters } from '../dws/useDwsFilters'
 import type { NavKey } from '../types'
-import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
-
-function riskBadgeClass(level: string): string {
-  return auditRiskLevelBadgeClass(level)
-}
+import { AUDIT_RISK_COL_CLASS, AuditRiskLevelBadge, TableCellTruncate } from './auditRiskBadge'
 
 function normTaxId(v: string): string {
   return v.replace(/[\s-]+/g, '').toUpperCase()
 }
 
-type Props = { onNav?: (key: NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function RelatedPairsPage({ onNav }: Props) {
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
+
+export function RelatedPairsPage({ onNav, embedMode }: Props) {
   const ui = t.relatedPairsUi
   const dash = t.dwsDashboardUi
   const pagUi = t.dimDataTableUi
   const riskLevelDict = useDimDictDomain('audit_risk_level')
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'related_pairs',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, analysisHandlers, shellProps, closeShell],
+  )
   const urlQuery = useMemo(() => readNavQueryParams(), [])
   const f = useDwsFilters(false, { entityPool: 'analysis', initFromUrl: true })
   const [keyword, setKeyword] = useState(
@@ -120,8 +140,9 @@ export function RelatedPairsPage({ onNav }: Props) {
   }
 
   return (
+    <Fragment>
     <div className="space-y-4 px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" /> : null}
       {flagContextHint ? (
         <div className="mb-2 rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">
           {flagContextHint}
@@ -166,14 +187,16 @@ export function RelatedPairsPage({ onNav }: Props) {
               <button
                 type="button"
                 className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
-                onClick={() => navigateWithQuery(onNav, 'flags_rules', { stat_year: f.effectiveYear })}
+                onClick={() => goAnalysis('flags_rules', { stat_year: f.effectiveYear })}
               >
                 {ui.rulesLink}
               </button>
               <button
                 type="button"
                 className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
-                onClick={() => navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-09' })}
+                onClick={() =>
+                  goAnalysis('flags_list', { stat_year: f.effectiveYear, rule_id: 'RULE-09' })
+                }
               >
                 {ui.flagsLink}
               </button>
@@ -189,12 +212,12 @@ export function RelatedPairsPage({ onNav }: Props) {
           <table className="w-full min-w-[900px] border-collapse text-il-meta">
             <thead>
               <tr className="border-b border-border-light text-left text-text-3">
-                <th className="py-2 pr-2">{ui.colPartyA}</th>
-                <th className="py-2 pr-2">{ui.colPartyB}</th>
+                <th className="max-w-[180px] py-2 pr-2">{ui.colPartyA}</th>
+                <th className="max-w-[180px] py-2 pr-2">{ui.colPartyB}</th>
                 <th className="py-2 pr-2 text-right">{ui.colAmtAB}</th>
                 <th className="py-2 pr-2 text-right">{ui.colAmtBA}</th>
                 <th className="py-2 pr-2 text-right">{ui.colRatio}</th>
-                <th className="py-2">{ui.colRisk}</th>
+                <th className={`py-2 ${AUDIT_RISK_COL_CLASS}`}>{ui.colRisk}</th>
               </tr>
             </thead>
             <tbody>
@@ -206,15 +229,17 @@ export function RelatedPairsPage({ onNav }: Props) {
                     rowMatchesHighlight(row) ? 'bg-[#fff8ef]' : '',
                   ].join(' ')}
                 >
-                  <td className="py-2 pr-2">{row.party_a_name ?? row.party_a_tax}</td>
-                  <td className="py-2 pr-2">{row.party_b_name ?? row.party_b_tax}</td>
+                  <td className="py-2 pr-2">
+                    <TableCellTruncate text={row.party_a_name ?? row.party_a_tax} maxWidth="max-w-[180px]" />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <TableCellTruncate text={row.party_b_name ?? row.party_b_tax} maxWidth="max-w-[180px]" />
+                  </td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_a_to_b.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_b_to_a.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{(row.circular_ratio * 100).toFixed(1)}%</td>
-                  <td className="py-2">
-                    <span className={`rounded px-1.5 py-0.5 ${riskBadgeClass(row.risk_level)}`}>
-                      {riskLevelDict.getLabel(row.risk_level)}
-                    </span>
+                  <td className={`py-2 ${AUDIT_RISK_COL_CLASS}`}>
+                    <AuditRiskLevelBadge level={row.risk_level} label={riskLevelDict.getLabel(row.risk_level)} />
                   </td>
                 </tr>
               ))}
@@ -232,5 +257,7 @@ export function RelatedPairsPage({ onNav }: Props) {
         />
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </Fragment>
   )
 }

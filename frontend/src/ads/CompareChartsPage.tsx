@@ -7,19 +7,19 @@ import {
   fetchCompareMeta,
   type CompareChartPoint,
   type CompareChartsMetric,
+  type CompareSoeOption,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import {
-  navigateToOverviewSummary,
-  navigateToTaxRiskExposure,
-  navigateWithQuery,
-} from '../utils/navHelpers'
 import { formatDwsAmount } from '../dws/useDwsFilters'
 import { scorecardRiskLevelBarClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
 import { useLicense } from '../settings/useLicense'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
 const METRICS: CompareChartsMetric[] = ['amount', 'flags', 'score', 'cr1', 'cancel']
 
@@ -40,15 +40,37 @@ function fmtMetricValue(metric: CompareChartsMetric, v: number): string {
   return String(Math.round(v))
 }
 
-export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) {
+export function CompareChartsPage({ onNav, embedMode }: { onNav?: (key: NavKey) => void } & EmbedModeProps) {
   const ui = t.compareChartsUi
   const license = useLicense()
   const crossGroupAllowed = license.crossGroupAllowed
   const crossGroupHint = license.crossGroupHint
   const scorecardRiskDict = useDimDictDomain('scorecard_risk_level')
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'compare_charts',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
   const [statYears, setStatYears] = useState<string[]>([])
   const [statYear, setStatYear] = useState(() => String(new Date().getFullYear()))
   const [metaHint, setMetaHint] = useState<string | null>(null)
+  const [soeOptions, setSoeOptions] = useState<CompareSoeOption[]>([])
+  const [soeSelectId, setSoeSelectId] = useState('')
+  const [soeKw, setSoeKw] = useState('')
   const [metric, setMetric] = useState<CompareChartsMetric>('amount')
   const [topN, setTopN] = useState(12)
   const [series, setSeries] = useState<CompareChartPoint[]>([])
@@ -62,9 +84,9 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
     return statYears[0] ?? y
   }, [statYear, statYears])
 
-  const loadMeta = useCallback(async (signal?: AbortSignal) => {
+  const loadMeta = useCallback(async (year: string, signal?: AbortSignal) => {
     if (!crossGroupAllowed) return
-    const res = await fetchCompareMeta(signal)
+    const res = await fetchCompareMeta({ statYear: year || undefined }, signal)
     if (signal?.aborted || res.aborted) return
     if (!res.ok) {
       setMetaHint(res.error?.message ?? ui.loadFailed)
@@ -76,6 +98,7 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
       const cy = String(new Date().getFullYear())
       setStatYear((prev) => (years.includes(prev) ? prev : years.includes(cy) ? cy : years[0]))
     }
+    setSoeOptions(res.soe_options ?? [])
     setMetaHint(res.hint ?? null)
   }, [ui.loadFailed, crossGroupAllowed])
 
@@ -85,7 +108,13 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
     setErr(null)
     try {
       const res = await fetchCompareChartsSeries(
-        { statYear: effectiveYear, metric, limit: topN },
+        {
+          statYear: effectiveYear,
+          metric,
+          limit: topN,
+          soeAnchorId: soeSelectId.trim() || undefined,
+          soeAnchorKw: soeSelectId.trim() ? undefined : soeKw.trim() || undefined,
+        },
         signal,
       )
       if (signal?.aborted || res.aborted) return
@@ -99,13 +128,13 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
     } finally {
       setLoading(false)
     }
-  }, [effectiveYear, metric, topN, ui.loadFailed, crossGroupAllowed])
+  }, [effectiveYear, metric, topN, soeSelectId, soeKw, ui.loadFailed, crossGroupAllowed])
 
   useEffect(() => {
     const ac = new AbortController()
-    void loadMeta(ac.signal)
+    void loadMeta(effectiveYear, ac.signal)
     return () => ac.abort()
-  }, [loadMeta])
+  }, [loadMeta, effectiveYear])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -143,8 +172,11 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
   }
 
   return (
+    <>
     <div className="flex flex-col gap-4 p-4 md:p-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? (
+        <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      ) : null}
       <LicenseGateBanner hint={crossGroupHint} />
       {metaHint ? <p className="text-sm text-warn">{metaHint}</p> : null}
       {err ? <p className="text-sm text-danger">{err}</p> : null}
@@ -170,6 +202,32 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
                 </option>
               ))}
             </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm min-w-[220px]">
+            <span className="text-text-2">{ui.soeSelectLabel}</span>
+            <select
+              className="rounded border border-border bg-surface px-2 py-1.5 text-sm"
+              value={soeSelectId}
+              onChange={(e) => setSoeSelectId(e.target.value)}
+              disabled={!effectiveYear}
+            >
+              <option value="">{ui.soeSelectAll}</option>
+              {soeOptions.map((o) => (
+                <option key={o.soe_anchor_enterprise_id} value={o.soe_anchor_enterprise_id}>
+                  {o.soe_anchor_enterprise_name || o.soe_anchor_enterprise_id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm min-w-[200px]">
+            <span className="text-text-2">{ui.soeKwLabel}</span>
+            <input
+              className="rounded border border-border bg-surface px-2 py-1.5 text-sm disabled:opacity-60"
+              placeholder={ui.soeKwPlaceholder}
+              value={soeKw}
+              onChange={(e) => setSoeKw(e.target.value)}
+              disabled={Boolean(soeSelectId.trim())}
+            />
           </label>
           <label className="flex flex-col gap-1 text-sm">
             <span className="text-text-2">{ui.topNLabel}</span>
@@ -219,13 +277,12 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
                         type="button"
                         className="truncate text-left text-text-2 hover:text-accent hover:underline"
                         title={row.entity_name || row.entity_id}
-                        onClick={() => {
-                          if (!onNav) return
-                          navigateWithQuery(onNav, 'compare_rank', {
+                        onClick={() =>
+                          goAnalysis('compare_rank', {
                             stat_year: effectiveYear,
                             entity_id: row.entity_id,
                           })
-                        }}
+                        }
                       >
                         {row.entity_name || row.entity_id}
                       </button>
@@ -244,9 +301,9 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
                           type="button"
                           className="text-accent hover:underline"
                           onClick={() =>
-                            navigateToOverviewSummary(onNav, {
-                              statYear: effectiveYear,
-                              entityId: row.entity_id,
+                            goAnalysis('overview_summary', {
+                              stat_year: effectiveYear,
+                              entity_id: row.entity_id,
                             })
                           }
                         >
@@ -256,9 +313,9 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
                           type="button"
                           className="text-accent hover:underline"
                           onClick={() =>
-                            navigateToTaxRiskExposure(onNav, {
-                              statYear: effectiveYear,
-                              entityId: row.entity_id,
+                            goAnalysis('tax_risk_exposure', {
+                              stat_year: effectiveYear,
+                              entity_id: row.entity_id,
                             })
                           }
                         >
@@ -268,7 +325,7 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
                           type="button"
                           className="text-accent hover:underline"
                           onClick={() =>
-                            navigateWithQuery(onNav, 'supplier_top', {
+                            goAnalysis('supplier_top', {
                               stat_year: effectiveYear,
                               entity_id: row.entity_id,
                             })
@@ -314,5 +371,7 @@ export function CompareChartsPage({ onNav }: { onNav?: (key: NavKey) => void }) 
         </>
       )}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

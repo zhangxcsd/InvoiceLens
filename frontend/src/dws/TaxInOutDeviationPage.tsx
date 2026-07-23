@@ -7,9 +7,12 @@ import {
   type TaxDevFlagSummary,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList, navigateToReportConfig } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import { readNavQueryParams } from '../utils/navHelpers'
 
 const BUCKET_COLORS: Record<string, string> = {
   '13%': 'bg-[#5b9bd5]',
@@ -20,12 +23,23 @@ const BUCKET_COLORS: Record<string, string> = {
   其他: 'bg-[#7030a0]',
 }
 
-type Props = { onNav?: (key: import('../types').NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function TaxInOutDeviationPage({ onNav }: Props) {
+type Props = { onNav?: (key: import('../types').NavKey) => void } & EmbedModeProps
+
+export function TaxInOutDeviationPage({ onNav, embedMode }: Props) {
   const ui = t.taxInOutDeviationUi
   const dash = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBothRoles: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('tax_in_out_deviation', embedMode)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBothRoles: true,
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
   const [rows, setRows] = useState<DwsTaxInOutDeviationRow[]>([])
   const [inputTotal, setInputTotal] = useState(0)
   const [outputTotal, setOutputTotal] = useState(0)
@@ -36,6 +50,28 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
   const [taxDevFlags, setTaxDevFlags] = useState<TaxDevFlagSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { goAnalysis, shellProps } = useDwsPageAnalysisShell({
+    host: 'tax_in_out_deviation',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+    },
+  })
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
   const caliberHint = dash.analysisSubjectBothRolesCaliberHint.replace('{n}', String(effectiveN))
@@ -92,8 +128,9 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
   )
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
@@ -117,10 +154,10 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
             type="button"
             className="mt-2 text-il-meta text-accent hover:underline"
             onClick={() =>
-              navigateToReportConfig(onNav, {
+              goAnalysis('report_config', {
                 statYear: f.effectiveYear,
                 entityId: f.entityId.trim(),
-                chapters: ['tax_in_out_deviation', 'audit_flags'],
+                chapters: 'tax_in_out_deviation,audit_flags',
               })
             }
           >
@@ -192,7 +229,7 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
                       type="button"
                       className="text-il-meta text-accent hover:underline"
                       onClick={() =>
-                        navigateToFlagsList(onNav, {
+                        goAnalysis('flags_list', {
                           statYear: f.effectiveYear,
                           entityId: f.entityId.trim(),
                           ruleId: 'RULE-TAX-DEV',
@@ -206,7 +243,7 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
                         type="button"
                         className="text-il-meta text-warn hover:underline"
                         onClick={() =>
-                          navigateToFlagsList(onNav, {
+                          goAnalysis('flags_list', {
                             statYear: f.effectiveYear,
                             entityId: f.entityId.trim(),
                             ruleId: 'RULE-TAX-DEV',
@@ -319,5 +356,7 @@ export function TaxInOutDeviationPage({ onNav }: Props) {
         </>
       )}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

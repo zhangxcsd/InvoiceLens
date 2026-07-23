@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { zhCN as t } from '../copy/zh-CN'
 import { deleteOdsPreviewImport, fetchOdsImportSessionSummary, fetchOdsPreviewBatches, odsPreviewBatchKey, postDwdBuild, postDwdForceRebuild, type OdsImportSessionSummary, type OdsPreviewBatchMeta } from '../config/localApi'
+import { openUrlInNewTab } from '../utils/navHelpers'
 import type { NavKey } from '../types'
 
 type BatchGroup = {
@@ -253,7 +254,7 @@ export function ImportHistoryPage(props: { onNav: (k: NavKey) => void }) {
     url.searchParams.set('nav', currentRecord.type === 'ods_to_dwd' ? 'dwd_data_preview' : 'import_wizard_preview')
     url.searchParams.set('batch_id', currentGroup.batchId)
     if (currentSession?.meta.session_id) url.searchParams.set('session_id', currentSession.meta.session_id)
-    window.open(url.toString(), '_blank', 'noopener,noreferrer')
+    openUrlInNewTab(url.toString())
   }
 
   const openDeleteSession = () => {

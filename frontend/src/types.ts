@@ -53,6 +53,8 @@ export type NavKey =
   | 'flags_list'
   | 'flags_rules'
   | 'flags_track'
+  /** 分析容器内嵌：疑点详情（不进侧边栏菜单） */
+  | 'flag_detail'
   | 'related_graph'
   | 'trade_relationships'
   | 'related_pairs'

@@ -14,6 +14,10 @@ import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, useDwsFilters } from './useDwsFilters'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import type { NavKey } from '../types'
 
 type TrendWideRow = {
   stat_month: number
@@ -61,9 +65,14 @@ function trendChartMeta(
   return { title: ui.trendChartTitleAll, hint: ui.trendChartHintAll }
 }
 
-export function OverviewTrendPage() {
+import type { EmbedModeProps } from '../types/embedMode'
+
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
+
+export function OverviewTrendPage({ onNav, embedMode }: Props) {
   const ui = t.dwsDashboardUi
   const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('overview_trend', embedMode)
   const apiStatMonth = urlQuery.stat_month?.trim() || undefined
   const apiDateFrom = urlQuery.date_from?.trim() || undefined
   const apiDateTo = urlQuery.date_to?.trim() || undefined
@@ -86,12 +95,39 @@ export function OverviewTrendPage() {
   }, [highlightMonth, urlQuery.date_from, urlQuery.date_to, ui])
   const hasTimeFilter = Boolean(apiStatMonth || apiDateFrom || apiDateTo)
   const caliberHint = hasTimeFilter ? ui.monthGranularityHint : null
-  const f = useDwsFilters(false, { initFromUrl: true })
+  const f = useDwsFilters(false, {
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+  })
   const roleTypeDict = useDimDictDomain('finance_role_type')
-  const [roleType, setRoleType] = useState<'all' | string>('all')
+  const [roleType, setRoleType] = useState<'all' | string>(() => String(savedUi?.extra?.roleType ?? 'all'))
   const [rows, setRows] = useState<DwsTrendRow[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellProps } = useDwsPageAnalysisShell({
+    host: 'overview_trend',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+      extra: { roleType },
+    },
+  })
 
   const load = useCallback(async (signal?: AbortSignal) => {
     if (!f.effectiveYear) return
@@ -183,8 +219,9 @@ export function OverviewTrendPage() {
   )
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.overviewTrendTitle} note={ui.overviewTrendDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.overviewTrendTitle} note={ui.overviewTrendDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {caliberHint ? <p className="mb-2 text-il-meta text-amber-800">{caliberHint}</p> : null}
@@ -328,5 +365,7 @@ export function OverviewTrendPage() {
         </div>
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

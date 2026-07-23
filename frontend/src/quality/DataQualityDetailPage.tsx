@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { DimTablePagination } from '../dim/DimTablePagination'
@@ -10,11 +10,13 @@ import {
   type QualityDomainKey,
 } from '../config/localApi'
 import { zhCN } from '../copy/zh-CN'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import type { NavKey } from '../types'
 import { QualityBatchSelect } from './QualityBatchSelect'
 import { downloadDqDomainDetailsCsv } from './qualityExport'
 import {
-  navigateToQualityPage,
   readQualityDomainParam,
   writeQualityDomainParam,
   type QualityDomainKey as NavDomainKey,
@@ -40,8 +42,40 @@ function domainLabel(key: QualityDomainKey): string {
   return DOMAIN_OPTIONS.find((o) => o.value === key)?.label ?? key
 }
 
-export function DataQualityDetailPage(props: { onNav: (k: NavKey) => void }) {
+import type { EmbedModeProps } from '../types/embedMode'
+
+export function DataQualityDetailPage(props: { onNav?: (k: NavKey) => void } & EmbedModeProps) {
+  const { onNav, embedMode } = props
   const { batchId, sessionId, setBatchId, batchOptions, batchesLoading } = useQualityBatchFilter()
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'import_quality_detail',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: q.detailTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
+  const qualityParams = useCallback(
+    (extra?: { domain?: QualityDomainKey }) => {
+      const out: Record<string, string> = {}
+      if (batchId) out.batch_id = batchId
+      if (sessionId) out.session_id = sessionId
+      if (extra?.domain) out.domain = extra.domain
+      return out
+    },
+    [batchId, sessionId],
+  )
   const license = useLicense()
   const sevDict = useDimDictDomain('quality_severity')
   const sevBlock = sevDict.getLabel('block') || q.severityBlock
@@ -261,6 +295,7 @@ export function DataQualityDetailPage(props: { onNav: (k: NavKey) => void }) {
     domain === 'red_link' ? q.detailTableTitle : `${domainLabel(domain)} · ${q.detailTableTitleGeneric}`
 
   return (
+    <>
     <div className="mx-auto max-w-[1180px] px-5 py-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -279,7 +314,7 @@ export function DataQualityDetailPage(props: { onNav: (k: NavKey) => void }) {
           <button
             type="button"
             className="rounded-sm border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
-            onClick={() => navigateToQualityPage(props.onNav, 'import_quality_overview', { batchId, domain })}
+            onClick={() => goAnalysis('import_quality_overview', qualityParams({ domain }))}
           >
             ← {q.linkBackOverview}
           </button>
@@ -615,5 +650,7 @@ export function DataQualityDetailPage(props: { onNav: (k: NavKey) => void }) {
         ) : null}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

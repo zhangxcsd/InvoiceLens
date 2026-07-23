@@ -19,10 +19,16 @@ import {
   type DwsTaxMonthlyRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { InvoiceDetailDrillPanel } from './InvoiceDetailDrillPanel'
 import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
 const BUCKET_ORDER = ['13%', '9%', '6%', '3%', '免税/零税率', '其他'] as const
 
@@ -295,13 +301,19 @@ function taxBucketToSlvNum(bucket: string): string | undefined {
   return undefined
 }
 
-export function OverviewTaxPage() {
+export function OverviewTaxPage({ onNav, embedMode }: { onNav?: (key: NavKey) => void } & EmbedModeProps = {}) {
   const ui = t.overviewTaxUi
   const drillUi = t.invoiceDetailDrillUi
   const deepLink = useDwsUrlDeepLinkFilter()
-  const f = useDwsFilters(false, { initFromUrl: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('overview_tax', embedMode)
+  const f = useDwsFilters(false, {
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+  })
   const roleTypeDict = useDimDictDomain('finance_role_type')
-  const [roleType, setRoleType] = useState<'all' | string>('all')
+  const [roleType, setRoleType] = useState<'all' | string>(() => String(savedUi?.extra?.roleType ?? 'all'))
   const [rows, setRows] = useState<DwsTaxBucketRow[]>([])
   const [inputRows, setInputRows] = useState<DwsTaxBucketRow[]>([])
   const [outputRows, setOutputRows] = useState<DwsTaxBucketRow[]>([])
@@ -317,6 +329,29 @@ export function OverviewTaxPage() {
   const [err, setErr] = useState<string | null>(null)
   const [drillOpen, setDrillOpen] = useState(false)
   const [drillSlvNum, setDrillSlvNum] = useState<string | undefined>(undefined)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellProps } = useDwsPageAnalysisShell({
+    host: 'overview_tax',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+      extra: { roleType },
+    },
+  })
 
   const selectedBarBucketSet = useMemo(() => new Set(selectedBarBuckets), [selectedBarBuckets])
   const selectedTrendBucketSet = useMemo(() => new Set(selectedTrendBuckets), [selectedTrendBuckets])
@@ -574,8 +609,9 @@ export function OverviewTaxPage() {
   )
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {deepLink.flagContextHint ? (
         <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
@@ -792,5 +828,7 @@ export function OverviewTaxPage() {
         }}
       />
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

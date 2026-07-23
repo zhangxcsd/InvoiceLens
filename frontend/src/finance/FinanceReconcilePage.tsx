@@ -9,12 +9,16 @@ import {
   type FinanceReconcileOverview,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import { useDimDict } from '../dim/useDimDict'
 import type { NavKey } from '../types'
-import { navigateToFinancePage, readFinanceFilterParams } from './financeNav'
+import type { EmbedModeProps } from '../types/embedMode'
+import { readFinanceFilterParams } from './financeNav'
 import { useFinanceFilters } from './useFinanceFilters'
 
-type Props = { onNav?: (key: NavKey) => void }
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
 
 function StepCard(props: { index: number; title: string; desc: string }) {
   return (
@@ -38,10 +42,29 @@ function fmtMoney(n: number) {
   return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-export function FinanceReconcilePage({ onNav }: Props) {
+export function FinanceReconcilePage({ onNav, embedMode }: Props) {
   const ui = t.financeReconcileUi
   const dimDict = useDimDict()
   const filters = useFinanceFilters()
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'finance_reconcile',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
   const fileRef = useRef<HTMLInputElement>(null)
   const [batches, setBatches] = useState<FinanceLedgerBatch[]>([])
   const [overview, setOverview] = useState<FinanceReconcileOverview | null>(null)
@@ -136,7 +159,9 @@ export function FinanceReconcilePage({ onNav }: Props) {
   const hasData = Boolean(kpi && kpi.total_rows > 0)
 
   return (
-    <div className="w-full px-5 py-6">
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? (
       <PrototypePageHeader
         title={ui.pageTitle}
         description={ui.pageDesc}
@@ -146,10 +171,10 @@ export function FinanceReconcilePage({ onNav }: Props) {
               type="button"
               className="rounded-[7px] border border-accent bg-white px-3 py-1.5 text-il-btn font-medium text-accent hover:bg-[#f0f7ff]"
               onClick={() =>
-                navigateToFinancePage(onNav, 'finance_diff', {
-                  batchId: filters.batchId,
-                  statYear: filters.effectiveYear,
-                  entityId: filters.entityId,
+                goAnalysis('finance_diff', {
+                  batch_id: filters.batchId,
+                  stat_year: filters.effectiveYear,
+                  entity_id: filters.entityId,
                 })
               }
             >
@@ -158,6 +183,7 @@ export function FinanceReconcilePage({ onNav }: Props) {
           ) : null
         }
       />
+      ) : null}
 
       <Card title={ui.workflowTitle}>
         <div className="flex flex-col gap-3">
@@ -275,5 +301,7 @@ export function FinanceReconcilePage({ onNav }: Props) {
         )}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

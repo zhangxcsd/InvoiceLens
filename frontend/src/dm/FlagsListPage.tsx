@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
@@ -11,22 +11,37 @@ import {
   type AuditFlagRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { readNavQueryParams, writeNavQueryParams, navigateToEntityProfile } from '../utils/navHelpers'
+import { readNavQueryParams, writeNavQueryParams } from '../utils/navHelpers'
+import { readPanelTargetFromUrl } from '../utils/panelNavQuery'
 import type { NavKey } from '../types'
 import { FlagActionButtons } from './FlagActionButtons'
-import { navigateFlagAction } from './flagActionHelpers'
 import { downloadAuditFlagsCsv } from './flagsExport'
-import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { AUDIT_RISK_COL_CLASS, AuditRiskLevelBadge, TableCellTruncate } from './auditRiskBadge'
 import { useLicense } from '../settings/useLicense'
 import { WriteGateButton } from '../users/useWriteGate'
+import { FlagAnalysisShell } from './FlagAnalysisShell'
+import { handleFlagAnalysisAction } from './flagAnalysisNavigate'
+import { type AnalysisShellTier, type FlagActionTarget } from './flagActionTarget'
+import { readFlagsListUiSnapshot, writeFlagsListUiSnapshot } from './flagsListUiState'
+import { resolveFlagDetailTarget } from './flagDetailHelpers'
+import { useFlagAnalysisShell } from './useFlagAnalysisShell'
 
 type RiskTab = 'all' | string
 
 type Props = { onNav?: (key: NavKey) => void }
 
-function riskBadgeClass(level: string): string {
-  return auditRiskLevelBadgeClass(level)
+function snapshotToShellStack(
+  items: Array<{ nav: string; params: Record<string, string>; title: string; tier: string }>,
+): FlagActionTarget[] {
+  return items
+    .filter((item) => item.nav)
+    .map((item) => ({
+      nav: item.nav as NavKey,
+      params: item.params,
+      title: item.title,
+      tier: item.tier as AnalysisShellTier,
+    }))
 }
 
 export function FlagsListPage({ onNav }: Props) {
@@ -35,25 +50,75 @@ export function FlagsListPage({ onNav }: Props) {
   const pagUi = t.dimDataTableUi
   const riskLevelDict = useDimDictDomain('audit_risk_level')
   const initialQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useMemo(() => readFlagsListUiSnapshot(), [])
+  const panelFromUrl = useMemo(() => readPanelTargetFromUrl(), [])
+  const scrollRestored = useRef(false)
   const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => initialQuery.stat_year ?? String(new Date().getFullYear()))
+  const [statYear, setStatYear] = useState(
+    () => savedUi?.statYear ?? initialQuery.stat_year ?? String(new Date().getFullYear()),
+  )
   const [rules, setRules] = useState<{ rule_id: string; name: string; enabled: boolean }[]>([])
   const [metaHint, setMetaHint] = useState<string | null>(null)
-  const [riskTab, setRiskTab] = useState<RiskTab>('all')
-  const [ruleFilter, setRuleFilter] = useState(initialQuery.rule_id ?? 'all')
-  const [batchFilter, setBatchFilter] = useState(initialQuery.batch_id ?? '')
-  const [keyword, setKeyword] = useState(initialQuery.entity_id ?? '')
+  const [riskTab, setRiskTab] = useState<RiskTab>(() => savedUi?.riskTab ?? 'all')
+  const [ruleFilter, setRuleFilter] = useState(() => savedUi?.ruleFilter ?? initialQuery.rule_id ?? 'all')
+  const [batchFilter, setBatchFilter] = useState(() => savedUi?.batchFilter ?? initialQuery.batch_id ?? '')
+  const [keyword, setKeyword] = useState(() => savedUi?.keyword ?? initialQuery.entity_id ?? '')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [rows, setRows] = useState<AuditFlagRow[]>([])
   const [total, setTotal] = useState(0)
   const [summary, setSummary] = useState({ total: 0, high: 0, medium: 0, low: 0 })
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [page, setPage] = useState(() => savedUi?.page ?? 1)
+  const [pageSize, setPageSize] = useState(() => savedUi?.pageSize ?? 50)
   const [scanBusy, setScanBusy] = useState(false)
   const [scanMsg, setScanMsg] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+
+  const onHostReturn = useCallback((params: Record<string, string>) => {
+    if (params.stat_year) setStatYear(params.stat_year)
+    if (params.rule_id) setRuleFilter(params.rule_id)
+    if (params.entity_id) setKeyword(params.entity_id)
+    if (params.batch_id) setBatchFilter(params.batch_id)
+  }, [])
+
+  const { shellStack, analysisHandlers, shellProps } = useFlagAnalysisShell({
+    host: 'flags_list',
+    enabled: Boolean(onNav),
+    onNav,
+    breadcrumbRootLabel: ui.analysisShell.breadcrumbList,
+    getInitialStack: () => {
+      if (panelFromUrl) return [panelFromUrl]
+      if (savedUi?.shellStack?.length) return snapshotToShellStack(savedUi.shellStack)
+      return []
+    },
+    onHostReturn,
+  })
+
+  const flagActionLabels = useMemo(
+    () => ({
+      viewFinanceDiffBtn: ui.viewFinanceDiffBtn,
+      viewTaxCodeBtn: ui.viewTaxCodeBtn,
+      viewSemanticDetailBtn: ui.viewSemanticDetailBtn,
+      viewQualityTrendBtn: ui.viewQualityTrendBtn,
+      viewQualityBtn: t.auditTrackUi.viewQualityBtn,
+      viewInvoiceBtn: t.auditTrackUi.exportInvoiceBtn,
+      viewRelatedPairsBtn: ui.viewRelatedPairsBtn,
+      viewRelatedShellBtn: ui.viewRelatedShellBtn,
+      viewRelatedGraphBtn: ui.viewRelatedGraphBtn,
+      viewTradeRelationshipsBtn: ui.viewTradeRelationshipsBtn,
+      viewSupplierTopBtn: ui.viewSupplierTopBtn,
+      viewSupplierCrBtn: ui.viewSupplierCrBtn,
+      viewOverviewTrendBtn: ui.viewOverviewTrendBtn,
+      viewInvoiceTimingBtn: ui.viewInvoiceTimingBtn,
+      viewRedOffsetBtn: ui.viewRedOffsetBtn,
+      viewTaxInOutDevBtn: ui.viewTaxInOutDevBtn,
+      viewTaxRiskExposureBtn: ui.viewTaxRiskExposureBtn,
+      viewTrackBtn: ui.viewTrackBtn,
+      viewFlagsListBtn: t.auditTrackUi.viewFlagsListBtn,
+      genReportBtn: ui.genReportBtn,
+    }),
+    [ui],
+  )
 
   const riskTabs = useMemo(
     () => [
@@ -68,6 +133,22 @@ export function FlagsListPage({ onNav }: Props) {
     if (y && statYears.includes(y)) return y
     return statYears[0] ?? y
   }, [statYear, statYears])
+
+  const runFlagAction = useCallback(
+    (actionId: string, row: AuditFlagRow) => {
+      if (!analysisHandlers) return
+      handleFlagAnalysisAction(actionId, row, effectiveYear, flagActionLabels, analysisHandlers)
+    },
+    [analysisHandlers, effectiveYear, flagActionLabels],
+  )
+
+  const openFlagDetail = useCallback(
+    (row: AuditFlagRow) => {
+      if (!analysisHandlers) return
+      analysisHandlers.openShell(resolveFlagDetailTarget(row, effectiveYear))
+    },
+    [analysisHandlers, effectiveYear],
+  )
 
   const loadMeta = useCallback(async (signal?: AbortSignal) => {
     const res = await fetchAuditMeta(signal)
@@ -94,6 +175,32 @@ export function FlagsListPage({ onNav }: Props) {
       batch_id: batchFilter.trim() || undefined,
     })
   }, [effectiveYear, ruleFilter, keyword, batchFilter])
+
+  useEffect(() => {
+    writeFlagsListUiSnapshot({
+      statYear: effectiveYear,
+      ruleFilter,
+      batchFilter,
+      keyword,
+      riskTab,
+      page,
+      pageSize,
+      scrollY: window.scrollY,
+      shellStack: shellStack.map((item) => ({
+        nav: item.nav,
+        params: item.params,
+        title: item.title,
+        tier: item.tier,
+      })),
+    })
+  }, [effectiveYear, ruleFilter, batchFilter, keyword, riskTab, page, pageSize, shellStack])
+
+  useEffect(() => {
+    if (scrollRestored.current || !savedUi?.scrollY) return
+    if (loading) return
+    scrollRestored.current = true
+    requestAnimationFrame(() => window.scrollTo(0, savedUi.scrollY))
+  }, [loading, savedUi?.scrollY])
 
   const listParams = useMemo(
     () => ({
@@ -187,6 +294,7 @@ export function FlagsListPage({ onNav }: Props) {
   }
 
   return (
+    <>
     <div className="space-y-4">
       <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
       <LicenseGateBanner hint={license.trialHint} />
@@ -300,32 +408,33 @@ export function FlagsListPage({ onNav }: Props) {
           <table className="w-full min-w-[960px] border-collapse text-il-meta">
             <thead>
               <tr className="border-b border-border-light text-left text-text-3">
-                <th className="py-2 pr-2">{ui.colFlagId}</th>
-                <th className="py-2 pr-2">{ui.colRisk}</th>
+                <th className="max-w-[120px] py-2 pr-2">{ui.colFlagId}</th>
+                <th className={`py-2 pr-2 ${AUDIT_RISK_COL_CLASS}`}>{ui.colRisk}</th>
                 <th className="py-2 pr-2">{ui.colRule}</th>
-                <th className="py-2 pr-2">{ui.colType}</th>
-                <th className="py-2 pr-2">{ui.colEntity}</th>
-                <th className="py-2 pr-2">{ui.colSeller}</th>
+                <th className="shrink-0 whitespace-nowrap py-2 pr-2">{ui.colType}</th>
+                <th className="max-w-[160px] py-2 pr-2">{ui.colEntity}</th>
+                <th className="max-w-[160px] py-2 pr-2">{ui.colSeller}</th>
                 <th className="py-2 pr-2 text-right">{ui.colAmount}</th>
                 <th className="py-2">{ui.colAction}</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
-                const open = expandedId === row.flag_id
-                return (
-                  <Fragment key={row.flag_id}>
-                    <tr className="border-b border-border-light/70 text-text">
-                      <td className="py-2 pr-2 font-mono text-[11px]">{row.flag_id}</td>
+              {rows.map((row) => (
+                    <tr key={row.flag_id} className="border-b border-border-light/70 text-text">
                       <td className="py-2 pr-2">
-                        <span className={`rounded px-1.5 py-0.5 ${riskBadgeClass(row.risk_level)}`}>
-                          {riskLevelDict.getLabel(row.risk_level)}
-                        </span>
+                        <TableCellTruncate text={row.flag_id} className="font-mono text-[11px]" maxWidth="max-w-[120px]" />
+                      </td>
+                      <td className={`py-2 pr-2 ${AUDIT_RISK_COL_CLASS}`}>
+                        <AuditRiskLevelBadge level={row.risk_level} label={riskLevelDict.getLabel(row.risk_level)} />
                       </td>
                       <td className="py-2 pr-2">{row.rule_id}</td>
-                      <td className="py-2 pr-2">{row.flag_type}</td>
-                      <td className="py-2 pr-2">{row.entity_name ?? row.entity_id ?? '—'}</td>
-                      <td className="py-2 pr-2">{row.seller_name ?? '—'}</td>
+                      <td className="whitespace-nowrap py-2 pr-2">{row.flag_type}</td>
+                      <td className="py-2 pr-2">
+                        <TableCellTruncate text={row.entity_name ?? row.entity_id} />
+                      </td>
+                      <td className="py-2 pr-2">
+                        <TableCellTruncate text={row.seller_name} />
+                      </td>
                       <td className="py-2 pr-2 text-right tabular-nums">
                         {row.amount != null ? row.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) : '—'}
                       </td>
@@ -334,14 +443,15 @@ export function FlagsListPage({ onNav }: Props) {
                           row={row}
                           statYear={effectiveYear}
                           onNav={onNav}
+                          analysisHandlers={analysisHandlers}
                           showReport={false}
                           extraBefore={
                             <button
                               type="button"
                               className="text-accent underline-offset-2 hover:underline"
-                              onClick={() => setExpandedId(open ? null : row.flag_id)}
+                              onClick={() => openFlagDetail(row)}
                             >
-                              {open ? ui.collapseBtn : ui.expandBtn}
+                              {ui.expandBtn}
                             </button>
                           }
                           extraAfter={
@@ -350,12 +460,7 @@ export function FlagsListPage({ onNav }: Props) {
                                 <button
                                   type="button"
                                   className="text-accent underline-offset-2 hover:underline"
-                                  onClick={() =>
-                                    navigateToEntityProfile(onNav, {
-                                      statYear: effectiveYear,
-                                      entityId: row.entity_id ?? undefined,
-                                    })
-                                  }
+                                  onClick={() => runFlagAction('entity_profile', row)}
                                 >
                                   {t.sidebar.entityProfile}
                                 </button>
@@ -363,9 +468,7 @@ export function FlagsListPage({ onNav }: Props) {
                               <button
                                 type="button"
                                 className="text-accent underline-offset-2 hover:underline"
-                                onClick={() =>
-                                  navigateFlagAction(onNav!, 'flags_track', row, effectiveYear)
-                                }
+                                onClick={() => runFlagAction('flags_track', row)}
                               >
                                 {ui.viewTrackBtn}
                               </button>
@@ -374,27 +477,7 @@ export function FlagsListPage({ onNav }: Props) {
                         />
                       </td>
                     </tr>
-                    {open ? (
-                      <tr className="bg-surface-2/40">
-                        <td colSpan={8} className="px-3 py-3 text-il-meta text-text-2">
-                          <p className="font-medium text-text">{ui.descLabel}</p>
-                          <p className="mt-1 whitespace-pre-wrap">{row.description}</p>
-                          <p className="mt-2 font-medium text-text">{ui.suggestionLabel}</p>
-                          <p className="mt-1 whitespace-pre-wrap">{row.suggestion}</p>
-                          {onNav ? (
-                            <FlagActionButtons
-                              row={row}
-                              statYear={effectiveYear}
-                              onNav={onNav}
-                              className="mt-3 flex flex-wrap gap-3"
-                            />
-                          ) : null}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                )
-              })}
+              ))}
             </tbody>
           </table>
         </div>
@@ -409,5 +492,7 @@ export function FlagsListPage({ onNav }: Props) {
         />
       </Card>
     </div>
+    {shellProps ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

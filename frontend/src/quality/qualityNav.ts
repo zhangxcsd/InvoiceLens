@@ -1,11 +1,23 @@
 import type { QualityDomainKey } from '../config/localApi'
 import type { NavKey } from '../types'
+import { getEmbedNavQuery } from '../utils/embedNavQuery'
 
 export type QualityNavKey = 'import_quality_overview' | 'import_quality_detail' | 'import_quality_trend'
 
 export type { QualityDomainKey }
 
 export function readQualityBatchParams(): { batchId: string; sessionId: string } {
+  const embed = getEmbedNavQuery()
+  if (embed) {
+    return {
+      batchId: (embed.batch_id ?? '').trim(),
+      sessionId: (embed.session_id ?? '').trim(),
+    }
+  }
+  return readQualityBatchParamsFromUrl()
+}
+
+function readQualityBatchParamsFromUrl(): { batchId: string; sessionId: string } {
   try {
     const sp = new URL(window.location.href).searchParams
     return {
@@ -32,19 +44,31 @@ export function writeQualityBatchParams(batchId: string, sessionId?: string) {
 }
 
 export function readQualityDomainParam(): QualityDomainKey {
+  const embed = getEmbedNavQuery()
+  if (embed?.domain) {
+    return normalizeQualityDomain(embed.domain)
+  }
+  return readQualityDomainParamFromUrl()
+}
+
+function normalizeQualityDomain(v: string): QualityDomainKey {
+  const allowed: QualityDomainKey[] = [
+    'uniqueness',
+    'tax_id',
+    'cross_table',
+    'header_detail',
+    'semantic',
+    'red_link',
+    'lineage_reject',
+    'dwd_lineage',
+  ]
+  return (allowed.includes(v as QualityDomainKey) ? v : 'red_link') as QualityDomainKey
+}
+
+function readQualityDomainParamFromUrl(): QualityDomainKey {
   try {
     const v = (new URL(window.location.href).searchParams.get('domain') ?? '').trim()
-    const allowed: QualityDomainKey[] = [
-      'uniqueness',
-      'tax_id',
-      'cross_table',
-      'header_detail',
-      'semantic',
-      'red_link',
-      'lineage_reject',
-      'dwd_lineage',
-    ]
-    return (allowed.includes(v as QualityDomainKey) ? v : 'red_link') as QualityDomainKey
+    return normalizeQualityDomain(v)
   } catch {
     return 'red_link'
   }

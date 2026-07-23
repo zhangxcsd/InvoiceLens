@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsEntityProfile, type DwsEntityProfile } from '../config/localApi'
@@ -6,20 +6,15 @@ import { zhCN as t } from '../copy/zh-CN'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
 import type { NavKey } from '../types'
-import {
-  navigateToFlagsList,
-  navigateToGoodsCategory,
-  navigateToCounterpartyRisk,
-  navigateToInvoiceTiming,
-  navigateToRedOffsetAnalysis,
-  navigateToRelatedGraph,
-  navigateToSupplierTop,
-  navigateToTaxRiskExposure,
-  navigateToYearOverYearCompare,
-  readNavQueryParams,
-} from '../utils/navHelpers'
+import { readNavQueryParams } from '../utils/navHelpers'
+import { readPanelTargetFromUrl } from '../utils/panelNavQuery'
 import { fetchDwsEnterpriseBehaviorProfile } from '../config/dwsDplusApi'
 import type { DwsEnterpriseBehaviorMonth } from '../config/localApi'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { type AnalysisShellTier, type FlagActionTarget } from '../dm/flagActionTarget'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
+import { readEntityProfileUiSnapshot, writeEntityProfileUiSnapshot } from './entityProfileUiState'
 
 function fluctuationLevelLabel(level: string | null | undefined, ui: typeof t.entityProfileUi) {
   if (level === 'high') return ui.fluctuationHigh
@@ -28,21 +23,105 @@ function fluctuationLevelLabel(level: string | null | undefined, ui: typeof t.en
   return ui.fluctuationUnknown
 }
 
+import type { EmbedModeProps } from '../types/embedMode'
+
 type Props = {
   onNav?: (key: NavKey) => void
+} & EmbedModeProps
+
+function snapshotToShellStack(
+  items: Array<{ nav: string; params: Record<string, string>; title: string; tier: string }>,
+): FlagActionTarget[] {
+  return items
+    .filter((item) => item.nav)
+    .map((item) => ({
+      nav: item.nav as NavKey,
+      params: item.params,
+      title: item.title,
+      tier: item.tier as AnalysisShellTier,
+    }))
 }
 
-export function EntityProfilePage({ onNav }: Props) {
+export function EntityProfilePage({ onNav, embedMode }: Props) {
   const ui = t.entityProfileUi
   const dash = t.dwsDashboardUi
   const urlQuery = useMemo(() => readNavQueryParams(), [])
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
+  const panelFromUrl = useMemo(() => readPanelTargetFromUrl(), [])
+  const savedUi = useMemo(() => readEntityProfileUiSnapshot(), [])
+  const scrollRestored = useRef(false)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBuyer: true,
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
   const [profile, setProfile] = useState<DwsEntityProfile | null>(null)
-  const [activeTab, setActiveTab] = useState<'overview' | 'behavior'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'behavior'>(() => savedUi?.activeTab ?? 'overview')
   const [behaviorMonths, setBehaviorMonths] = useState<DwsEnterpriseBehaviorMonth[]>([])
   const [behaviorLoading, setBehaviorLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellStack, analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'entity_profile',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: t.auditFlagUi.analysisShell.breadcrumbEntityProfile,
+    getInitialStack: () => {
+      if (panelFromUrl) return [panelFromUrl]
+      if (savedUi?.shellStack?.length) return snapshotToShellStack(savedUi.shellStack)
+      return []
+    },
+    onHostReturn,
+  })
+
+  useEffect(() => {
+    if (embedMode) return
+    writeEntityProfileUiSnapshot({
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      activeTab,
+      scrollY: window.scrollY,
+      shellStack: shellStack.map((item) => ({
+        nav: item.nav,
+        params: item.params,
+        title: item.title,
+        tier: item.tier,
+      })),
+    })
+  }, [embedMode, f.effectiveYear, f.entityId, f.minInvoiceCount, activeTab, shellStack])
+
+  useEffect(() => {
+    if (embedMode || scrollRestored.current || !savedUi?.scrollY) return
+    if (loading) return
+    scrollRestored.current = true
+    requestAnimationFrame(() => window.scrollTo(0, savedUi.scrollY))
+  }, [embedMode, loading, savedUi?.scrollY])
+
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
 
@@ -113,8 +192,9 @@ export function EntityProfilePage({ onNav }: Props) {
   const taxCode = profile?.tax_code
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {f.poolHint ? <p className="mb-2 text-il-meta text-amber-800">{f.poolHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
@@ -239,9 +319,9 @@ export function EntityProfilePage({ onNav }: Props) {
                   type="button"
                   className="mt-3 text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToSupplierTop(onNav, {
-                      statYear: profile.stat_year,
-                      entityId: profile.entity_id,
+                    goAnalysis('supplier_top', {
+                      stat_year: profile.stat_year,
+                      entity_id: profile.entity_id,
                     })
                   }
                 >
@@ -324,9 +404,9 @@ export function EntityProfilePage({ onNav }: Props) {
                   type="button"
                   className="mt-2 text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToRelatedGraph(onNav, {
-                      statYear: profile.stat_year,
-                      entityId: profile.entity_id,
+                    goAnalysis('related_graph', {
+                      stat_year: profile.stat_year,
+                      entity_id: profile.entity_id,
                     })
                   }
                 >
@@ -362,9 +442,9 @@ export function EntityProfilePage({ onNav }: Props) {
                     type="button"
                     className="text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToFlagsList(onNav, {
-                        statYear: profile.stat_year,
-                        entityId: profile.entity_id,
+                      goAnalysis('flags_list', {
+                        stat_year: profile.stat_year,
+                        entity_id: profile.entity_id,
                       })
                     }
                   >
@@ -374,9 +454,9 @@ export function EntityProfilePage({ onNav }: Props) {
                     type="button"
                     className="text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToTaxRiskExposure(onNav, {
-                        statYear: profile.stat_year,
-                        entityId: profile.entity_id,
+                      goAnalysis('tax_risk_exposure', {
+                        stat_year: profile.stat_year,
+                        entity_id: profile.entity_id,
                       })
                     }
                   >
@@ -421,7 +501,10 @@ export function EntityProfilePage({ onNav }: Props) {
                   type="button"
                   className="mt-2 text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToGoodsCategory(onNav, { statYear: profile.stat_year, entityId: profile.entity_id })
+                    goAnalysis('goods_category', {
+                      stat_year: profile.stat_year,
+                      entity_id: profile.entity_id,
+                    })
                   }
                 >
                   {ui.linkGoodsCategory}
@@ -447,7 +530,10 @@ export function EntityProfilePage({ onNav }: Props) {
                   type="button"
                   className="mt-2 text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToCounterpartyRisk(onNav, { statYear: profile.stat_year, entityId: profile.entity_id })
+                    goAnalysis('counterparty_risk', {
+                      stat_year: profile.stat_year,
+                      entity_id: profile.entity_id,
+                    })
                   }
                 >
                   {ui.linkCounterpartyRisk}
@@ -470,7 +556,10 @@ export function EntityProfilePage({ onNav }: Props) {
                     type="button"
                     className="text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToYearOverYearCompare(onNav, { statYear: profile.stat_year, entityId: profile.entity_id })
+                      goAnalysis('year_over_year_compare', {
+                        stat_year: profile.stat_year,
+                        entity_id: profile.entity_id,
+                      })
                     }
                   >
                     {ui.linkYearOverYear}
@@ -479,7 +568,10 @@ export function EntityProfilePage({ onNav }: Props) {
                     type="button"
                     className="text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToRedOffsetAnalysis(onNav, { statYear: profile.stat_year, entityId: profile.entity_id })
+                      goAnalysis('red_offset_analysis', {
+                        stat_year: profile.stat_year,
+                        entity_id: profile.entity_id,
+                      })
                     }
                   >
                     {ui.linkRedOffset}
@@ -488,7 +580,10 @@ export function EntityProfilePage({ onNav }: Props) {
                     type="button"
                     className="text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToInvoiceTiming(onNav, { statYear: profile.stat_year, entityId: profile.entity_id })
+                      goAnalysis('invoice_timing', {
+                        stat_year: profile.stat_year,
+                        entity_id: profile.entity_id,
+                      })
                     }
                   >
                     {ui.linkInvoiceTiming}
@@ -502,5 +597,7 @@ export function EntityProfilePage({ onNav }: Props) {
         </>
       ) : null}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

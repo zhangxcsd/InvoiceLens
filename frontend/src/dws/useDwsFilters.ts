@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  fetchAnalysisScopeEntityOptions,
   fetchAnalysisSubjectMeta,
   fetchAnalysisSubjectOptions,
   fetchDwsEntityOptions,
@@ -73,10 +74,17 @@ export function useDwsUrlDeepLinkFilter() {
 
 export type DwsFilterPoolOptions = {
   entityPool?: 'dws_trend' | 'analysis'
+  /** 单主体下拉来源：analysis=L1 池；org_union=花名册∪组织树 */
+  entityOptionsSource?: 'analysis' | 'org_union'
   requireBuyer?: boolean
   requireBothRoles?: boolean
   /** 从 URL ?stat_year=&entity_id= 初始化筛选（深链恢复） */
   initFromUrl?: boolean
+  /** sessionStorage 恢复时的初始筛选（URL 深链优先于该值） */
+  initialStatYear?: string
+  initialEntityId?: string
+  initialMinInvoiceCount?: number | null
+  initialExcludedEntityIds?: string[]
 }
 
 export function formatDwsAmount(v: number | null | undefined): string {
@@ -91,19 +99,24 @@ export function formatDwsPct(v: number | null | undefined): string {
 
 export function useDwsFilters(requireEntity = false, poolOptions: DwsFilterPoolOptions = {}) {
   const entityPool = poolOptions.entityPool ?? 'dws_trend'
+  const entityOptionsSource = poolOptions.entityOptionsSource ?? 'analysis'
   const requireBuyer = Boolean(poolOptions.requireBuyer)
   const requireBothRoles = Boolean(poolOptions.requireBothRoles)
   const initFromUrl = Boolean(poolOptions.initFromUrl)
   const urlQuery = useMemo(() => (initFromUrl ? readNavQueryParams() : {}), [initFromUrl])
   const [statYears, setStatYears] = useState<string[]>([])
-  const [statYear, setStatYear] = useState(() => urlQuery.stat_year ?? String(new Date().getFullYear()))
-  const [entityId, setEntityId] = useState(() => urlQuery.entity_id ?? '')
+  const [statYear, setStatYear] = useState(
+    () => urlQuery.stat_year ?? poolOptions.initialStatYear ?? String(new Date().getFullYear()),
+  )
+  const [entityId, setEntityId] = useState(() => urlQuery.entity_id ?? poolOptions.initialEntityId ?? '')
   const [entityOptions, setEntityOptions] = useState<DwsEntityOption[]>([])
   const [dwsReady, setDwsReady] = useState(false)
   const [metaHint, setMetaHint] = useState<string | null>(null)
   const [poolHint, setPoolHint] = useState<string | null>(null)
   const [defaultMinInvoiceCount, setDefaultMinInvoiceCount] = useState<number | null>(null)
-  const [minInvoiceCount, setMinInvoiceCount] = useState<number | null>(null)
+  const [minInvoiceCount, setMinInvoiceCount] = useState<number | null>(
+    () => poolOptions.initialMinInvoiceCount ?? null,
+  )
   const [loadingMeta, setLoadingMeta] = useState(true)
 
   const yearOptions = useMemo(() => {
@@ -149,7 +162,7 @@ export function useDwsFilters(requireEntity = false, poolOptions: DwsFilterPoolO
   }, [reloadMeta])
 
   useEffect(() => {
-    if (entityPool !== 'analysis') return
+    if (entityPool !== 'analysis' || entityOptionsSource === 'org_union') return
     const ac = new AbortController()
     void fetchAnalysisSubjectMeta(undefined, ac.signal).then((res) => {
       if (ac.signal.aborted || res.aborted) return
@@ -159,13 +172,26 @@ export function useDwsFilters(requireEntity = false, poolOptions: DwsFilterPoolO
       }
     })
     return () => ac.abort()
-  }, [entityPool])
+  }, [entityPool, entityOptionsSource])
 
   useEffect(() => {
     const ac = new AbortController()
     if (!effectiveYear) {
       setEntityOptions([])
       setPoolHint(null)
+      return () => ac.abort()
+    }
+    if (entityPool === 'analysis' && entityOptionsSource === 'org_union') {
+      void fetchAnalysisScopeEntityOptions({ statYear: effectiveYear }, ac.signal).then((res) => {
+        if (ac.signal.aborted || res.aborted) return
+        if (res.ok && res.options) {
+          setEntityOptions(res.options)
+          setPoolHint(res.hint ?? null)
+        } else {
+          setEntityOptions([])
+          setPoolHint(res.error?.message ?? null)
+        }
+      })
       return () => ac.abort()
     }
     if (entityPool === 'analysis') {
@@ -196,7 +222,7 @@ export function useDwsFilters(requireEntity = false, poolOptions: DwsFilterPoolO
       })
     }
     return () => ac.abort()
-  }, [effectiveYear, entityPool, requireBuyer, requireBothRoles, minInvoiceCount])
+  }, [effectiveYear, entityPool, entityOptionsSource, requireBuyer, requireBothRoles, minInvoiceCount])
 
   const entityValid = !requireEntity || Boolean(entityId.trim())
 

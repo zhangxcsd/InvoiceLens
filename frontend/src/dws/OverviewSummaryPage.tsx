@@ -3,14 +3,26 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsOverviewSummary, postDwsRebuild } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { InvoiceDetailDrillPanel } from './InvoiceDetailDrillPanel'
 import { formatDwsAmount, useDwsFilters, useDwsUrlDeepLinkFilter } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function OverviewSummaryPage() {
+export function OverviewSummaryPage({ onNav, embedMode }: { onNav?: (key: NavKey) => void } & EmbedModeProps = {}) {
   const ui = t.dwsDashboardUi
   const deepLink = useDwsUrlDeepLinkFilter()
-  const f = useDwsFilters(false, { initFromUrl: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('overview_summary', embedMode)
+  const f = useDwsFilters(false, {
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+  })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [summary, setSummary] = useState<{
@@ -30,6 +42,28 @@ export function OverviewSummaryPage() {
   const [rebuildMsg, setRebuildMsg] = useState<string | null>(null)
   const [drillOpen, setDrillOpen] = useState(false)
   const drillUi = t.invoiceDetailDrillUi
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellProps } = useDwsPageAnalysisShell({
+    host: 'overview_summary',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+    },
+  })
 
   const load = useCallback(async (signal?: AbortSignal) => {
     if (!f.effectiveYear) return
@@ -108,8 +142,11 @@ export function OverviewSummaryPage() {
   }
 
   return (
-    <div className="w-full px-5 py-6">
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? (
       <PrototypePageHeader title={ui.overviewSummaryTitle} note={ui.overviewSummaryDesc} noteTone="plain" />
+      ) : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {deepLink.flagContextHint ? (
         <p className="mb-2 text-il-meta text-amber-800">{deepLink.flagContextHint}</p>
@@ -182,5 +219,7 @@ export function OverviewSummaryPage() {
         }}
       />
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

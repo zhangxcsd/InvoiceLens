@@ -4,15 +4,17 @@ import { zhCN as t } from '../copy/zh-CN'
 import { fetchHealthScoreSnapshot, type HealthIndicatorRow } from '../config/localApi'
 import { DwsFilterBar } from '../dws/DwsFilterBar'
 import { useDwsFilters } from '../dws/useDwsFilters'
-import { navigateToFlagsList, readNavQueryParams } from '../utils/navHelpers'
+import { readNavQueryParams } from '../utils/navHelpers'
+import { readPanelTargetFromUrl } from '../utils/panelNavQuery'
 import type { NavKey } from '../types'
-import { scorecardRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { AUDIT_RISK_COL_CLASS, AuditRiskLevelBadge, ScorecardRiskLevelBadge } from '../dm/auditRiskBadge'
 import { useDimDictDomain } from '../dim/useDimDict'
-import {
-  getFlagActionLinks,
-  minimalFlagRowForRule,
-  navigateFlagAction,
-} from '../dm/flagActionHelpers'
+import { getFlagActionLinks, minimalFlagRowForRule } from '../dm/flagActionHelpers'
+import { handleFlagActionOrNavigate, handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { type AnalysisShellTier, type FlagActionTarget } from '../dm/flagActionTarget'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
+import { readHealthScoreUiSnapshot, writeHealthScoreUiSnapshot } from './healthScoreUiState'
 
 type FlagBreakdownRow = {
   rule_id: string
@@ -23,7 +25,22 @@ type FlagBreakdownRow = {
 
 type Level = 'normal' | 'warning' | 'alert'
 
-type Props = { onNav?: (key: NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
+
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
+
+function snapshotToShellStack(
+  items: Array<{ nav: string; params: Record<string, string>; title: string; tier: string }>,
+): FlagActionTarget[] {
+  return items
+    .filter((item) => item.nav)
+    .map((item) => ({
+      nav: item.nav as NavKey,
+      params: item.params,
+      title: item.title,
+      tier: item.tier as AnalysisShellTier,
+    }))
+}
 
 function levelTag(level: Level) {
   if (level === 'alert') {
@@ -35,11 +52,20 @@ function levelTag(level: Level) {
   return <span className="rounded border border-[#c8dff7] bg-[#f0f7ff] px-1.5 py-0.5 text-il-label text-accent">正常</span>
 }
 
-export function HealthScorePage({ onNav }: Props) {
+export function HealthScorePage({ onNav, embedMode }: Props) {
   const q = t.healthScoreUi
   const scorecardRiskDict = useDimDictDomain('scorecard_risk_level')
+  const auditRiskDict = useDimDictDomain('audit_risk_level')
   const initialQuery = useMemo(() => readNavQueryParams(), [])
-  const f = useDwsFilters(true, { entityPool: 'analysis' })
+  const savedUi = useMemo(() => readHealthScoreUiSnapshot(), [])
+  const panelFromUrl = useMemo(() => readPanelTargetFromUrl(), [])
+  const scrollRestored = useRef(false)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    initialStatYear: initialQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: initialQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [dataSource, setDataSource] = useState<string | null>(null)
@@ -56,18 +82,69 @@ export function HealthScorePage({ onNav }: Props) {
   const [topDeductions, setTopDeductions] = useState<Array<{ indicator_name: string; explain_text: string }>>([])
   const [flagBreakdown, setFlagBreakdown] = useState<FlagBreakdownRow[]>([])
   const [selected, setSelected] = useState<HealthIndicatorRow | null>(null)
-  const [onlyAbnormal, setOnlyAbnormal] = useState(false)
-  const [levelFilter, setLevelFilter] = useState<'all' | Level>('all')
-  const [dimensionFilter, setDimensionFilter] = useState('all')
+  const [onlyAbnormal, setOnlyAbnormal] = useState(() => savedUi?.onlyAbnormal ?? false)
+  const [levelFilter, setLevelFilter] = useState<'all' | Level>(() => savedUi?.levelFilter ?? 'all')
+  const [dimensionFilter, setDimensionFilter] = useState(() => savedUi?.dimensionFilter ?? 'all')
   const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({})
-  const initializedFromUrl = useRef(false)
+  const pendingSelectedCode = useRef(savedUi?.selectedIndicatorCode ?? null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { shellStack, analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'health_score',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: t.auditFlagUi.analysisShell.breadcrumbHealthScore,
+    getInitialStack: () => {
+      if (panelFromUrl) return [panelFromUrl]
+      if (savedUi?.shellStack?.length) return snapshotToShellStack(savedUi.shellStack)
+      return []
+    },
+    onHostReturn,
+  })
 
   useEffect(() => {
-    if (initializedFromUrl.current) return
-    if (initialQuery.stat_year) f.setStatYear(initialQuery.stat_year)
-    if (initialQuery.entity_id) f.setEntityId(initialQuery.entity_id)
-    initializedFromUrl.current = true
-  }, [initialQuery, f])
+    if (embedMode) return
+    writeHealthScoreUiSnapshot({
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      onlyAbnormal,
+      levelFilter,
+      dimensionFilter,
+      selectedIndicatorCode: selected?.indicator_code ?? pendingSelectedCode.current,
+      scrollY: window.scrollY,
+      shellStack: shellStack.map((item) => ({
+        nav: item.nav,
+        params: item.params,
+        title: item.title,
+        tier: item.tier,
+      })),
+    })
+  }, [
+    embedMode,
+    f.effectiveYear,
+    f.entityId,
+    f.minInvoiceCount,
+    onlyAbnormal,
+    levelFilter,
+    dimensionFilter,
+    selected?.indicator_code,
+    shellStack,
+  ])
+
+  useEffect(() => {
+    if (embedMode || scrollRestored.current || !savedUi?.scrollY) return
+    if (loading) return
+    scrollRestored.current = true
+    requestAnimationFrame(() => window.scrollTo(0, savedUi.scrollY))
+  }, [embedMode, loading, savedUi?.scrollY])
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
 
@@ -169,9 +246,19 @@ export function HealthScorePage({ onNav }: Props) {
       return
     }
     setSelected((prev) => {
-      if (!prev) return rows[0] ?? null
-      const exists = rows.some((r) => r.indicator_code === prev.indicator_code)
-      return exists ? prev : (rows[0] ?? null)
+      if (prev) {
+        const exists = rows.some((r) => r.indicator_code === prev.indicator_code)
+        if (exists) return prev
+      }
+      const pending = pendingSelectedCode.current
+      if (pending) {
+        const match = rows.find((r) => r.indicator_code === pending)
+        if (match) {
+          pendingSelectedCode.current = null
+          return match
+        }
+      }
+      return rows[0] ?? null
     })
   }, [rows])
 
@@ -208,14 +295,17 @@ export function HealthScorePage({ onNav }: Props) {
   )
 
   return (
-    <div className="w-full px-5 py-6">
-      <div className="mb-5">
-        <h1 className="text-il-page-title font-semibold text-text">{q.pageTitle}</h1>
-        <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{q.pageDesc}</p>
-        {dataSource === 'ads_scorecard' ? (
-          <p className="mt-2 text-il-meta text-accent">{q.dataBackedHint}</p>
-        ) : null}
-      </div>
+    <>
+      <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? (
+        <div className="mb-5">
+          <h1 className="text-il-page-title font-semibold text-text">{q.pageTitle}</h1>
+          <p className="mt-2 max-w-[920px] text-il-page-desc leading-relaxed text-text-2">{q.pageDesc}</p>
+          {dataSource === 'ads_scorecard' ? (
+            <p className="mt-2 text-il-meta text-accent">{q.dataBackedHint}</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <Card title={q.filterTitle}>
         <DwsFilterBar
@@ -251,11 +341,12 @@ export function HealthScorePage({ onNav }: Props) {
               <div className="mt-1 text-[24px] font-bold tabular-nums text-accent">
                 {overview.grade}
                 {overview.risk_level ? (
-                  <span
-                    className={`ml-2 rounded px-1.5 py-0.5 text-[14px] font-medium ${scorecardRiskLevelBadgeClass(overview.risk_level)}`}
-                  >
-                    {scorecardRiskDict.getLabel(overview.risk_level)}
-                  </span>
+                  <ScorecardRiskLevelBadge
+                    level={overview.risk_level}
+                    label={scorecardRiskDict.getLabel(overview.risk_level)}
+                    size="large"
+                    className="ml-2"
+                  />
                 ) : null}
               </div>
             </div>
@@ -282,12 +373,16 @@ export function HealthScorePage({ onNav }: Props) {
               <button
                 type="button"
                 className="text-il-meta text-accent hover:underline"
-                onClick={() =>
-                  navigateToFlagsList(onNav, {
-                    statYear: f.effectiveYear,
-                    entityId: f.entityId.trim(),
-                  })
-                }
+                onClick={() => {
+                  if (!onNav) return
+                  handleNavAnalysisAction(
+                    'flags_list',
+                    { stat_year: f.effectiveYear, entity_id: f.entityId.trim() },
+                    onNav,
+                    embedMode ? null : analysisHandlers,
+                    { closeShell: shellProps ? closeShell : undefined },
+                  )
+                }}
               >
                 {q.viewFlagsLink}
               </button>
@@ -334,7 +429,7 @@ export function HealthScorePage({ onNav }: Props) {
                   <thead>
                     <tr className="border-b border-border-light bg-[#fafbfd] text-left text-il-label text-text-3">
                       <th className="px-2 py-2 font-medium">{q.colRuleId}</th>
-                      <th className="px-2 py-2 font-medium">{q.colRiskLevel}</th>
+                      <th className={`px-2 py-2 font-medium ${AUDIT_RISK_COL_CLASS}`}>{q.colRiskLevel}</th>
                       <th className="px-2 py-2 font-medium">{q.colFlagCount}</th>
                       <th className="px-2 py-2 font-medium">{q.colFlagAmount}</th>
                       {onNav ? <th className="px-2 py-2 font-medium">{q.colAction}</th> : null}
@@ -350,7 +445,12 @@ export function HealthScorePage({ onNav }: Props) {
                       return (
                         <tr key={`${row.rule_id}::${row.risk_level}`} className="border-b border-border-light last:border-0">
                           <td className="whitespace-nowrap px-2 py-2 font-mono text-[12px]">{row.rule_id}</td>
-                          <td className="whitespace-nowrap px-2 py-2">{row.risk_level || '—'}</td>
+                          <td className={`px-2 py-2 ${AUDIT_RISK_COL_CLASS}`}>
+                            <AuditRiskLevelBadge
+                              level={row.risk_level}
+                              label={auditRiskDict.getLabel(row.risk_level)}
+                            />
+                          </td>
                           <td className="whitespace-nowrap px-2 py-2 tabular-nums">{row.count}</td>
                           <td className="whitespace-nowrap px-2 py-2 tabular-nums">
                             {row.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -361,13 +461,20 @@ export function HealthScorePage({ onNav }: Props) {
                                 <button
                                   type="button"
                                   className="text-il-meta text-accent hover:underline"
-                                  onClick={() =>
-                                    navigateToFlagsList(onNav, {
-                                      statYear: f.effectiveYear,
-                                      entityId: f.entityId.trim(),
-                                      ruleId: row.rule_id,
-                                    })
-                                  }
+                                  onClick={() => {
+                                    if (!onNav) return
+                                    handleNavAnalysisAction(
+                                      'flags_list',
+                                      {
+                                        stat_year: f.effectiveYear,
+                                        entity_id: f.entityId.trim(),
+                                        rule_id: row.rule_id,
+                                      },
+                                      onNav,
+                                      embedMode ? null : analysisHandlers,
+                                      { closeShell: shellProps ? closeShell : undefined },
+                                    )
+                                  }}
                                 >
                                   {q.viewFlagsForRuleBtn}
                                 </button>
@@ -376,7 +483,14 @@ export function HealthScorePage({ onNav }: Props) {
                                     type="button"
                                     className="text-il-meta text-accent hover:underline"
                                     onClick={() =>
-                                      navigateFlagAction(onNav, primaryLink.id, mockFlag, f.effectiveYear)
+                                      handleFlagActionOrNavigate(
+                                        primaryLink.id,
+                                        mockFlag,
+                                        f.effectiveYear,
+                                        flagActionLabels,
+                                        onNav,
+                                        analysisHandlers,
+                                      )
                                     }
                                   >
                                     {primaryLink.label || q.viewAnalysisBtn}
@@ -516,6 +630,8 @@ export function HealthScorePage({ onNav }: Props) {
           </Card>
         </>
       )}
-    </div>
+      </div>
+      {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

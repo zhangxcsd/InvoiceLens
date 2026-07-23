@@ -14,7 +14,9 @@ import { InvoiceDetailDrillPanel } from '../dws/InvoiceDetailDrillPanel'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from '../dws/useDwsFilters'
 import { readNavQueryParams } from '../utils/navHelpers'
 
-export function TaxCodeAnalysisPage() {
+import type { EmbedModeProps } from '../types/embedMode'
+
+export function TaxCodeAnalysisPage({ embedMode }: EmbedModeProps = {}) {
   const ui = t.taxCodeAnalysisUi
   const pagUi = t.dimDataTableUi
   const dash = t.dwsDashboardUi
@@ -183,7 +185,7 @@ export function TaxCodeAnalysisPage() {
 
   return (
     <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {flagContextHint ? <p className="mb-2 text-il-meta text-amber-800">{flagContextHint}</p> : null}
       {hint ? <p className="mb-2 text-il-meta text-amber-800">{hint}</p> : null}

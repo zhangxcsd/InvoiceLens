@@ -410,7 +410,7 @@ function qualityDomainForRule(ruleId: string): QualityDomainKey {
   return 'semantic'
 }
 
-function taxNavForRule(ruleId: string): 'dim_tax_quality' | 'tax_enterprise_structure' {
+export function taxNavForRule(ruleId: string): 'dim_tax_quality' | 'tax_enterprise_structure' {
   return ruleId === 'RULE-TAX-HIGH-CODE' ? 'tax_enterprise_structure' : 'dim_tax_quality'
 }
 

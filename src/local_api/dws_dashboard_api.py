@@ -2636,3 +2636,711 @@ def api_dws_customer_churn(
     except Exception as exc:
         return {"ok": False, "rows": [], "error": {"message": str(exc), "exception_type": type(exc).__name__}}
 
+
+def _cr_matrix_rows_from_sup_conc(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not entity_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    rows = conn.execute(
+        f"""
+        SELECT entity_id, amount_rank, amount_ratio, net_jshj, cumulative_ratio
+        FROM dws_sup_conc
+        WHERE stat_year = ? AND entity_id IN ({placeholders})
+        ORDER BY entity_id, amount_rank ASC
+        """,
+        [stat_year, *entity_ids],
+    ).fetchall()
+    grouped: dict[str, list[tuple[Any, ...]]] = {}
+    for r in rows or []:
+        eid = str(r[0] or "")
+        if not eid:
+            continue
+        grouped.setdefault(eid, []).append((r[1], r[2], r[3], r[4]))
+    out: dict[str, dict[str, Any]] = {}
+    for eid, sup_rows in grouped.items():
+        cr = _cr_from_sup_rows(sup_rows)
+        out[eid] = {
+            **cr,
+            "counterparty_cnt": len(sup_rows),
+        }
+    return out
+
+
+def _cr_matrix_rows_from_trade_sum(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not entity_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    sql = f"""
+        WITH base AS (
+            SELECT
+                entity_id,
+                counterparty_id,
+                sum(total_amount) AS net_jshj
+            FROM dws_trade_sum
+            WHERE stat_year = ? AND entity_id IN ({placeholders})
+              AND counterparty_role = '客户'
+              AND length(counterparty_id) > 0
+            GROUP BY entity_id, counterparty_id
+        ),
+        ranked AS (
+            SELECT
+                entity_id,
+                net_jshj,
+                row_number() OVER (PARTITION BY entity_id ORDER BY net_jshj DESC, counterparty_id) AS amount_rank,
+                sum(net_jshj) OVER (PARTITION BY entity_id) AS entity_total,
+                sum(net_jshj) OVER (
+                    PARTITION BY entity_id ORDER BY net_jshj DESC, counterparty_id
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS cum_amt
+            FROM base
+        )
+        SELECT entity_id, amount_rank, net_jshj, entity_total, cum_amt
+        FROM ranked
+        ORDER BY entity_id, amount_rank ASC
+    """
+    rows = conn.execute(sql, [stat_year, *entity_ids]).fetchall()
+    grouped: dict[str, list[tuple[Any, ...]]] = {}
+    for r in rows or []:
+        eid = str(r[0] or "")
+        if not eid:
+            continue
+        rank = int(r[1] or 0)
+        net = float(r[2] or 0)
+        total = float(r[3] or 0)
+        cum = float(r[4] or 0)
+        ratio = 0.0 if total <= 0 else net / total
+        cum_ratio = 0.0 if total <= 0 else cum / total
+        grouped.setdefault(eid, []).append((rank, ratio, net, cum_ratio))
+    out: dict[str, dict[str, Any]] = {}
+    for eid, cr_rows in grouped.items():
+        cr = _cr_from_sup_rows(cr_rows)
+        out[eid] = {
+            **cr,
+            "counterparty_cnt": len(cr_rows),
+        }
+    return out
+
+
+def api_dws_counterparty_cr_matrix(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    tree: str | None = None,
+    scope_entity_id: str | None = None,
+    role: str = "supplier",
+    require_buyer: bool = False,
+    require_both_roles: bool = False,
+    min_invoice_count: int | None = None,
+    keyword: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """组织节点及其下级各分析主体的 CR 矩阵（按主体分别计算，非集团合并口径）。"""
+    try:
+        from src.local_api.analysis_subject_pool import resolve_analysis_org_scope_members
+
+        y = _safe_int_year(stat_year)
+        role_mode = (role or "supplier").strip().lower()
+        is_customer = role_mode in ("customer", "client", "销方", "客户")
+        scope = resolve_analysis_org_scope_members(
+            conn,
+            stat_year=str(y),
+            tree=tree,
+            scope_entity_id=scope_entity_id,
+            require_buyer=False if is_customer else require_buyer,
+            require_both_roles=True if is_customer else require_both_roles,
+            min_invoice_count=min_invoice_count,
+        )
+        if not scope.get("ok"):
+            return {**scope, "rows": [], "total": 0}
+        members = list(scope.get("members") or [])
+        kw = (keyword or "").strip().lower()
+        if kw:
+            members = [
+                m
+                for m in members
+                if kw in str(m.get("entity_name") or "").lower() or kw in str(m.get("entity_id") or "").lower()
+            ]
+        total = len(members)
+        lim = max(1, min(int(limit or 500), 2000))
+        off = max(0, int(offset or 0))
+        page_members = members[off : off + lim]
+        entity_ids = [str(m.get("entity_id") or "") for m in page_members if m.get("entity_id")]
+        cr_map = (
+            _cr_matrix_rows_from_trade_sum(conn, stat_year=y, entity_ids=entity_ids)
+            if is_customer
+            else _cr_matrix_rows_from_sup_conc(conn, stat_year=y, entity_ids=entity_ids)
+        )
+        out_rows = []
+        for m in page_members:
+            eid = str(m.get("entity_id") or "")
+            cr = cr_map.get(eid) or {
+                "cr1": None,
+                "cr3": None,
+                "cr10": None,
+                "total_net_jshj": 0.0,
+                "counterparty_cnt": 0,
+            }
+            out_rows.append(
+                {
+                    "entity_id": eid,
+                    "entity_name": str(m.get("entity_name") or eid),
+                    "org_level": int(m.get("org_level") or 0),
+                    "invoice_count": int(m.get("invoice_count") or 0),
+                    "cr1": cr.get("cr1"),
+                    "cr3": cr.get("cr3"),
+                    "cr10": cr.get("cr10"),
+                    "counterparty_cnt": int(cr.get("counterparty_cnt") or 0),
+                    "total_net_jshj": float(cr.get("total_net_jshj") or 0),
+                }
+            )
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "role": "customer" if is_customer else "supplier",
+            "tree": scope.get("tree"),
+            "scope_entity_id": scope.get("scope_entity_id"),
+            "scope_entity_name": scope.get("scope_entity_name"),
+            "scope_org_level": scope.get("scope_org_level"),
+            "subtree_org_count": scope.get("subtree_org_count"),
+            "member_count": scope.get("member_count"),
+            "rows": out_rows,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "hint": scope.get("hint"),
+            "filter_source": "dws_trade_sum" if is_customer else "dws_sup_conc",
+        }
+    except Exception as exc:
+        logger.exception("counterparty_cr_matrix")
+        return {"ok": False, "rows": [], "total": 0, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+
+
+def _churn_summary_batch_supplier(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    """批量计算各购方主体的新增/消失供应商汇总。"""
+    if not entity_ids:
+        return {}
+    prior_y = stat_year - 1
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    out: dict[str, dict[str, int]] = {eid: {"new_total": 0, "new_top10": 0, "disappeared_total": 0} for eid in entity_ids}
+    try:
+        for eid, new_total, new_top10 in conn.execute(
+            f"""
+            SELECT entity_id,
+                   count(*)::BIGINT,
+                   count(*) FILTER (WHERE amount_rank <= 10)::BIGINT
+            FROM dws_sup_conc
+            WHERE stat_year = ? AND entity_id IN ({placeholders}) AND is_new_supplier = TRUE
+            GROUP BY entity_id
+            """,
+            [stat_year, *entity_ids],
+        ).fetchall() or []:
+            key = str(eid or "")
+            if key in out:
+                out[key]["new_total"] = int(new_total or 0)
+                out[key]["new_top10"] = int(new_top10 or 0)
+    except Exception:
+        pass
+    if prior_y >= 1990:
+        try:
+            for eid, dis_total in conn.execute(
+                f"""
+                SELECT prior.entity_id, count(*)::BIGINT
+                FROM dws_sup_conc prior
+                WHERE prior.stat_year = ? AND prior.entity_id IN ({placeholders})
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dws_sup_conc cur
+                    WHERE cur.stat_year = ? AND cur.entity_id = prior.entity_id
+                      AND cur.supplier_id = prior.supplier_id
+                  )
+                GROUP BY prior.entity_id
+                """,
+                [prior_y, *entity_ids, stat_year],
+            ).fetchall() or []:
+                key = str(eid or "")
+                if key in out:
+                    out[key]["disappeared_total"] = int(dis_total or 0)
+        except Exception:
+            pass
+    return out
+
+
+def _churn_summary_batch_customer(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, int]]:
+    """批量计算各销方主体的新增/消失客户汇总。"""
+    if not entity_ids:
+        return {}
+    prior_y = stat_year - 1
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    out: dict[str, dict[str, int]] = {eid: {"new_total": 0, "new_top10": 0, "disappeared_total": 0} for eid in entity_ids}
+    try:
+        for eid, new_total, new_top10 in conn.execute(
+            f"""
+            WITH base AS (
+                SELECT
+                    entity_id,
+                    counterparty_id,
+                    sum(total_amount) AS net_jshj
+                FROM dws_trade_sum
+                WHERE stat_year = ? AND entity_id IN ({placeholders})
+                  AND counterparty_role = '客户'
+                  AND length(counterparty_id) > 0
+                GROUP BY entity_id, counterparty_id
+            ),
+            prior AS (
+                SELECT DISTINCT entity_id, counterparty_id
+                FROM dws_trade_sum
+                WHERE stat_year < ? AND entity_id IN ({placeholders})
+                  AND counterparty_role = '客户'
+            ),
+            ranked AS (
+                SELECT
+                    b.entity_id,
+                    b.counterparty_id,
+                    NOT EXISTS (
+                        SELECT 1 FROM prior p
+                        WHERE p.entity_id = b.entity_id AND p.counterparty_id = b.counterparty_id
+                    ) AS is_new_customer,
+                    row_number() OVER (
+                        PARTITION BY b.entity_id ORDER BY b.net_jshj DESC, b.counterparty_id
+                    ) AS amount_rank
+                FROM base b
+            )
+            SELECT
+                entity_id,
+                count(*) FILTER (WHERE is_new_customer)::BIGINT,
+                count(*) FILTER (WHERE is_new_customer AND amount_rank <= 10)::BIGINT
+            FROM ranked
+            GROUP BY entity_id
+            """,
+            [stat_year, *entity_ids, stat_year, *entity_ids],
+        ).fetchall() or []:
+            key = str(eid or "")
+            if key in out:
+                out[key]["new_total"] = int(new_total or 0)
+                out[key]["new_top10"] = int(new_top10 or 0)
+    except Exception:
+        pass
+    if prior_y >= 1990:
+        try:
+            for eid, dis_total in conn.execute(
+                f"""
+                SELECT prior.entity_id, count(*)::BIGINT
+                FROM dws_trade_sum prior
+                WHERE prior.stat_year = ? AND prior.entity_id IN ({placeholders})
+                  AND prior.counterparty_role = '客户'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM dws_trade_sum cur
+                    WHERE cur.stat_year = ? AND cur.entity_id = prior.entity_id
+                      AND cur.counterparty_id = prior.counterparty_id
+                      AND cur.counterparty_role = '客户'
+                  )
+                GROUP BY prior.entity_id
+                """,
+                [prior_y, *entity_ids, stat_year],
+            ).fetchall() or []:
+                key = str(eid or "")
+                if key in out:
+                    out[key]["disappeared_total"] = int(dis_total or 0)
+        except Exception:
+            pass
+    return out
+
+
+def api_dws_counterparty_churn_matrix(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    tree: str | None = None,
+    scope_entity_id: str | None = None,
+    role: str = "supplier",
+    require_buyer: bool = False,
+    require_both_roles: bool = False,
+    min_invoice_count: int | None = None,
+    member_source: str | None = None,
+    excluded_entity_ids: str | None = None,
+    keyword: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """组织节点及其下级各分析主体的新增/消失对手汇总矩阵（按主体分别统计，非集团合并口径）。"""
+    try:
+        from src.local_api.analysis_subject_pool import (
+            _parse_excluded_entity_ids,
+            _parse_member_source,
+            resolve_analysis_org_scope_members,
+            resolve_org_subtree_scope_members,
+        )
+
+        y = _safe_int_year(stat_year)
+        prior_y = y - 1
+        role_mode = (role or "supplier").strip().lower()
+        is_customer = role_mode in ("customer", "client", "销方", "客户")
+        use_org_subtree = _parse_member_source(member_source) == "org_subtree"
+        excluded = _parse_excluded_entity_ids(excluded_entity_ids)
+        if use_org_subtree:
+            scope = resolve_org_subtree_scope_members(
+                conn,
+                stat_year=str(y),
+                tree=tree,
+                scope_entity_id=scope_entity_id,
+            )
+        else:
+            scope = resolve_analysis_org_scope_members(
+                conn,
+                stat_year=str(y),
+                tree=tree,
+                scope_entity_id=scope_entity_id,
+                require_buyer=False if is_customer else require_buyer,
+                require_both_roles=True if is_customer else require_both_roles,
+                min_invoice_count=min_invoice_count,
+            )
+        if not scope.get("ok"):
+            return {**scope, "rows": [], "total": 0, "prior_year": str(prior_y)}
+        members = list(scope.get("members") or [])
+        if excluded:
+            members = [m for m in members if str(m.get("entity_id") or "") not in excluded]
+        kw = (keyword or "").strip().lower()
+        if kw:
+            members = [
+                m
+                for m in members
+                if kw in str(m.get("entity_name") or "").lower() or kw in str(m.get("entity_id") or "").lower()
+            ]
+        total = len(members)
+        lim = max(1, min(int(limit or 500), 2000))
+        off = max(0, int(offset or 0))
+        page_members = members[off : off + lim]
+        entity_ids = [str(m.get("entity_id") or "") for m in page_members if m.get("entity_id")]
+        summary_map = (
+            _churn_summary_batch_customer(conn, stat_year=y, entity_ids=entity_ids)
+            if is_customer
+            else _churn_summary_batch_supplier(conn, stat_year=y, entity_ids=entity_ids)
+        )
+        out_rows = []
+        for m in page_members:
+            eid = str(m.get("entity_id") or "")
+            sm = summary_map.get(eid) or {"new_total": 0, "new_top10": 0, "disappeared_total": 0}
+            out_rows.append(
+                {
+                    "entity_id": eid,
+                    "entity_name": str(m.get("entity_name") or eid),
+                    "org_level": int(m.get("org_level") or 0),
+                    "invoice_count": int(m.get("invoice_count") or 0),
+                    "new_total": int(sm.get("new_total") or 0),
+                    "new_top10": int(sm.get("new_top10") or 0),
+                    "disappeared_total": int(sm.get("disappeared_total") or 0),
+                    "prior_year": str(prior_y),
+                }
+            )
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "prior_year": str(prior_y),
+            "role": "customer" if is_customer else "supplier",
+            "tree": scope.get("tree"),
+            "scope_entity_id": scope.get("scope_entity_id"),
+            "scope_entity_name": scope.get("scope_entity_name"),
+            "scope_org_level": scope.get("scope_org_level"),
+            "subtree_org_count": scope.get("subtree_org_count"),
+            "member_count": scope.get("member_count"),
+            "rows": out_rows,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "hint": scope.get("hint"),
+            "filter_source": "dws_trade_sum" if is_customer else "dws_sup_conc",
+        }
+    except Exception as exc:
+        logger.exception("counterparty_churn_matrix")
+        return {
+            "ok": False,
+            "rows": [],
+            "total": 0,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+
+
+def _top_summary_batch_supplier(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """批量计算各购方主体的 Top1 对手及汇总指标（基于 dws_sup_conc）。"""
+    if not entity_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    out: dict[str, dict[str, Any]] = {
+        eid: {
+            "top1_id": "",
+            "top1_name": "",
+            "top1_net_jshj": 0.0,
+            "top1_amount_ratio": None,
+            "top3_cumulative_ratio": None,
+            "counterparty_cnt": 0,
+            "total_net_jshj": 0.0,
+            "new_top10": 0,
+        }
+        for eid in entity_ids
+    }
+    try:
+        for row in conn.execute(
+            f"""
+            SELECT
+                entity_id,
+                max(CASE WHEN amount_rank = 1 THEN supplier_id END),
+                max(CASE WHEN amount_rank = 1 THEN supplier_name END),
+                max(CASE WHEN amount_rank = 1 THEN net_jshj END),
+                max(CASE WHEN amount_rank = 1 THEN amount_ratio END),
+                max(CASE WHEN amount_rank = 3 THEN cumulative_ratio END),
+                count(*)::BIGINT,
+                coalesce(sum(net_jshj), 0),
+                count(*) FILTER (WHERE is_new_supplier AND amount_rank <= 10)::BIGINT
+            FROM dws_sup_conc
+            WHERE stat_year = ? AND entity_id IN ({placeholders})
+            GROUP BY entity_id
+            """,
+            [stat_year, *entity_ids],
+        ).fetchall() or []:
+            eid = str(row[0] or "")
+            if eid not in out:
+                continue
+            out[eid] = {
+                "top1_id": str(row[1] or ""),
+                "top1_name": str(row[2] or row[1] or ""),
+                "top1_net_jshj": float(row[3] or 0),
+                "top1_amount_ratio": float(row[4]) if row[4] is not None else None,
+                "top3_cumulative_ratio": float(row[5]) if row[5] is not None else None,
+                "counterparty_cnt": int(row[6] or 0),
+                "total_net_jshj": float(row[7] or 0),
+                "new_top10": int(row[8] or 0),
+            }
+    except Exception:
+        pass
+    return out
+
+
+def _top_summary_batch_customer(
+    conn: Any,
+    *,
+    stat_year: int,
+    entity_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """批量计算各销方主体的 Top1 客户及汇总指标（基于 dws_trade_sum）。"""
+    if not entity_ids:
+        return {}
+    placeholders = ", ".join(["?"] * len(entity_ids))
+    out: dict[str, dict[str, Any]] = {
+        eid: {
+            "top1_id": "",
+            "top1_name": "",
+            "top1_net_jshj": 0.0,
+            "top1_amount_ratio": None,
+            "top3_cumulative_ratio": None,
+            "counterparty_cnt": 0,
+            "total_net_jshj": 0.0,
+            "new_top10": 0,
+        }
+        for eid in entity_ids
+    }
+    try:
+        for row in conn.execute(
+            f"""
+            WITH base AS (
+                -- 审计含义：销方主体下的客户交易汇总
+                SELECT
+                    entity_id,
+                    counterparty_id,
+                    max(counterparty_name) AS counterparty_name,
+                    sum(total_amount) AS net_jshj
+                FROM dws_trade_sum
+                WHERE stat_year = ? AND entity_id IN ({placeholders})
+                  AND counterparty_role = '客户'
+                  AND length(counterparty_id) > 0
+                GROUP BY entity_id, counterparty_id
+            ),
+            prior AS (
+                SELECT DISTINCT entity_id, counterparty_id
+                FROM dws_trade_sum
+                WHERE stat_year < ? AND entity_id IN ({placeholders})
+                  AND counterparty_role = '客户'
+            ),
+            ranked AS (
+                SELECT
+                    b.*,
+                    NOT EXISTS (
+                        SELECT 1 FROM prior p
+                        WHERE p.entity_id = b.entity_id AND p.counterparty_id = b.counterparty_id
+                    ) AS is_new_customer,
+                    sum(b.net_jshj) OVER (PARTITION BY b.entity_id) AS entity_total,
+                    row_number() OVER (
+                        PARTITION BY b.entity_id ORDER BY b.net_jshj DESC, b.counterparty_id
+                    ) AS amount_rank,
+                    sum(b.net_jshj) OVER (
+                        PARTITION BY b.entity_id ORDER BY b.net_jshj DESC, b.counterparty_id
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                    ) AS cum_amt
+                FROM base b
+            )
+            SELECT
+                entity_id,
+                max(CASE WHEN amount_rank = 1 THEN counterparty_id END),
+                max(CASE WHEN amount_rank = 1 THEN counterparty_name END),
+                max(CASE WHEN amount_rank = 1 THEN net_jshj END),
+                max(CASE WHEN amount_rank = 1 THEN
+                    CASE WHEN entity_total = 0 THEN 0 ELSE net_jshj / entity_total END
+                END),
+                max(CASE WHEN amount_rank = 3 THEN
+                    CASE WHEN entity_total = 0 THEN 0 ELSE cum_amt / entity_total END
+                END),
+                count(*)::BIGINT,
+                coalesce(sum(net_jshj), 0),
+                count(*) FILTER (WHERE is_new_customer AND amount_rank <= 10)::BIGINT
+            FROM ranked
+            GROUP BY entity_id
+            """,
+            [stat_year, *entity_ids, stat_year, *entity_ids],
+        ).fetchall() or []:
+            eid = str(row[0] or "")
+            if eid not in out:
+                continue
+            out[eid] = {
+                "top1_id": str(row[1] or ""),
+                "top1_name": str(row[2] or row[1] or ""),
+                "top1_net_jshj": float(row[3] or 0),
+                "top1_amount_ratio": float(row[4]) if row[4] is not None else None,
+                "top3_cumulative_ratio": float(row[5]) if row[5] is not None else None,
+                "counterparty_cnt": int(row[6] or 0),
+                "total_net_jshj": float(row[7] or 0),
+                "new_top10": int(row[8] or 0),
+            }
+    except Exception:
+        pass
+    return out
+
+
+def api_dws_counterparty_top_matrix(
+    conn: Any,
+    *,
+    stat_year: str | None,
+    tree: str | None = None,
+    scope_entity_id: str | None = None,
+    role: str = "supplier",
+    require_buyer: bool = False,
+    require_both_roles: bool = False,
+    min_invoice_count: int | None = None,
+    keyword: str | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """组织节点及其下级各分析主体的 Top 对手汇总矩阵（按主体分别统计，非集团合并口径）。"""
+    try:
+        from src.local_api.analysis_subject_pool import resolve_analysis_org_scope_members
+
+        y = _safe_int_year(stat_year)
+        role_mode = (role or "supplier").strip().lower()
+        is_customer = role_mode in ("customer", "client", "销方", "客户")
+        scope = resolve_analysis_org_scope_members(
+            conn,
+            stat_year=str(y),
+            tree=tree,
+            scope_entity_id=scope_entity_id,
+            require_buyer=False if is_customer else require_buyer,
+            require_both_roles=True if is_customer else require_both_roles,
+            min_invoice_count=min_invoice_count,
+        )
+        if not scope.get("ok"):
+            return {**scope, "rows": [], "total": 0}
+        members = list(scope.get("members") or [])
+        kw = (keyword or "").strip().lower()
+        if kw:
+            members = [
+                m
+                for m in members
+                if kw in str(m.get("entity_name") or "").lower() or kw in str(m.get("entity_id") or "").lower()
+            ]
+        total = len(members)
+        lim = max(1, min(int(limit or 500), 2000))
+        off = max(0, int(offset or 0))
+        page_members = members[off : off + lim]
+        entity_ids = [str(m.get("entity_id") or "") for m in page_members if m.get("entity_id")]
+        summary_map = (
+            _top_summary_batch_customer(conn, stat_year=y, entity_ids=entity_ids)
+            if is_customer
+            else _top_summary_batch_supplier(conn, stat_year=y, entity_ids=entity_ids)
+        )
+        out_rows = []
+        for m in page_members:
+            eid = str(m.get("entity_id") or "")
+            sm = summary_map.get(eid) or {
+                "top1_id": "",
+                "top1_name": "",
+                "top1_net_jshj": 0.0,
+                "top1_amount_ratio": None,
+                "top3_cumulative_ratio": None,
+                "counterparty_cnt": 0,
+                "total_net_jshj": 0.0,
+                "new_top10": 0,
+            }
+            out_rows.append(
+                {
+                    "entity_id": eid,
+                    "entity_name": str(m.get("entity_name") or eid),
+                    "org_level": int(m.get("org_level") or 0),
+                    "invoice_count": int(m.get("invoice_count") or 0),
+                    "top1_id": str(sm.get("top1_id") or ""),
+                    "top1_name": str(sm.get("top1_name") or ""),
+                    "top1_net_jshj": float(sm.get("top1_net_jshj") or 0),
+                    "top1_amount_ratio": sm.get("top1_amount_ratio"),
+                    "top3_cumulative_ratio": sm.get("top3_cumulative_ratio"),
+                    "counterparty_cnt": int(sm.get("counterparty_cnt") or 0),
+                    "total_net_jshj": float(sm.get("total_net_jshj") or 0),
+                    "new_top10": int(sm.get("new_top10") or 0),
+                }
+            )
+        return {
+            "ok": True,
+            "stat_year": str(y),
+            "role": "customer" if is_customer else "supplier",
+            "tree": scope.get("tree"),
+            "scope_entity_id": scope.get("scope_entity_id"),
+            "scope_entity_name": scope.get("scope_entity_name"),
+            "scope_org_level": scope.get("scope_org_level"),
+            "subtree_org_count": scope.get("subtree_org_count"),
+            "member_count": scope.get("member_count"),
+            "rows": out_rows,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "hint": scope.get("hint"),
+            "filter_source": "dws_trade_sum" if is_customer else "dws_sup_conc",
+        }
+    except Exception as exc:
+        logger.exception("counterparty_top_matrix")
+        return {
+            "ok": False,
+            "rows": [],
+            "total": 0,
+            "error": {"message": str(exc), "exception_type": type(exc).__name__},
+        }
+

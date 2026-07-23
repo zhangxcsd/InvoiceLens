@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { LicenseGateBanner } from '../components/LicenseGateBanner'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
@@ -13,59 +13,117 @@ import {
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
 import {
-  navigateToFlagsList,
-  navigateToReportConfig,
   readFlagsTrackTab,
   readNavQueryParams,
   writeNavQueryParams,
 } from '../utils/navHelpers'
+import { readPanelTargetFromUrl } from '../utils/panelNavQuery'
 import { FlagActionButtons } from './FlagActionButtons'
 import { reportChaptersForRule } from './flagActionHelpers'
+import { handleNavAnalysisAction } from './flagAnalysisNavigate'
 import { downloadAuditFlagsCsv } from './flagsExport'
-import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
+import { FlagAnalysisShell } from './FlagAnalysisShell'
+import { type AnalysisShellTier, type FlagActionTarget } from './flagActionTarget'
+import { readFlagsTrackUiSnapshot, writeFlagsTrackUiSnapshot } from './flagsTrackUiState'
+import { resolveFlagDetailTarget } from './flagDetailHelpers'
+import { useFlagAnalysisShell } from './useFlagAnalysisShell'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { AUDIT_RISK_COL_CLASS, AuditRiskLevelBadge, TableCellTruncate } from './auditRiskBadge'
 import { useLicense } from '../settings/useLicense'
 import { WriteGateButton } from '../users/useWriteGate'
 type TrackTab = 'pending' | 'confirmed' | 'all'
 type RiskTab = 'all' | string
 
-type Props = { onNav?: (key: NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
 
-function riskBadgeClass(level: string): string {
-  return auditRiskLevelBadgeClass(level)
-}
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
 
 function trackTabToStatus(tab: TrackTab): 'pending' | 'confirmed' | 'all' {
   return tab
 }
 
-export function FlagsTrackPage({ onNav }: Props) {
+function snapshotToShellStack(
+  items: Array<{ nav: string; params: Record<string, string>; title: string; tier: string }>,
+): FlagActionTarget[] {
+  return items
+    .filter((item) => item.nav)
+    .map((item) => ({
+      nav: item.nav as NavKey,
+      params: item.params,
+      title: item.title,
+      tier: item.tier as AnalysisShellTier,
+    }))
+}
+
+export function FlagsTrackPage({ onNav, embedMode }: Props) {
   const ui = t.auditTrackUi
   const license = useLicense()
   const initialQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useMemo(() => readFlagsTrackUiSnapshot(), [])
+  const panelFromUrl = useMemo(() => readPanelTargetFromUrl(), [])
+  const scrollRestored = useRef(false)
   const pagUi = t.dimDataTableUi
   const riskLevelDict = useDimDictDomain('audit_risk_level')
   const [statYears, setStatYears] = useState<string[]>([])
   const [rules, setRules] = useState<{ rule_id: string; name: string; enabled: boolean }[]>([])
-  const [statYear, setStatYear] = useState(() => initialQuery.stat_year ?? String(new Date().getFullYear()))
+  const [statYear, setStatYear] = useState(
+    () => savedUi?.statYear ?? initialQuery.stat_year ?? String(new Date().getFullYear()),
+  )
   const [metaHint, setMetaHint] = useState<string | null>(null)
-  const [trackTab, setTrackTab] = useState<TrackTab>(() => readFlagsTrackTab())
-  const [riskTab, setRiskTab] = useState<RiskTab>('all')
-  const [ruleFilter, setRuleFilter] = useState(initialQuery.rule_id ?? 'all')
-  const [keyword, setKeyword] = useState(initialQuery.entity_id ?? '')
+  const [trackTab, setTrackTab] = useState<TrackTab>(() => {
+    const tab = savedUi?.trackTab ?? readFlagsTrackTab()
+    return tab === 'pending' || tab === 'confirmed' || tab === 'all' ? tab : 'pending'
+  })
+  const [riskTab, setRiskTab] = useState<RiskTab>(() => savedUi?.riskTab ?? 'all')
+  const [ruleFilter, setRuleFilter] = useState(() => savedUi?.ruleFilter ?? initialQuery.rule_id ?? 'all')
+  const [keyword, setKeyword] = useState(() => savedUi?.keyword ?? initialQuery.entity_id ?? '')
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [rows, setRows] = useState<AuditFlagRow[]>([])
   const [total, setTotal] = useState(0)
   const [summary, setSummary] = useState({ total: 0, pending: 0, confirmed: 0, high: 0 })
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [page, setPage] = useState(() => savedUi?.page ?? 1)
+  const [pageSize, setPageSize] = useState(() => savedUi?.pageSize ?? 50)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [noteDraft, setNoteDraft] = useState('')
   const [actionBusy, setActionBusy] = useState(false)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
+
+  const onHostReturn = useCallback((params: Record<string, string>) => {
+    if (params.stat_year) setStatYear(params.stat_year)
+    if (params.rule_id) setRuleFilter(params.rule_id)
+    if (params.entity_id) setKeyword(params.entity_id)
+    const tab = params.track_tab
+    if (tab === 'pending' || tab === 'confirmed' || tab === 'all') setTrackTab(tab)
+  }, [])
+
+  const { shellStack, analysisHandlers, shellProps, closeShell } = useFlagAnalysisShell({
+    host: 'flags_track',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: t.auditFlagUi.analysisShell.breadcrumbTrack,
+    getInitialStack: () => {
+      if (panelFromUrl) return [panelFromUrl]
+      if (savedUi?.shellStack?.length) return snapshotToShellStack(savedUi.shellStack)
+      return []
+    },
+    onHostReturn,
+  })
+
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, analysisHandlers, shellProps, closeShell],
+  )
 
   const effectiveYear = useMemo(() => {
     const y = statYear.trim()
@@ -82,6 +140,43 @@ export function FlagsTrackPage({ onNav }: Props) {
       entity_id: keyword.trim() || undefined,
     })
   }, [effectiveYear, trackTab, ruleFilter, keyword])
+
+  useEffect(() => {
+    if (embedMode) return
+    writeFlagsTrackUiSnapshot({
+      statYear: effectiveYear,
+      trackTab,
+      riskTab,
+      ruleFilter,
+      keyword,
+      page,
+      pageSize,
+      scrollY: window.scrollY,
+      shellStack: shellStack.map((item) => ({
+        nav: item.nav,
+        params: item.params,
+        title: item.title,
+        tier: item.tier,
+      })),
+    })
+  }, [
+    embedMode,
+    effectiveYear,
+    trackTab,
+    riskTab,
+    ruleFilter,
+    keyword,
+    page,
+    pageSize,
+    shellStack,
+  ])
+
+  useEffect(() => {
+    if (embedMode || scrollRestored.current || !savedUi?.scrollY) return
+    if (loading) return
+    scrollRestored.current = true
+    requestAnimationFrame(() => window.scrollTo(0, savedUi.scrollY))
+  }, [embedMode, loading, savedUi?.scrollY])
 
   const loadMeta = useCallback(async (signal?: AbortSignal) => {
     const res = await fetchAuditMeta(signal)
@@ -269,20 +364,29 @@ export function FlagsTrackPage({ onNav }: Props) {
     { id: 'all', label: ui.tabAll },
   ]
 
+  const openFlagDetail = useCallback(
+    (row: AuditFlagRow) => {
+      if (embedMode || !analysisHandlers) return
+      analysisHandlers.openShell(resolveFlagDetailTarget(row, effectiveYear))
+    },
+    [embedMode, analysisHandlers, effectiveYear],
+  )
+
   const renderRowActions = (row: AuditFlagRow) => (
     <FlagActionButtons
       row={row}
       statYear={effectiveYear}
       onNav={onNav}
+      analysisHandlers={embedMode ? null : analysisHandlers}
       showReport={false}
       extraBefore={
         <>
           <button
             type="button"
             className="text-il-meta text-accent hover:underline"
-            onClick={() => setExpandedId((id) => (id === row.flag_id ? null : row.flag_id))}
+            onClick={() => openFlagDetail(row)}
           >
-            {expandedId === row.flag_id ? ui.collapseBtn : ui.expandBtn}
+            {ui.expandBtn}
           </button>
           {row.is_confirmed ? (
             <WriteGateButton
@@ -303,10 +407,10 @@ export function FlagsTrackPage({ onNav }: Props) {
               type="button"
               className="text-il-meta text-accent hover:underline"
               onClick={() =>
-                navigateToReportConfig(onNav, {
-                  statYear: effectiveYear,
-                  entityId: row.entity_id ?? undefined,
-                  chapters: reportChaptersForRule(row.rule_id),
+                goAnalysis('report_config', {
+                  stat_year: effectiveYear,
+                  entity_id: row.entity_id ?? undefined,
+                  chapters: reportChaptersForRule(row.rule_id).join(','),
                 })
               }
             >
@@ -316,10 +420,10 @@ export function FlagsTrackPage({ onNav }: Props) {
               type="button"
               className="text-il-meta text-accent hover:underline"
               onClick={() =>
-                navigateToFlagsList(onNav, {
-                  statYear: effectiveYear,
-                  ruleId: row.rule_id,
-                  entityId: row.entity_id ?? undefined,
+                goAnalysis('flags_list', {
+                  stat_year: effectiveYear,
+                  rule_id: row.rule_id,
+                  entity_id: row.entity_id ?? undefined,
                 })
               }
             >
@@ -333,8 +437,9 @@ export function FlagsTrackPage({ onNav }: Props) {
   )
 
   return (
+    <>
     <div className="space-y-4">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} />
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} /> : null}
       <LicenseGateBanner hint={license.trialHint} />
 
       {metaHint ? (
@@ -401,9 +506,9 @@ export function FlagsTrackPage({ onNav }: Props) {
               type="button"
               className="mt-3 text-il-meta text-accent hover:underline"
               onClick={() =>
-                navigateToReportConfig(onNav, {
-                  statYear: effectiveYear,
-                  chapters: ['flags_track', 'audit_flags', 'related'],
+                goAnalysis('report_config', {
+                  stat_year: effectiveYear,
+                  chapters: 'flags_track,audit_flags,related',
                 })
               }
             >
@@ -529,11 +634,11 @@ export function FlagsTrackPage({ onNav }: Props) {
                         />
                       </th>
                     ) : null}
-                    <th className="py-2 pr-3">{ui.colFlagId}</th>
+                    <th className="max-w-[120px] py-2 pr-3">{ui.colFlagId}</th>
                     <th className="py-2 pr-3">{ui.colRule}</th>
-                    <th className="py-2 pr-3">{ui.colRisk}</th>
-                    <th className="py-2 pr-3">{ui.colType}</th>
-                    <th className="py-2 pr-3">{ui.colEntity}</th>
+                    <th className={`py-2 pr-3 ${AUDIT_RISK_COL_CLASS}`}>{ui.colRisk}</th>
+                    <th className="shrink-0 whitespace-nowrap py-2 pr-3">{ui.colType}</th>
+                    <th className="max-w-[160px] py-2 pr-3">{ui.colEntity}</th>
                     <th className="py-2 pr-3">{ui.colAmount}</th>
                     <th className="py-2 pr-3">{ui.colTrackStatus}</th>
                     <th className="py-2">{ui.colAction}</th>
@@ -541,8 +646,7 @@ export function FlagsTrackPage({ onNav }: Props) {
                 </thead>
                 <tbody>
                   {rows.map((row) => (
-                    <Fragment key={row.flag_id}>
-                      <tr className="border-b border-border-light/70 hover:bg-bg-2/40">
+                      <tr key={row.flag_id} className="border-b border-border-light/70 hover:bg-bg-2/40">
                         {trackTab === 'pending' || trackTab === 'confirmed' ? (
                           <td className="py-2 pr-2">
                             <input
@@ -553,15 +657,17 @@ export function FlagsTrackPage({ onNav }: Props) {
                             />
                           </td>
                         ) : null}
-                        <td className="py-2 pr-3 font-mono text-il-soon text-text-2">{row.flag_id}</td>
-                        <td className="py-2 pr-3 font-mono text-il-soon text-text-2">{row.rule_id}</td>
                         <td className="py-2 pr-3">
-                          <span className={`rounded px-1.5 py-0.5 text-il-soon ${riskBadgeClass(row.risk_level)}`}>
-                            {riskLevelDict.getLabel(row.risk_level)}
-                          </span>
+                          <TableCellTruncate text={row.flag_id} className="font-mono text-il-soon text-text-2" maxWidth="max-w-[120px]" />
                         </td>
-                        <td className="py-2 pr-3 text-text-2">{row.flag_type}</td>
-                        <td className="py-2 pr-3 text-text-2">{row.entity_name ?? row.entity_id ?? '—'}</td>
+                        <td className="py-2 pr-3 font-mono text-il-soon text-text-2">{row.rule_id}</td>
+                        <td className={`py-2 pr-3 ${AUDIT_RISK_COL_CLASS}`}>
+                          <AuditRiskLevelBadge level={row.risk_level} label={riskLevelDict.getLabel(row.risk_level)} />
+                        </td>
+                        <td className="whitespace-nowrap py-2 pr-3 text-text-2">{row.flag_type}</td>
+                        <td className="py-2 pr-3 text-text-2">
+                          <TableCellTruncate text={row.entity_name ?? row.entity_id} />
+                        </td>
                         <td className="py-2 pr-3 tabular-nums text-text-2">
                           {row.amount != null ? row.amount.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) : '—'}
                         </td>
@@ -574,30 +680,6 @@ export function FlagsTrackPage({ onNav }: Props) {
                         </td>
                         <td className="py-2">{renderRowActions(row)}</td>
                       </tr>
-                      {expandedId === row.flag_id ? (
-                        <tr className="border-b border-border-light bg-bg-2/30">
-                          <td
-                            colSpan={trackTab === 'pending' || trackTab === 'confirmed' ? 9 : 8}
-                            className="px-3 py-3 text-il-meta text-text-2"
-                          >
-                            <p>
-                              <span className="font-medium text-text">{ui.descLabel}：</span>
-                              {row.description || '—'}
-                            </p>
-                            <p className="mt-1">
-                              <span className="font-medium text-text">{ui.suggestionLabel}：</span>
-                              {row.suggestion || '—'}
-                            </p>
-                            {row.confirm_note ? (
-                              <p className="mt-1">
-                                <span className="font-medium text-text">{ui.confirmNoteLabel}：</span>
-                                {row.confirm_note}
-                              </p>
-                            ) : null}
-                          </td>
-                        </tr>
-                      ) : null}
-                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -614,5 +696,7 @@ export function FlagsTrackPage({ onNav }: Props) {
         )}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

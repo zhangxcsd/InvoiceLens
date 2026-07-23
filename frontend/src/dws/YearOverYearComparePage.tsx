@@ -1,20 +1,57 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import type { DwsYearOverYearCompare } from '../config/localApi'
 import { fetchDwsYearOverYearCompare } from '../config/dwsDplusApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToEntityProfile } from '../utils/navHelpers'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function YearOverYearComparePage({ onNav }: { onNav?: (key: NavKey) => void }) {
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
+
+export function YearOverYearComparePage({ onNav, embedMode }: Props) {
   const ui = t.yearOverYearUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBuyer: true, initFromUrl: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('year_over_year_compare', embedMode)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBuyer: true,
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
   const [data, setData] = useState<DwsYearOverYearCompare | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { goAnalysis, shellProps } = useDwsPageAnalysisShell({
+    host: 'year_over_year_compare',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+    },
+  })
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -52,76 +89,81 @@ export function YearOverYearComparePage({ onNav }: { onNav?: (key: NavKey) => vo
   const priorYear = data?.prior_year ?? String(Number(f.effectiveYear) - 1)
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
-      {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
+    <>
+      <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+        {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
+        {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
-      <Card title={ui.filterTitle}>
-        <DwsFilterBar
-          effectiveYear={f.effectiveYear}
-          yearOptions={f.yearOptions}
-          onYearChange={f.setStatYear}
-          entityId={f.entityId}
-          onEntityChange={f.setEntityId}
-          entityOptions={f.entityOptions}
-          requireEntity
-        />
-        {onNav && f.entityId.trim() ? (
-          <button
-            type="button"
-            className="mt-2 text-il-meta text-accent hover:underline"
-            onClick={() => navigateToEntityProfile(onNav, { statYear: f.effectiveYear, entityId: f.entityId.trim() })}
-          >
-            {ui.linkEntityProfile}
-          </button>
+        <Card title={ui.filterTitle}>
+          <DwsFilterBar
+            effectiveYear={f.effectiveYear}
+            yearOptions={f.yearOptions}
+            onYearChange={f.setStatYear}
+            entityId={f.entityId}
+            onEntityChange={f.setEntityId}
+            entityOptions={f.entityOptions}
+            requireEntity
+          />
+          {onNav && f.entityId.trim() ? (
+            <button
+              type="button"
+              className="mt-2 text-il-meta text-accent hover:underline"
+              onClick={() =>
+                goAnalysis('entity_profile', { statYear: f.effectiveYear, entityId: f.entityId.trim() })
+              }
+            >
+              {ui.linkEntityProfile}
+            </button>
+          ) : null}
+        </Card>
+
+        {!f.entityId.trim() ? (
+          <p className="text-il-meta text-text-3">{ui.pickEntityHint}</p>
+        ) : loading ? (
+          <p className="text-il-meta text-text-3">{ui.loading}</p>
+        ) : data ? (
+          <>
+            <Card title={ui.churnTitle}>
+              <p className="text-il-page-desc text-text-2">
+                {ui.churnHint
+                  .replace('{new}', String(data.churn_summary?.new_total ?? 0))
+                  .replace('{dis}', String(data.churn_summary?.disappeared_total ?? 0))
+                  .replace('{prior}', priorYear)
+                  .replace('{current}', data.stat_year)}
+              </p>
+            </Card>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <Card title={ui.taxBucketTitle.replace('{year}', data.stat_year)}>
+                <CompareBucketList rows={data.tax_buckets?.current ?? []} />
+              </Card>
+              <Card title={ui.taxBucketTitle.replace('{year}', priorYear)}>
+                <CompareBucketList rows={data.tax_buckets?.prior ?? []} />
+              </Card>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <Card title={ui.supplierTitle.replace('{year}', data.stat_year)}>
+                <CompareNamedAmount rows={data.top_suppliers?.current ?? []} nameKey="supplier_name" amtKey="net_jshj" />
+              </Card>
+              <Card title={ui.supplierTitle.replace('{year}', priorYear)}>
+                <CompareNamedAmount rows={data.top_suppliers?.prior ?? []} nameKey="supplier_name" amtKey="net_jshj" />
+              </Card>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-2">
+              <Card title={ui.customerTitle.replace('{year}', data.stat_year)}>
+                <CompareNamedAmount rows={data.top_customers?.current ?? []} />
+              </Card>
+              <Card title={ui.customerTitle.replace('{year}', priorYear)}>
+                <CompareNamedAmount rows={data.top_customers?.prior ?? []} />
+              </Card>
+            </div>
+          </>
         ) : null}
-      </Card>
-
-      {!f.entityId.trim() ? (
-        <p className="text-il-meta text-text-3">{ui.pickEntityHint}</p>
-      ) : loading ? (
-        <p className="text-il-meta text-text-3">{ui.loading}</p>
-      ) : data ? (
-        <>
-          <Card title={ui.churnTitle}>
-            <p className="text-il-page-desc text-text-2">
-              {ui.churnHint
-                .replace('{new}', String(data.churn_summary?.new_total ?? 0))
-                .replace('{dis}', String(data.churn_summary?.disappeared_total ?? 0))
-                .replace('{prior}', priorYear)
-                .replace('{current}', data.stat_year)}
-            </p>
-          </Card>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <Card title={ui.taxBucketTitle.replace('{year}', data.stat_year)}>
-              <CompareBucketList rows={data.tax_buckets?.current ?? []} />
-            </Card>
-            <Card title={ui.taxBucketTitle.replace('{year}', priorYear)}>
-              <CompareBucketList rows={data.tax_buckets?.prior ?? []} />
-            </Card>
-          </div>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <Card title={ui.supplierTitle.replace('{year}', data.stat_year)}>
-              <CompareNamedAmount rows={data.top_suppliers?.current ?? []} nameKey="supplier_name" amtKey="net_jshj" />
-            </Card>
-            <Card title={ui.supplierTitle.replace('{year}', priorYear)}>
-              <CompareNamedAmount rows={data.top_suppliers?.prior ?? []} nameKey="supplier_name" amtKey="net_jshj" />
-            </Card>
-          </div>
-
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <Card title={ui.customerTitle.replace('{year}', data.stat_year)}>
-              <CompareNamedAmount rows={data.top_customers?.current ?? []} />
-            </Card>
-            <Card title={ui.customerTitle.replace('{year}', priorYear)}>
-              <CompareNamedAmount rows={data.top_customers?.prior ?? []} />
-            </Card>
-          </div>
-        </>
-      ) : null}
-    </div>
+      </div>
+      {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }
 

@@ -1,4 +1,5 @@
 import type { NavKey } from '../types'
+import { getEmbedNavQuery } from '../utils/embedNavQuery'
 
 export type FinanceNavKey = 'finance_reconcile' | 'finance_diff'
 
@@ -10,6 +11,19 @@ export type FinanceFilterParams = {
 }
 
 export function readFinanceFilterParams(): FinanceFilterParams {
+  const embed = getEmbedNavQuery()
+  if (embed) {
+    return {
+      batchId: (embed.batch_id ?? '').trim() || undefined,
+      statYear: (embed.stat_year ?? '').trim() || undefined,
+      entityId: (embed.entity_id ?? '').trim() || undefined,
+      diffType: (embed.diff_type ?? '').trim() || undefined,
+    }
+  }
+  return readFinanceFilterParamsFromUrl()
+}
+
+function readFinanceFilterParamsFromUrl(): FinanceFilterParams {
   try {
     const sp = new URL(window.location.href).searchParams
     return {

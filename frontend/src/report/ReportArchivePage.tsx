@@ -9,7 +9,8 @@ import {
   type ReportArchiveFile,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateWithQuery, readNavQueryParams } from '../utils/navHelpers'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { readNavQueryParams } from '../utils/navHelpers'
 import type { NavKey } from '../types'
 
 type Props = { onNav?: (key: NavKey) => void }
@@ -126,7 +127,12 @@ export function ReportArchivePage({ onNav }: Props) {
           <button
             type="button"
             className="text-primary hover:underline"
-            onClick={() => navigateWithQuery(onNav, 'report_config', { stat_year: yearFilter || undefined })}
+            onClick={() => {
+              if (!onNav) return
+              const params: Record<string, string> = {}
+              if (yearFilter.trim()) params.stat_year = yearFilter.trim()
+              handleNavAnalysisAction('report_config', params, onNav, null)
+            }}
           >
             {ui.goReportConfig}
           </button>

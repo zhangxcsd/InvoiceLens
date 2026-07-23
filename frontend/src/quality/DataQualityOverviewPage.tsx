@@ -1,10 +1,14 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Card } from '../components/Card'
 import { fetchDqDomainOverview, postSemanticQualitySyncFlags, type DqDomainOverview } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useFlagAnalysisShell } from '../dm/useFlagAnalysisShell'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 import { QualityBatchSelect } from './QualityBatchSelect'
-import { navigateToQualityPage, type QualityDomainKey } from './qualityNav'
+import { type QualityDomainKey } from './qualityNav'
 import { useQualityBatchFilter } from './useQualityBatchFilter'
 import { useDimDictDomain } from '../dim/useDimDict'
 
@@ -115,8 +119,38 @@ function DomainCard(props: {
   )
 }
 
-export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
+export function DataQualityOverviewPage(props: { onNav?: (k: NavKey) => void } & EmbedModeProps) {
+  const { onNav, embedMode } = props
   const { batchId, sessionId, setBatchId, batchOptions, batchesLoading } = useQualityBatchFilter()
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'import_quality_overview',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: q.overviewTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, embedMode ? null : analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, embedMode, analysisHandlers, shellProps, closeShell],
+  )
+  const qualityParams = useCallback(
+    (extra?: { domain?: QualityDomainKey }) => {
+      const out: Record<string, string> = {}
+      if (batchId) out.batch_id = batchId
+      if (sessionId) out.session_id = sessionId
+      if (extra?.domain) out.domain = extra.domain
+      return out
+    },
+    [batchId, sessionId],
+  )
   const sevDict = useDimDictDomain('quality_severity')
   const sevBlock = sevDict.getLabel('block') || q.severityBlock
   const sevWarn = sevDict.getLabel('warn') || q.severityWarn
@@ -175,9 +209,10 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
   const dup = ov.dup_counts
 
   const openDetail = (domain?: QualityDomainKey) =>
-    navigateToQualityPage(props.onNav, 'import_quality_detail', { batchId, domain })
+    goAnalysis('import_quality_detail', qualityParams({ domain }))
 
   return (
+    <>
     <div className="mx-auto max-w-[1180px] px-5 py-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -196,10 +231,10 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
             <button type="button" className="text-accent hover:underline" onClick={() => openDetail()}>
               {q.goDetail} →
             </button>
-            <button type="button" className="text-accent hover:underline" onClick={() => props.onNav('health_score')}>
+            <button type="button" className="text-accent hover:underline" onClick={() => goAnalysis('health_score', {})}>
               {q.linkHealthScore}
             </button>
-            <button type="button" className="text-accent hover:underline" onClick={() => props.onNav('flags_list')}>
+            <button type="button" className="text-accent hover:underline" onClick={() => goAnalysis('flags_list', {})}>
               {q.linkFlagsList}
             </button>
           </div>
@@ -215,7 +250,7 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
             <button
               type="button"
               className="rounded-sm border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
-              onClick={() => navigateToQualityPage(props.onNav, 'import_quality_trend', { batchId })}
+              onClick={() => goAnalysis('import_quality_trend', qualityParams())}
             >
               {q.goTrend}
             </button>
@@ -466,5 +501,7 @@ export function DataQualityOverviewPage(props: { onNav: (k: NavKey) => void }) {
         )}
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

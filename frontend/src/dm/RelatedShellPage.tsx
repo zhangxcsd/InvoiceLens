@@ -1,23 +1,46 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { DimTablePagination } from '../dim/DimTablePagination'
 import { fetchAuditRelatedShell, postAuditRun, type ShellCoRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList, navigateWithQuery } from '../utils/navHelpers'
+import { handleNavAnalysisAction } from './flagAnalysisNavigate'
+import { FlagAnalysisShell } from './FlagAnalysisShell'
+import { useFlagAnalysisShell } from './useFlagAnalysisShell'
 import { DwsFilterBar } from '../dws/DwsFilterBar'
 import { useDwsFilters } from '../dws/useDwsFilters'
 import type { NavKey } from '../types'
-import { auditRiskLevelBadgeClass } from '../dim/dimDictHelpers'
 import { useDimDictDomain } from '../dim/useDimDict'
+import { AUDIT_RISK_COL_CLASS, AuditRiskLevelBadge, TableCellTruncate } from './auditRiskBadge'
 
-type Props = { onNav?: (key: NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function RelatedShellPage({ onNav }: Props) {
+type Props = { onNav?: (key: NavKey) => void } & EmbedModeProps
+
+export function RelatedShellPage({ onNav, embedMode }: Props) {
   const ui = t.relatedShellUi
   const dash = t.dwsDashboardUi
   const pagUi = t.dimDataTableUi
   const riskLevelDict = useDimDictDomain('audit_risk_level')
+  const { analysisHandlers, closeShell, shellProps } = useFlagAnalysisShell({
+    host: 'related_shell',
+    enabled: Boolean(onNav) && !embedMode,
+    onNav,
+    breadcrumbRootLabel: ui.pageTitle,
+  })
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, analysisHandlers, {
+        closeShell: shellProps ? closeShell : undefined,
+      })
+    },
+    [onNav, analysisHandlers, shellProps, closeShell],
+  )
   const f = useDwsFilters(false, { entityPool: 'analysis', initFromUrl: true })
   const [keyword, setKeyword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -83,8 +106,9 @@ export function RelatedShellPage({ onNav }: Props) {
   }
 
   return (
+    <Fragment>
     <div className="space-y-4 px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" />
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} description={ui.pageDesc} noteTone="plain" /> : null}
       {hint ? <div className="rounded-sm border border-warn/30 bg-warn/5 px-3 py-2 text-il-meta text-text-2">{hint}</div> : null}
 
       <Card title={ui.filterTitle}>
@@ -124,14 +148,16 @@ export function RelatedShellPage({ onNav }: Props) {
               <button
                 type="button"
                 className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
-                onClick={() => navigateWithQuery(onNav, 'flags_rules', { stat_year: f.effectiveYear })}
+                onClick={() => goAnalysis('flags_rules', { stat_year: f.effectiveYear })}
               >
                 {ui.rulesLink}
               </button>
               <button
                 type="button"
                 className="h-9 rounded-sm border border-border-light px-3 text-il-meta text-accent hover:underline"
-                onClick={() => navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-SHELL' })}
+                onClick={() =>
+                  goAnalysis('flags_list', { stat_year: f.effectiveYear, rule_id: 'RULE-SHELL' })
+                }
               >
                 {ui.flagsLink}
               </button>
@@ -147,32 +173,32 @@ export function RelatedShellPage({ onNav }: Props) {
           <table className="w-full min-w-[960px] border-collapse text-il-meta">
             <thead>
               <tr className="border-b border-border-light text-left text-text-3">
-                <th className="py-2 pr-2">{ui.colMember}</th>
-                <th className="py-2 pr-2">{ui.colIntermediary}</th>
-                <th className="py-2 pr-2">{ui.colTarget}</th>
+                <th className="max-w-[160px] py-2 pr-2">{ui.colMember}</th>
+                <th className="max-w-[160px] py-2 pr-2">{ui.colIntermediary}</th>
+                <th className="max-w-[160px] py-2 pr-2">{ui.colTarget}</th>
                 <th className="py-2 pr-2 text-right">{ui.colAmtIn}</th>
                 <th className="py-2 pr-2 text-right">{ui.colAmtOut}</th>
                 <th className="py-2 pr-2 text-right">{ui.colRatio}</th>
-                <th className="py-2">{ui.colRisk}</th>
+                <th className={`py-2 ${AUDIT_RISK_COL_CLASS}`}>{ui.colRisk}</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row.shell_id} className="border-b border-border-light/70 text-text">
-                  <td className="py-2 pr-2">{row.group_member_name ?? row.group_member_tax}</td>
-                  <td className="py-2 pr-2">{row.intermediary_name ?? row.intermediary_tax}</td>
-                  <td className="py-2 pr-2">{row.final_target_name ?? row.final_target_tax ?? '—'}</td>
+                  <td className="py-2 pr-2">
+                    <TableCellTruncate text={row.group_member_name ?? row.group_member_tax} />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <TableCellTruncate text={row.intermediary_name ?? row.intermediary_tax} />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <TableCellTruncate text={row.final_target_name ?? row.final_target_tax} />
+                  </td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_in.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{row.amount_out.toLocaleString('zh-CN')}</td>
                   <td className="py-2 pr-2 text-right tabular-nums">{(row.passthrough_ratio * 100).toFixed(1)}%</td>
-                  <td className="py-2">
-                    {row.risk_level ? (
-                      <span className={`rounded px-1.5 py-0.5 ${auditRiskLevelBadgeClass(row.risk_level)}`}>
-                        {riskLevelDict.getLabel(row.risk_level)}
-                      </span>
-                    ) : (
-                      '—'
-                    )}
+                  <td className={`py-2 ${AUDIT_RISK_COL_CLASS}`}>
+                    <AuditRiskLevelBadge level={row.risk_level} label={riskLevelDict.getLabel(row.risk_level)} />
                   </td>
                 </tr>
               ))}
@@ -190,5 +216,7 @@ export function RelatedShellPage({ onNav }: Props) {
         />
       </Card>
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </Fragment>
   )
 }

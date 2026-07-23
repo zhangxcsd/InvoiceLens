@@ -3,16 +3,30 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { fetchDwsTaxRiskExposure, type DwsTaxRiskBreakdownRow } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList, navigateToRelatedGraph, navigateToReportConfig } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
+import { readNavQueryParams } from '../utils/navHelpers'
 
-type Props = { onNav?: (key: import('../types').NavKey) => void }
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function TaxRiskExposurePage({ onNav }: Props) {
+type Props = { onNav?: (key: import('../types').NavKey) => void } & EmbedModeProps
+
+export function TaxRiskExposurePage({ onNav, embedMode }: Props) {
   const ui = t.taxRiskExposureUi
   const dash = t.dwsDashboardUi
-  const f = useDwsFilters(true, { entityPool: 'analysis', requireBothRoles: true })
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('tax_risk_exposure', embedMode)
+  const f = useDwsFilters(true, {
+    entityPool: 'analysis',
+    requireBothRoles: true,
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+    initialMinInvoiceCount: savedUi?.minInvoiceCount ?? undefined,
+  })
   const [totalExposure, setTotalExposure] = useState(0)
   const [highRiskRatio, setHighRiskRatio] = useState(0)
   const [deviationExposure, setDeviationExposure] = useState(0)
@@ -22,6 +36,28 @@ export function TaxRiskExposurePage({ onNav }: Props) {
   const [breakdown, setBreakdown] = useState<DwsTaxRiskBreakdownRow[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { goAnalysis, shellProps } = useDwsPageAnalysisShell({
+    host: 'tax_risk_exposure',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+    },
+  })
 
   const effectiveN = f.minInvoiceCount ?? f.defaultMinInvoiceCount ?? 10
   const caliberHint = dash.analysisSubjectBothRolesCaliberHint.replace('{n}', String(effectiveN))
@@ -73,8 +109,9 @@ export function TaxRiskExposurePage({ onNav }: Props) {
   )
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {f.metaHint ? <p className="-mt-3 mb-2 text-il-meta text-amber-800">{f.metaHint}</p> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
@@ -98,9 +135,9 @@ export function TaxRiskExposurePage({ onNav }: Props) {
               type="button"
               className="text-accent hover:underline"
               onClick={() =>
-                navigateToRelatedGraph(onNav, {
-                  statYear: f.effectiveYear,
-                  entityId: f.entityId.trim(),
+                goAnalysis('related_graph', {
+                  stat_year: f.effectiveYear,
+                  entity_id: f.entityId.trim(),
                   source: 'tax_risk',
                 })
               }
@@ -111,10 +148,10 @@ export function TaxRiskExposurePage({ onNav }: Props) {
               type="button"
               className="text-accent hover:underline"
               onClick={() =>
-                navigateToReportConfig(onNav, {
-                  statYear: f.effectiveYear,
-                  entityId: f.entityId.trim(),
-                  chapters: ['tax_in_out_deviation', 'audit_flags', 'related'],
+                goAnalysis('report_config', {
+                  stat_year: f.effectiveYear,
+                  entity_id: f.entityId.trim(),
+                  chapters: 'tax_in_out_deviation,audit_flags,related',
                   title: ui.reportTitleHint,
                 })
               }
@@ -164,10 +201,10 @@ export function TaxRiskExposurePage({ onNav }: Props) {
                     type="button"
                     className="mt-1 text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToFlagsList(onNav, {
-                        statYear: f.effectiveYear,
-                        entityId: f.entityId.trim(),
-                        ruleId: 'RULE-05',
+                      goAnalysis('flags_list', {
+                        stat_year: f.effectiveYear,
+                        entity_id: f.entityId.trim(),
+                        rule_id: 'RULE-05',
                       })
                     }
                   >
@@ -183,10 +220,10 @@ export function TaxRiskExposurePage({ onNav }: Props) {
                     type="button"
                     className="mt-1 text-il-meta text-accent hover:underline"
                     onClick={() =>
-                      navigateToFlagsList(onNav, {
-                        statYear: f.effectiveYear,
-                        entityId: f.entityId.trim(),
-                        ruleId: 'RULE-08',
+                      goAnalysis('flags_list', {
+                        stat_year: f.effectiveYear,
+                        entity_id: f.entityId.trim(),
+                        rule_id: 'RULE-08',
                       })
                     }
                   >
@@ -220,10 +257,10 @@ export function TaxRiskExposurePage({ onNav }: Props) {
                         type="button"
                         className="shrink-0 text-il-meta text-accent hover:underline"
                         onClick={() =>
-                          navigateToFlagsList(onNav, {
-                            statYear: f.effectiveYear,
-                            entityId: f.entityId.trim(),
-                            ruleId: r.rule_id ?? undefined,
+                          goAnalysis('flags_list', {
+                            stat_year: f.effectiveYear,
+                            entity_id: f.entityId.trim(),
+                            rule_id: r.rule_id ?? undefined,
                           })
                         }
                       >
@@ -240,9 +277,9 @@ export function TaxRiskExposurePage({ onNav }: Props) {
                   type="button"
                   className="text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToFlagsList(onNav, {
-                      statYear: f.effectiveYear,
-                      entityId: f.entityId.trim(),
+                    goAnalysis('flags_list', {
+                      stat_year: f.effectiveYear,
+                      entity_id: f.entityId.trim(),
                     })
                   }
                 >
@@ -252,9 +289,9 @@ export function TaxRiskExposurePage({ onNav }: Props) {
                   type="button"
                   className="text-il-meta text-accent hover:underline"
                   onClick={() =>
-                    navigateToRelatedGraph(onNav, {
-                      statYear: f.effectiveYear,
-                      entityId: f.entityId.trim(),
+                    goAnalysis('related_graph', {
+                      stat_year: f.effectiveYear,
+                      entity_id: f.entityId.trim(),
                       source: 'tax_risk',
                     })
                   }
@@ -267,5 +304,7 @@ export function TaxRiskExposurePage({ onNav }: Props) {
         </>
       )}
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }

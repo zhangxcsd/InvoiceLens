@@ -3487,21 +3487,21 @@ function AppShell(props: {
               onNavigateToRebuild={() => navToDwdDimWithTask(props.onNav, SUBJECT_DIM_TASK.recompute)}
             />
           ) : props.nav === 'overview_summary' ? (
-            <OverviewSummaryPage />
+            <OverviewSummaryPage onNav={props.onNav} />
           ) : props.nav === 'overview_trend' ? (
-            <OverviewTrendPage />
+            <OverviewTrendPage onNav={props.onNav} />
           ) : props.nav === 'overview_tax' ? (
-            <OverviewTaxPage />
+            <OverviewTaxPage onNav={props.onNav} />
           ) : props.nav === 'tax_in_out_deviation' ? (
             <TaxInOutDeviationPage onNav={props.onNav} />
           ) : props.nav === 'tax_risk_exposure' ? (
             <TaxRiskExposurePage onNav={props.onNav} />
           ) : props.nav === 'supplier_cr' ? (
-            <SupplierCrPage />
+            <SupplierCrPage onNav={props.onNav} />
           ) : props.nav === 'supplier_top' ? (
             <SupplierTopPage onNav={props.onNav} />
           ) : props.nav === 'supplier_new' ? (
-            <SupplierNewPage />
+            <SupplierNewPage onNav={props.onNav} />
           ) : props.nav === 'flags_list' ? (
             <FlagsListPage onNav={props.onNav} />
           ) : props.nav === 'flags_rules' ? (
@@ -3509,7 +3509,7 @@ function AppShell(props: {
           ) : props.nav === 'flags_track' ? (
             <FlagsTrackPage onNav={props.onNav} />
           ) : props.nav === 'trade_relationships' ? (
-            <TradeRelationshipsPage />
+            <TradeRelationshipsPage onNav={props.onNav} />
           ) : props.nav === 'related_graph' ? (
             <RelatedGraphPage onNav={props.onNav} />
           ) : props.nav === 'related_pairs' ? (

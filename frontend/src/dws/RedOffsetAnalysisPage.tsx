@@ -1,21 +1,34 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import type { DwsRedOffsetRow } from '../config/localApi'
 import { fetchDwsRedOffsetList, fetchDwsRedOffsetOverview } from '../config/dwsDplusApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateToFlagsList, readNavQueryParams } from '../utils/navHelpers'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { DwsFilterBar } from './DwsFilterBar'
 import { InvoiceDetailDrillPanel } from './InvoiceDetailDrillPanel'
 import { formatDwsAmount, formatDwsPct, useDwsFilters } from './useDwsFilters'
+import { FlagAnalysisShell } from '../dm/FlagAnalysisShell'
+import { useDwsPageAnalysisShell } from './useDwsPageAnalysisShell'
+import { useDwsPageSavedUi } from './useDwsPageSavedUi'
 import type { NavKey } from '../types'
+import type { EmbedModeProps } from '../types/embedMode'
 
-export function RedOffsetAnalysisPage({ onNav }: { onNav?: (key: NavKey) => void }) {
+export function RedOffsetAnalysisPage({ onNav, embedMode }: { onNav?: (key: NavKey) => void } & EmbedModeProps) {
   const ui = t.redOffsetUi
   const drillUi = t.invoiceDetailDrillUi
-  const urlQuery = readNavQueryParams()
-  const f = useDwsFilters(false, { initFromUrl: true })
-  const [kind, setKind] = useState(urlQuery.fpzt === '红字' ? 'orphan' : 'all')
+  const urlQuery = useMemo(() => readNavQueryParams(), [])
+  const savedUi = useDwsPageSavedUi('red_offset_analysis', embedMode)
+  const f = useDwsFilters(false, {
+    initFromUrl: true,
+    initialStatYear: urlQuery.stat_year ?? savedUi?.statYear,
+    initialEntityId: urlQuery.entity_id ?? savedUi?.entityId,
+  })
+  const [kind, setKind] = useState(() => {
+    if (urlQuery.fpzt === '红字') return 'orphan'
+    const saved = savedUi?.extra?.kind
+    return saved === 'orphan' ? 'orphan' : 'all'
+  })
   const [kpis, setKpis] = useState<Record<string, number | null>>({})
   const [monthly, setMonthly] = useState<Array<{ stat_month: number; red_cnt: number; orphan_cnt: number }>>([])
   const [rows, setRows] = useState<DwsRedOffsetRow[]>([])
@@ -24,6 +37,29 @@ export function RedOffsetAnalysisPage({ onNav }: { onNav?: (key: NavKey) => void
   const [err, setErr] = useState<string | null>(null)
   const [drillOpen, setDrillOpen] = useState(false)
   const [drillSeller, setDrillSeller] = useState<string | null>(null)
+
+  const onHostReturn = useCallback(
+    (params: Record<string, string>) => {
+      if (params.stat_year) f.setStatYear(params.stat_year)
+      if (params.entity_id) f.setEntityId(params.entity_id)
+    },
+    [f],
+  )
+
+  const { goAnalysis, shellProps } = useDwsPageAnalysisShell({
+    host: 'red_offset_analysis',
+    onNav,
+    embedMode,
+    onHostReturn,
+    savedUi,
+    persistUi: {
+      statYear: f.effectiveYear,
+      entityId: f.entityId,
+      minInvoiceCount: f.minInvoiceCount,
+      loading,
+      extra: { kind },
+    },
+  })
 
   const entityId = f.entityId.trim() || urlQuery.entity_id?.trim() || ''
 
@@ -67,8 +103,9 @@ export function RedOffsetAnalysisPage({ onNav }: { onNav?: (key: NavKey) => void
   }, [load])
 
   return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" />
+    <>
+    <div className={embedMode ? 'w-full' : 'w-full px-5 py-6'}>
+      {!embedMode ? <PrototypePageHeader title={ui.pageTitle} note={ui.pageDesc} noteTone="plain" /> : null}
       {err ? <p className="mb-2 text-il-meta text-red-600">{err}</p> : null}
 
       <Card title={ui.filterTitle}>
@@ -100,7 +137,11 @@ export function RedOffsetAnalysisPage({ onNav }: { onNav?: (key: NavKey) => void
             type="button"
             className="mt-2 text-il-meta text-accent hover:underline"
             onClick={() =>
-              navigateToFlagsList(onNav, { statYear: f.effectiveYear, ruleId: 'RULE-03', entityId: entityId || undefined })
+              goAnalysis('flags_list', {
+                stat_year: f.effectiveYear,
+                rule_id: 'RULE-03',
+                entity_id: entityId || undefined,
+              })
             }
           >
             {ui.linkRule03}
@@ -203,5 +244,7 @@ export function RedOffsetAnalysisPage({ onNav }: { onNav?: (key: NavKey) => void
         }}
       />
     </div>
+    {shellProps && !embedMode ? <FlagAnalysisShell {...shellProps} /> : null}
+    </>
   )
 }
