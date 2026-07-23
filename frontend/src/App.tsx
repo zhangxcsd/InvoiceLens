@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from './components/Card'
 import { UploadZone, type PickedExcel } from './components/UploadZone'
 import { zhCN as t } from './copy/zh-CN'
-import { resolveOrgHierInitialMode } from './utils/navHelpers'
 import type { NavKey, User } from './types'
 import { sheetMappingOptionsFallback } from './config/sheetMappingOptions'
 import {
@@ -15,6 +14,7 @@ import {
   fetchAuditPendingCount,
   fetchAuditRelatedNavCount,
   fetchLicenseInfo,
+  LICENSE_UPDATED_EVENT,
   fetchAuthMe,
   getSessionToken,
   postAuthLogin,
@@ -85,9 +85,9 @@ import { Level1EnterpriseYearPage } from './dim/Level1EnterpriseYearPage'
 import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
 import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
+import { InvoiceToAuditedEnterprisePage } from './dim/InvoiceToAuditedEnterprisePage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
 import { DimOrgSysPage } from './dim/DimOrgSysPage'
-import { InvoiceToAuditedEnterprisePage } from './dim/InvoiceToAuditedEnterprisePage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
 import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
@@ -116,6 +116,7 @@ import {
   IconMiniCheck,
   IconMiniClock,
   IconMiniMap,
+  IconMiniSteps,
   IconNetwork,
   IconPlusSquare,
   IconReportDoc,
@@ -124,6 +125,7 @@ import {
   IconUser,
 } from './design/navIcons'
 import { canAccessNav, defaultNavForRole, isAdmin } from './users/rbacNav'
+import { resolveOrgHierInitialMode } from './utils/navHelpers'
 import { RbacProvider } from './users/rbacContext'
 
 function formatCheckProgressHint(done: number, total: number) {
@@ -322,14 +324,16 @@ function Sidebar(props: {
   const [relatedNavCount, setRelatedNavCount] = useState<number | null>(null)
   const [openParents, setOpenParents] = useState<Record<string, boolean>>({
     import: true,
+    factory: false,
     dim: false,
     tax_analysis: false,
     overview: false,
+    invoice_behavior: false,
     supplier: false,
     flags: false,
     related: false,
     finance: false,
-    compare: false,
+    subject_evaluation: false,
     report: false,
     users: false,
     settings: false,
@@ -343,6 +347,7 @@ function Sidebar(props: {
     audited: false,
     tax: false,
     dict: false,
+    compare: false,
   })
 
   useEffect(() => {
@@ -353,8 +358,26 @@ function Sidebar(props: {
 
   useEffect(() => {
     if (props.nav !== 'processing_derived_dim_tasks') return
-    setOpenParents((p) => ({ ...p, import: true }))
+    setOpenParents((p) => ({ ...p, factory: true }))
     setOpenChildren((c) => ({ ...c, processing: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'ods_to_dwd_center' &&
+      props.nav !== 'dwd_to_dim_center' &&
+      props.nav !== 'dwd_data_preview' &&
+      props.nav !== 'import_history'
+    )
+      return
+    setOpenParents((p) => ({ ...p, factory: true }))
+    if (
+      props.nav === 'ods_to_dwd_center' ||
+      props.nav === 'dwd_to_dim_center' ||
+      props.nav === 'dwd_data_preview'
+    ) {
+      setOpenChildren((c) => ({ ...c, processing: true }))
+    }
   }, [props.nav])
 
   useEffect(() => {
@@ -413,8 +436,29 @@ function Sidebar(props: {
   }, [props.nav])
 
   useEffect(() => {
-    if (props.nav !== 'tax_enterprise_structure' && props.nav !== 'tax_in_out_deviation' && props.nav !== 'tax_risk_exposure') return
+    if (
+      props.nav !== 'tax_enterprise_structure' &&
+      props.nav !== 'tax_in_out_deviation' &&
+      props.nav !== 'tax_risk_exposure' &&
+      props.nav !== 'goods_category'
+    )
+      return
     setOpenParents((p) => ({ ...p, tax_analysis: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'overview_summary' &&
+      props.nav !== 'overview_trend' &&
+      props.nav !== 'overview_tax'
+    )
+      return
+    setOpenParents((p) => ({ ...p, overview: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'red_offset_analysis' && props.nav !== 'invoice_timing') return
+    setOpenParents((p) => ({ ...p, invoice_behavior: true }))
   }, [props.nav])
 
   useEffect(() => {
@@ -466,10 +510,34 @@ function Sidebar(props: {
       props.nav !== 'supplier_cr' &&
       props.nav !== 'supplier_top' &&
       props.nav !== 'supplier_new' &&
-      props.nav !== 'trade_relationships'
+      props.nav !== 'trade_relationships' &&
+      props.nav !== 'counterparty_risk'
     )
       return
     setOpenParents((p) => ({ ...p, supplier: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'finance_reconcile' && props.nav !== 'finance_diff') return
+    setOpenParents((p) => ({ ...p, finance: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (props.nav !== 'health_score' && props.nav !== 'entity_profile') return
+    setOpenParents((p) => ({ ...p, subject_evaluation: true }))
+  }, [props.nav])
+
+  useEffect(() => {
+    if (
+      props.nav !== 'year_over_year_compare' &&
+      props.nav !== 'compare_rank' &&
+      props.nav !== 'compare_charts'
+    )
+      return
+    setOpenParents((p) => ({ ...p, subject_evaluation: true }))
+    if (props.nav === 'compare_rank' || props.nav === 'compare_charts') {
+      setOpenChildren((c) => ({ ...c, compare: true }))
+    }
   }, [props.nav])
 
   useEffect(() => {
@@ -479,7 +547,7 @@ function Sidebar(props: {
       props.nav !== 'import_quality_trend'
     )
       return
-    setOpenParents((p) => ({ ...p, import: true }))
+    setOpenParents((p) => ({ ...p, factory: true }))
     setOpenChildren((c) => ({ ...c, quality: true }))
   }, [props.nav])
 
@@ -491,6 +559,17 @@ function Sidebar(props: {
     setOpenChildren((p) => ({ ...p, [k]: !p[k] }))
   }
 
+  const sidebarLeafDot = <span className="block h-1 w-1 flex-shrink-0 rounded-full bg-text-3/50" />
+
+  const navParentPanel = (parentKey: string, body: React.ReactNode) => {
+    if (!openParents[parentKey] || collapsed) return null
+    return (
+      <div className="mx-1.5 mb-1 rounded-md border border-accent/10 bg-[#ebf2fa] py-0.5">
+        {body}
+      </div>
+    )
+  }
+
   const navParent = (k: string, label: string, icon: React.ReactNode, badge?: React.ReactNode) => {
     const open = !!openParents[k]
     return (
@@ -499,8 +578,8 @@ function Sidebar(props: {
           'flex items-center gap-2 px-3 py-[7px] text-il-sidebar-parent text-text-2',
           'cursor-pointer select-none overflow-hidden whitespace-nowrap',
           'border-l-2 border-l-transparent transition-[background,color] duration-100',
-          open ? 'font-medium text-text' : '',
-          'hover:bg-[#f5f7ff] hover:text-text',
+          open ? 'bg-[#e3edf9]/80 font-semibold text-text' : 'font-medium',
+          'hover:bg-[#eef4fc] hover:text-text',
           collapsed ? 'justify-center px-0' : '',
         ].join(' ')}
         onClick={() => toggleParent(k)}
@@ -528,10 +607,10 @@ function Sidebar(props: {
     return (
       <div
         className={[
-          'flex items-center gap-2 px-3 py-[7px] text-il-sidebar-parent text-text-2',
+          'flex items-center gap-2 px-3 py-[7px] text-il-sidebar-parent',
           'cursor-pointer select-none overflow-hidden whitespace-nowrap',
           'border-l-2 transition-[background,color,border-color] duration-100',
-          active ? 'border-l-accent bg-[#f0f7ff] font-medium text-text' : 'border-l-transparent',
+          active ? 'border-l-accent bg-[#f0f7ff] font-medium text-text' : 'border-l-transparent font-normal text-text-2',
           'hover:bg-[#f5f7ff] hover:text-text',
           collapsed ? 'justify-center px-0' : '',
         ].join(' ')}
@@ -561,6 +640,7 @@ function Sidebar(props: {
     if (!canAccessNav(props.user.role, navKey)) return null
     return navChild(slug, label, icon, {
       ...opts,
+      active: opts?.active ?? props.nav === navKey,
       onClick: () => props.onNav(navKey),
     })
   }
@@ -578,6 +658,7 @@ function Sidebar(props: {
     if (!canAccessNav(props.user.role, navKey)) return null
     return navChildDeep(slug, label, icon, {
       ...opts,
+      active: opts?.active ?? props.nav === navKey,
       onClick: () => props.onNav(navKey),
     })
   }
@@ -600,10 +681,12 @@ function Sidebar(props: {
     const soon = !!opts?.soon
     const onClick = opts?.onClick
     const active = !!opts?.active && !openable && !soon
+    const leafWeight = openable ? 'font-medium' : active ? 'font-medium' : 'font-normal'
     return (
       <div
         className={[
-          'relative flex items-center gap-1.5 px-3 py-[6px] pl-8 text-il-sidebar-child font-medium',
+          'relative flex items-center gap-1.5 px-3 py-[6px] pl-9 text-il-sidebar-child',
+          leafWeight,
           'cursor-pointer overflow-hidden whitespace-nowrap',
           'border-l-2 transition-[background,color,border-color] duration-100',
           active ? 'border-l-accent bg-[#EBF4FF] text-accent' : 'border-l-transparent text-text-2',
@@ -650,10 +733,12 @@ function Sidebar(props: {
     const soon = !!opts?.soon
     const onClick = opts?.onClick
     const active = !!opts?.active && !openable && !soon
+    const leafWeight = openable ? 'font-medium' : active ? 'font-medium' : 'font-normal'
     return (
       <div
         className={[
-          'relative flex cursor-pointer items-center gap-1.5 px-3 py-[6px] pl-[52px] text-il-sidebar-child font-medium',
+          'relative flex cursor-pointer items-center gap-1.5 px-3 py-[6px] pl-[52px] text-il-sidebar-child',
+          leafWeight,
           'overflow-hidden whitespace-nowrap border-l-2 transition-[background,color,border-color] duration-100',
           active ? 'border-l-accent bg-[#EBF4FF] text-accent' : 'border-l-transparent text-text-2',
           active ? '' : 'hover:bg-[#f5f7ff] hover:text-text',
@@ -680,6 +765,26 @@ function Sidebar(props: {
             {t.common.soon}
           </span>
         ) : null}
+      </div>
+    )
+  }
+
+  /** 被审企业组织内不可点击的分组小标题（与 tier: great 叶子同缩进） */
+  const navGroupLabel = (label: string, opts?: { first?: boolean }) => {
+    if (collapsed) return null
+    return (
+      <div
+        className={['relative select-none pointer-events-none', opts?.first ? '' : 'mt-1'].join(' ')}
+        aria-hidden
+      >
+        <span className="absolute bottom-0 left-[52px] top-0 w-px bg-border-light" />
+        {!opts?.first ? (
+          <div className="ml-[56px] mr-3 border-t border-border-light/90" aria-hidden />
+        ) : null}
+        <div className="flex items-center gap-1.5 pl-[56px] pr-3 pb-[1px] pt-[5px]">
+          <span className="h-[10px] w-[2px] flex-shrink-0 rounded-full bg-accent/35" aria-hidden />
+          <span className="text-[9px] font-semibold tracking-[.14em] text-text-3/65">{label}</span>
+        </div>
       </div>
     )
   }
@@ -777,72 +882,39 @@ function Sidebar(props: {
         </div>
 
         {navParent('import', t.sidebar.invoiceData, <IconUpload className="h-[15px] w-[15px]" />)}
-        <div className={openParents.import && !collapsed ? 'block' : 'hidden'}>
-          {navChild(
-            'mapping',
-            t.sidebar.fieldMapping,
-            <IconMiniMap className="h-[11px] w-[11px]" />,
-            { openable: true, open: !!openChildren.mapping },
-          )}
-          <div className={openChildren.mapping ? 'block' : 'hidden'}>
-            {navGrand('import_mapping_config', t.sidebar.mappingConfig, {
-              active: props.nav === 'import_mapping_config',
-            })}
-            {navGrand('import_mapping_templates', t.sidebar.mappingTemplates, {
-              active: props.nav === 'import_mapping_templates',
-            })}
-          </div>
-          {navChild(
-            'wizard',
-            t.sidebar.importWizard,
-            <IconPlusSquare className="h-[11px] w-[11px]" />,
-            { openable: true, open: !!openChildren.wizard },
-          )}
-          <div className={openChildren.wizard ? 'block' : 'hidden'}>
-            {navGrand('import_wizard_format_check', t.sidebar.formatCheck, {
-              active: props.nav === 'import_wizard_format_check',
-            })}
-            {navGrand('import_wizard_upload', t.sidebar.fileUpload, { active: props.nav === 'import_wizard_upload' })}
-            {navGrand('import_wizard_preview', t.sidebar.dataPreview, { active: props.nav === 'import_wizard_preview' })}
-          </div>
-          {navChild('processing', t.sidebar.processingCenter, <IconCompare className="h-[11px] w-[11px]" />, {
-            openable: true,
-            open: !!openChildren.processing,
-          })}
-          <div className={openChildren.processing ? 'block' : 'hidden'}>
-            {navGrand('ods_to_dwd_center', t.sidebar.odsToDwd, {
-              active: props.nav === 'ods_to_dwd_center',
-            })}
-            {navGrand('dwd_to_dim_center', t.sidebar.dwdToDim, {
-              active: props.nav === 'dwd_to_dim_center',
-            })}
-            {navGrand('dwd_data_preview', t.sidebar.dwdDataPreview, {
-              active: props.nav === 'dwd_data_preview',
-            })}
-            {navGrand('processing_derived_dim_tasks', t.sidebar.processingDerivedDimTasks, {
-              active: props.nav === 'processing_derived_dim_tasks',
-            })}
-          </div>
-          {navChildNav('import_history', 'history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />)}
-          {navChild(
-            'quality',
-            t.sidebar.qualityReport,
-            <IconMiniCheck className="h-[11px] w-[11px]" />,
-            { openable: true, open: !!openChildren.quality },
-          )}
-          <div className={openChildren.quality ? 'block' : 'hidden'}>
-            {navGrand('import_quality_overview', t.sidebar.qualityOverview, {
-              active: props.nav === 'import_quality_overview',
-            })}
-            {navGrand('import_quality_detail', t.sidebar.qualityDetail, {
-              active: props.nav === 'import_quality_detail',
-            })}
-            {navGrand('import_quality_trend', t.sidebar.qualityTrend, {
-              active: props.nav === 'import_quality_trend',
-            })}
-          </div>
-          {navChildNav('import_invoice_export', 'export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />)}
-        </div>
+        {navParentPanel(
+          'import',
+          <>
+            {navChild(
+              'mapping',
+              t.sidebar.fieldMapping,
+              <IconMiniMap className="h-[11px] w-[11px]" />,
+              { openable: true, open: !!openChildren.mapping },
+            )}
+            <div className={openChildren.mapping ? 'block' : 'hidden'}>
+              {navGrand('import_mapping_config', t.sidebar.mappingConfig, {
+                active: props.nav === 'import_mapping_config',
+              })}
+              {navGrand('import_mapping_templates', t.sidebar.mappingTemplates, {
+                active: props.nav === 'import_mapping_templates',
+              })}
+            </div>
+            {navChild(
+              'wizard',
+              t.sidebar.importWizard,
+              <IconMiniSteps className="h-[11px] w-[11px]" />,
+              { openable: true, open: !!openChildren.wizard },
+            )}
+            <div className={openChildren.wizard ? 'block' : 'hidden'}>
+              {navGrand('import_wizard_format_check', t.sidebar.formatCheck, {
+                active: props.nav === 'import_wizard_format_check',
+              })}
+              {navGrand('import_wizard_upload', t.sidebar.fileUpload, { active: props.nav === 'import_wizard_upload' })}
+              {navGrand('import_wizard_preview', t.sidebar.dataPreview, { active: props.nav === 'import_wizard_preview' })}
+            </div>
+            {navChildNav('import_invoice_export', 'export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />)}
+          </>,
+        )}
 
         {navParent(
           'dim',
@@ -854,98 +926,148 @@ function Sidebar(props: {
             </span>
           ) : null,
         )}
-        <div className={openParents.dim && !collapsed ? 'block' : 'hidden'}>
-          {navChild('org', t.sidebar.dimOrg, <IconMiniMap className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.org })}
-          <div className={openChildren.org ? 'block' : 'hidden'}>
-            {navChildDeepNav(
-              'dim_org_sys',
-              'org_sys',
-              t.sidebar.dimOrgSys,
-              <IconMiniMap className="h-[11px] w-[11px]" />,
-              { active: props.nav === 'dim_org_sys' },
-            )}
-            {navChildDeep('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
-              openable: true,
-              open: !!openChildren.audited,
-            })}
-            <div className={openChildren.audited ? 'block' : 'hidden'}>
-              {navGrand('dim_level1_enterprise_year', t.sidebar.dimLevel1EnterpriseYear, {
-                active: props.nav === 'dim_level1_enterprise_year',
-                tier: 'great',
+        {navParentPanel(
+          'dim',
+          <>
+            {navChild('org', t.sidebar.dimOrg, <IconMiniMap className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.org })}
+            <div className={openChildren.org ? 'block' : 'hidden'}>
+              {navChildDeepNav(
+                'dim_org_sys',
+                'org_sys',
+                t.sidebar.dimOrgSys,
+                <IconMiniMap className="h-[11px] w-[11px]" />,
+                { active: props.nav === 'dim_org_sys' },
+              )}
+              {navChildDeep('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
+                openable: true,
+                open: !!openChildren.audited,
               })}
-              {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
-                active: props.nav === 'dim_audited_registry',
-                tier: 'great',
+              <div className={openChildren.audited ? 'block' : 'hidden'}>
+                {navGroupLabel(t.sidebar.dimAuditedGroupRegistry, { first: true })}
+                {navGrand('dim_audited_registry', t.sidebar.dimAuditedLedger, {
+                  active: props.nav === 'dim_audited_registry',
+                  tier: 'great',
+                })}
+                {navGrand('dim_audited_contribution', t.sidebar.dimAuditedContribution, {
+                  active: props.nav === 'dim_audited_contribution',
+                  tier: 'great',
+                })}
+                {navGroupLabel(t.sidebar.dimAuditedGroupYearScope)}
+                {navGrand('dim_level1_enterprise_year', t.sidebar.dimLevel1EnterpriseYear, {
+                  active: props.nav === 'dim_level1_enterprise_year',
+                  tier: 'great',
+                })}
+                {navGrand('dim_enterprise_year_roster', t.sidebar.dimEnterpriseYearRoster, {
+                  active: props.nav === 'dim_enterprise_year_roster',
+                  tier: 'great',
+                })}
+                {navGroupLabel(t.sidebar.dimAuditedGroupHierView)}
+                {navGrand('dim_org_hier_tree', t.sidebar.dimOrgHierTree, {
+                  active:
+                    props.nav === 'dim_org_hier_tree' ||
+                    props.nav === 'dim_org_manage' ||
+                    props.nav === 'dim_org_equity' ||
+                    props.nav === 'dim_org_diff',
+                  tier: 'great',
+                })}
+                {navGroupLabel(t.sidebar.dimAuditedGroupInvoiceAlign)}
+                {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
+                  active: props.nav === 'dim_audited_invoice_link',
+                  tier: 'great',
+                })}
+                {navGrand('dim_invoice_to_audited_enterprise', t.sidebar.dimInvoiceToAudited, {
+                  active: props.nav === 'dim_invoice_to_audited_enterprise',
+                  tier: 'great',
+                })}
+              </div>
+              {navChildDeepNav(
+                'dim_audit_related_library',
+                'audit_related_coverage',
+                t.sidebar.dimAuditRelatedLibrary,
+                <IconCompare className="h-[11px] w-[11px]" />,
+                { active: props.nav === 'dim_audit_related_library' },
+              )}
+              {navChildDeepNav(
+                'dim_enterprise_library',
+                'enterprise_library',
+                t.sidebar.dimEnterpriseLibrary,
+                <IconUser className="h-[11px] w-[11px]" />,
+                { active: props.nav === 'dim_enterprise_library' },
+              )}
+            </div>
+            {navChild('tax', t.sidebar.dimTaxCode, <IconPlusSquare className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.tax })}
+            <div className={openChildren.tax ? 'block' : 'hidden'}>
+              {navGrand('dim_tax_lib', t.sidebar.dimTaxLib, {
+                active: props.nav === 'dim_tax_lib',
               })}
-              {navGrand('dim_enterprise_year_roster', t.sidebar.dimEnterpriseYearRoster, {
-                active: props.nav === 'dim_enterprise_year_roster',
-                tier: 'great',
+              {navGrand('dim_tax_risk_define', t.sidebar.dimTaxRiskDefine, {
+                active: props.nav === 'dim_tax_risk_define',
               })}
-              {navGrand('dim_audited_contribution', t.sidebar.dimAuditedContribution, {
-                active: props.nav === 'dim_audited_contribution',
-                tier: 'great',
+              {navGrand('dim_tax_result', t.sidebar.dimTaxResult, {
+                active: props.nav === 'dim_tax_result',
               })}
-              {navGrand('dim_org_hier_tree', t.sidebar.dimOrgHierTree, {
-                active:
-                  props.nav === 'dim_org_hier_tree' ||
-                  props.nav === 'dim_org_manage' ||
-                  props.nav === 'dim_org_equity' ||
-                  props.nav === 'dim_org_diff',
-                tier: 'great',
-              })}
-              {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
-                active: props.nav === 'dim_audited_invoice_link',
-                tier: 'great',
-              })}
-              {navGrand('dim_invoice_to_audited_enterprise', t.sidebar.dimInvoiceToAudited, {
-                active: props.nav === 'dim_invoice_to_audited_enterprise',
-                tier: 'great',
+              {navGrand('dim_tax_quality', t.sidebar.dimTaxQuality, {
+                active: props.nav === 'dim_tax_quality',
               })}
             </div>
-            {navChildDeepNav(
-              'dim_audit_related_library',
-              'audit_related_coverage',
-              t.sidebar.dimAuditRelatedLibrary,
-              <IconCompare className="h-[11px] w-[11px]" />,
-              { active: props.nav === 'dim_audit_related_library' },
+            {navChild('dict', t.sidebar.dimDict, <IconPlusSquare className="h-[11px] w-[11px]" />, {
+              openable: true,
+              open: !!openChildren.dict,
+            })}
+            <div className={openChildren.dict ? 'block' : 'hidden'}>
+              {navGrand('dim_dict', t.sidebar.dimDictHub, {
+                active: props.nav === 'dim_dict',
+              })}
+              {navGrand('dim_subject_category', t.sidebar.dimSubjectCategory, {
+                active: props.nav === 'dim_subject_category',
+              })}
+            </div>
+            {navChildNav('dim_version', 'ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />)}
+          </>,
+        )}
+
+        {navParent('factory', t.sidebar.dataFactory, <IconCompare className="h-[15px] w-[15px]" />)}
+        {navParentPanel(
+          'factory',
+          <>
+            {navChild('processing', t.sidebar.processingCenter, <IconCompare className="h-[11px] w-[11px]" />, {
+              openable: true,
+              open: !!openChildren.processing,
+            })}
+            <div className={openChildren.processing ? 'block' : 'hidden'}>
+              {navGrand('ods_to_dwd_center', t.sidebar.odsToDwd, {
+                active: props.nav === 'ods_to_dwd_center',
+              })}
+              {navGrand('dwd_to_dim_center', t.sidebar.dwdToDim, {
+                active: props.nav === 'dwd_to_dim_center',
+              })}
+              {navGrand('dwd_data_preview', t.sidebar.dwdDataPreview, {
+                active: props.nav === 'dwd_data_preview',
+              })}
+              {navGrand('processing_derived_dim_tasks', t.sidebar.processingDerivedDimTasks, {
+                active: props.nav === 'processing_derived_dim_tasks',
+              })}
+            </div>
+            {navChildNav('import_history', 'history', t.sidebar.historyBatches, <IconMiniClock className="h-[11px] w-[11px]" />)}
+            {navChild(
+              'quality',
+              t.sidebar.qualityReport,
+              <IconMiniCheck className="h-[11px] w-[11px]" />,
+              { openable: true, open: !!openChildren.quality },
             )}
-            {navChildDeepNav(
-              'dim_enterprise_library',
-              'enterprise_library',
-              t.sidebar.dimEnterpriseLibrary,
-              <IconUser className="h-[11px] w-[11px]" />,
-              { active: props.nav === 'dim_enterprise_library' },
-            )}
-          </div>
-          {navChild('tax', t.sidebar.dimTaxCode, <IconPlusSquare className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.tax })}
-          <div className={openChildren.tax ? 'block' : 'hidden'}>
-            {navGrand('dim_tax_lib', t.sidebar.dimTaxLib, {
-              active: props.nav === 'dim_tax_lib',
-            })}
-            {navGrand('dim_tax_risk_define', t.sidebar.dimTaxRiskDefine, {
-              active: props.nav === 'dim_tax_risk_define',
-            })}
-            {navGrand('dim_tax_result', t.sidebar.dimTaxResult, {
-              active: props.nav === 'dim_tax_result',
-            })}
-            {navGrand('dim_tax_quality', t.sidebar.dimTaxQuality, {
-              active: props.nav === 'dim_tax_quality',
-            })}
-          </div>
-          {navChild('dict', t.sidebar.dimDict, <IconPlusSquare className="h-[11px] w-[11px]" />, {
-            openable: true,
-            open: !!openChildren.dict,
-          })}
-          <div className={openChildren.dict ? 'block' : 'hidden'}>
-            {navGrand('dim_dict', t.sidebar.dimDictHub, {
-              active: props.nav === 'dim_dict',
-            })}
-            {navGrand('dim_subject_category', t.sidebar.dimSubjectCategory, {
-              active: props.nav === 'dim_subject_category',
-            })}
-          </div>
-          {navChildNav('dim_version', 'ver', t.sidebar.dimVersion, <IconMiniClock className="h-[11px] w-[11px]" />)}
-        </div>
+            <div className={openChildren.quality ? 'block' : 'hidden'}>
+              {navGrand('import_quality_overview', t.sidebar.qualityOverview, {
+                active: props.nav === 'import_quality_overview',
+              })}
+              {navGrand('import_quality_detail', t.sidebar.qualityDetail, {
+                active: props.nav === 'import_quality_detail',
+              })}
+              {navGrand('import_quality_trend', t.sidebar.qualityTrend, {
+                active: props.nav === 'import_quality_trend',
+              })}
+            </div>
+          </>,
+        )}
 
         <div className="my-1 border-t border-border-light" />
 
@@ -954,52 +1076,57 @@ function Sidebar(props: {
         </div>
 
         {navParent('overview', t.sidebar.overview, <IconChartBars className="h-[15px] w-[15px]" />)}
-        <div className={openParents.overview && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('overview_summary', 'ov1', t.sidebar.ovSummary, <span />)}
-          {navChildNav('overview_trend', 'ov2', t.sidebar.ovTrend, <span />)}
-          {navChildNav('overview_tax', 'ov3', t.sidebar.ovTax, <span />)}
-          {navChildNav('goods_category', 'ov4', t.sidebar.goodsCategory, <span />)}
-          {navChildNav('red_offset_analysis', 'ov5', t.sidebar.redOffsetAnalysis, <span />)}
-          {navChildNav('invoice_timing', 'ov6', t.sidebar.invoiceTiming, <span />)}
-        </div>
+        {navParentPanel(
+          'overview',
+          <>
+            {navChildNav('overview_summary', 'ov1', t.sidebar.ovSummary, sidebarLeafDot)}
+            {navChildNav('overview_trend', 'ov2', t.sidebar.ovTrend, sidebarLeafDot)}
+            {navChildNav('overview_tax', 'ov3', t.sidebar.ovTax, sidebarLeafDot)}
+          </>,
+        )}
+
+        {navParent('subject_evaluation', t.sidebar.subjectEvaluation, <IconUser className="h-[15px] w-[15px]" />)}
+        {navParentPanel(
+          'subject_evaluation',
+          <>
+            {navChildNav('health_score', 'se1', t.sidebar.healthScore, sidebarLeafDot)}
+            {navChildNav('entity_profile', 'se2', t.sidebar.entityProfile, sidebarLeafDot)}
+            {navChild('compare', t.sidebar.compare, sidebarLeafDot, {
+              openable: true,
+              open: !!openChildren.compare,
+            })}
+            {openChildren.compare ? (
+              <>
+                {navChildDeepNav('compare_rank', 'c1', t.sidebar.compareRank, sidebarLeafDot)}
+                {navChildDeepNav('compare_charts', 'c2', t.sidebar.compareCharts, sidebarLeafDot)}
+              </>
+            ) : null}
+            {navChildNav('year_over_year_compare', 'yoy1', t.sidebar.yearOverYearCompare, sidebarLeafDot)}
+          </>,
+        )}
 
         {navParent('tax_analysis', t.sidebar.taxAnalysis, <IconChartBars className="h-[15px] w-[15px]" />)}
-        <div className={openParents.tax_analysis && !collapsed ? 'block' : 'hidden'}>
-          {navGrand('tax_enterprise_structure', t.sidebar.taxEnterpriseStructure, {
-            active: props.nav === 'tax_enterprise_structure',
-          })}
-          {navChildNav('tax_in_out_deviation', 'ta2', t.sidebar.taxInOutDeviation, <span />)}
-          {navChildNav('tax_risk_exposure', 'ta3', t.sidebar.taxRiskExposure, <span />)}
-        </div>
+        {navParentPanel(
+          'tax_analysis',
+          <>
+            {navChildNav('tax_enterprise_structure', 'ta1', t.sidebar.taxEnterpriseStructure, sidebarLeafDot)}
+            {navChildNav('tax_in_out_deviation', 'ta2', t.sidebar.taxInOutDeviation, sidebarLeafDot)}
+            {navChildNav('tax_risk_exposure', 'ta3', t.sidebar.taxRiskExposure, sidebarLeafDot)}
+            {navChildNav('goods_category', 'ta4', t.sidebar.goodsCategory, sidebarLeafDot)}
+          </>,
+        )}
 
         {navParent('supplier', t.sidebar.supplier, <IconClock className="h-[15px] w-[15px]" />)}
-        <div className={openParents.supplier && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('supplier_cr', 's1', t.sidebar.supplierCr, <span />)}
-          {navChildNav('supplier_top', 's2', t.sidebar.supplierTop, <span />)}
-          {navChildNav('supplier_new', 's3', t.sidebar.supplierNew, <span />)}
-          {navChildNav('trade_relationships', 's4', t.sidebar.tradeRelationships, <span />)}
-        </div>
-
-        {navStandalone('health_score', t.sidebar.healthScore, <IconMiniCheck className="h-[15px] w-[15px]" />)}
-        {navStandalone('entity_profile', t.sidebar.entityProfile, <IconUser className="h-[15px] w-[15px]" />)}
-        {navStandalone('counterparty_risk', t.sidebar.counterpartyRisk, <IconAlert className="h-[15px] w-[15px]" />)}
-        {navStandalone('year_over_year_compare', t.sidebar.yearOverYearCompare, <IconCompare className="h-[15px] w-[15px]" />)}
-
-        {navParent(
-          'flags',
-          t.sidebar.flags,
-          <IconAlert className="h-[15px] w-[15px]" />,
-          !collapsed && pendingFlagCount != null && pendingFlagCount > 0 ? (
-            <span className="rounded-full bg-danger px-1.5 py-[1px] text-il-soon font-semibold text-white">
-              {pendingFlagCount > 99 ? '99+' : pendingFlagCount}
-            </span>
-          ) : null,
+        {navParentPanel(
+          'supplier',
+          <>
+            {navChildNav('supplier_cr', 's1', t.sidebar.supplierCr, sidebarLeafDot)}
+            {navChildNav('supplier_top', 's2', t.sidebar.supplierTop, sidebarLeafDot)}
+            {navChildNav('supplier_new', 's3', t.sidebar.supplierNew, sidebarLeafDot)}
+            {navChildNav('trade_relationships', 's4', t.sidebar.tradeRelationships, sidebarLeafDot)}
+            {navChildNav('counterparty_risk', 's5', t.sidebar.counterpartyRisk, sidebarLeafDot)}
+          </>,
         )}
-        <div className={openParents.flags && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('flags_list', 'f1', t.sidebar.flagsList, <span />)}
-          {navChildNav('flags_rules', 'f2', t.sidebar.flagsRules, <span />)}
-          {navChildNav('flags_track', 'f3', t.sidebar.flagsTrack, <span />)}
-        </div>
 
         {navParent(
           'related',
@@ -1011,23 +1138,51 @@ function Sidebar(props: {
             </span>
           ) : null,
         )}
-        <div className={openParents.related && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('related_graph', 'r1', t.sidebar.relatedGraph, <span />)}
-          {navChildNav('related_pairs', 'r2', t.sidebar.relatedPairs, <span />)}
-          {navChildNav('related_shell', 'r3', t.sidebar.relatedShell, <span />)}
-        </div>
+        {navParentPanel(
+          'related',
+          <>
+            {navChildNav('related_graph', 'r1', t.sidebar.relatedGraph, sidebarLeafDot)}
+            {navChildNav('related_pairs', 'r2', t.sidebar.relatedPairs, sidebarLeafDot)}
+            {navChildNav('related_shell', 'r3', t.sidebar.relatedShell, sidebarLeafDot)}
+          </>,
+        )}
+
+        {navParent('invoice_behavior', t.sidebar.invoiceBehavior, <IconMiniClock className="h-[15px] w-[15px]" />)}
+        {navParentPanel(
+          'invoice_behavior',
+          <>
+            {navChildNav('red_offset_analysis', 'ib1', t.sidebar.redOffsetAnalysis, sidebarLeafDot)}
+            {navChildNav('invoice_timing', 'ib2', t.sidebar.invoiceTiming, sidebarLeafDot)}
+          </>,
+        )}
 
         {navParent('finance', t.sidebar.finance, <IconReportDoc className="h-[15px] w-[15px]" />)}
-        <div className={openParents.finance && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('finance_reconcile', 'j1', t.sidebar.financeReconcile, <span />)}
-          {navChildNav('finance_diff', 'j2', t.sidebar.financeDiff, <span />)}
-        </div>
+        {navParentPanel(
+          'finance',
+          <>
+            {navChildNav('finance_reconcile', 'j1', t.sidebar.financeReconcile, sidebarLeafDot)}
+            {navChildNav('finance_diff', 'j2', t.sidebar.financeDiff, sidebarLeafDot)}
+          </>,
+        )}
 
-        {navParent('compare', t.sidebar.compare, <IconCompare className="h-[15px] w-[15px]" />)}
-        <div className={openParents.compare && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('compare_rank', 'c1', t.sidebar.compareRank, <span />)}
-          {navChildNav('compare_charts', 'c2', t.sidebar.compareCharts, <span />)}
-        </div>
+        {navParent(
+          'flags',
+          t.sidebar.flags,
+          <IconAlert className="h-[15px] w-[15px]" />,
+          !collapsed && pendingFlagCount != null && pendingFlagCount > 0 ? (
+            <span className="rounded-full bg-danger px-1.5 py-[1px] text-il-soon font-semibold text-white">
+              {pendingFlagCount > 99 ? '99+' : pendingFlagCount}
+            </span>
+          ) : null,
+        )}
+        {navParentPanel(
+          'flags',
+          <>
+            {navChildNav('flags_list', 'f1', t.sidebar.flagsList, sidebarLeafDot)}
+            {navChildNav('flags_rules', 'f2', t.sidebar.flagsRules, sidebarLeafDot)}
+            {navChildNav('flags_track', 'f3', t.sidebar.flagsTrack, sidebarLeafDot)}
+          </>,
+        )}
 
         <div className="my-1 border-t border-border-light" />
 
@@ -1038,11 +1193,14 @@ function Sidebar(props: {
         {canAccessNav(props.user.role, 'report_config') ? (
           <>
             {navParent('report', t.sidebar.report, <IconReportDoc className="h-[15px] w-[15px]" />)}
-            <div className={openParents.report && !collapsed ? 'block' : 'hidden'}>
-              {navChildNav('report_config', 'rp1', t.sidebar.reportConfig, <span />)}
-              {navChildNav('report_templates', 'rp2', t.sidebar.reportTemplates, <span />)}
-              {navChildNav('report_archive', 'rp3', t.sidebar.reportArchive, <span />)}
-            </div>
+            {navParentPanel(
+              'report',
+              <>
+                {navChildNav('report_config', 'rp1', t.sidebar.reportConfig, sidebarLeafDot)}
+                {navChildNav('report_templates', 'rp2', t.sidebar.reportTemplates, sidebarLeafDot)}
+                {navChildNav('report_archive', 'rp3', t.sidebar.reportArchive, sidebarLeafDot)}
+              </>,
+            )}
           </>
         ) : null}
 
@@ -1055,22 +1213,28 @@ function Sidebar(props: {
         {isAdmin(props.user.role) ? (
           <>
             {navParent('users', t.sidebar.users, <IconUser className="h-[15px] w-[15px]" />)}
-            <div className={openParents.users && !collapsed ? 'block' : 'hidden'}>
-              {navChildNav('users_list', 'u1', t.sidebar.usersList, <span />)}
-              {navChildNav('users_roles', 'u2', t.sidebar.usersRoles, <span />)}
-              {navChildNav('users_audit', 'u3', t.sidebar.usersAudit, <span />)}
-            </div>
+            {navParentPanel(
+              'users',
+              <>
+                {navChildNav('users_list', 'u1', t.sidebar.usersList, sidebarLeafDot)}
+                {navChildNav('users_roles', 'u2', t.sidebar.usersRoles, sidebarLeafDot)}
+                {navChildNav('users_audit', 'u3', t.sidebar.usersAudit, sidebarLeafDot)}
+              </>,
+            )}
           </>
         ) : null}
 
         {navParent('settings', t.sidebar.settings, <IconSettings className="h-[15px] w-[15px]" />)}
-        <div className={openParents.settings && !collapsed ? 'block' : 'hidden'}>
-          {navChildNav('settings_thresholds', 'st1', t.sidebar.settingsThresholds, <span />)}
-          {navChildNav('settings_license', 'st2', t.sidebar.settingsLicense, <span />)}
-          {navChildNav('settings_instance', 'st3', t.sidebar.settingsInstance, <span />, {
-            active: props.nav === 'settings_instance',
-          })}
-        </div>
+        {navParentPanel(
+          'settings',
+          <>
+            {navChildNav('settings_thresholds', 'st1', t.sidebar.settingsThresholds, sidebarLeafDot)}
+            {navChildNav('settings_license', 'st2', t.sidebar.settingsLicense, sidebarLeafDot)}
+            {navChildNav('settings_instance', 'st3', t.sidebar.settingsInstance, sidebarLeafDot, {
+              active: props.nav === 'settings_instance',
+            })}
+          </>,
+        )}
       </div>
       <div className="border-t border-border-light px-3 py-2">
         <div className="flex items-center gap-2">
@@ -1173,22 +1337,29 @@ function Topbar(props: { breadcrumb: React.ReactNode }) {
 
   useEffect(() => {
     const ac = new AbortController()
-    void fetchLicenseInfo(ac.signal).then((res) => {
-      if (ac.signal.aborted || !res.ok || !res.license) return
-      const lic = res.license
-      const tier =
-        lic.tier === 'pro' || lic.tier === 'professional'
-          ? '专业版'
-          : lic.tier === 'enterprise'
-            ? '企业版'
-            : lic.tier === 'trial'
-              ? '试用版'
-              : lic.tier || '授权'
-      const exp = lic.expiresAt ? ` · 有效期 ${lic.expiresAt}` : ''
-      const expired = lic.isExpired ? ' · 已过期' : ''
-      setLicenseTag(`${tier}${exp}${expired}`)
-    })
-    return () => ac.abort()
+    const refreshLicenseTag = () => {
+      void fetchLicenseInfo(ac.signal).then((res) => {
+        if (ac.signal.aborted || !res.ok || !res.license) return
+        const lic = res.license
+        const tier =
+          lic.tier === 'pro' || lic.tier === 'professional'
+            ? '专业版'
+            : lic.tier === 'enterprise'
+              ? '企业版'
+              : lic.tier === 'trial'
+                ? '试用版'
+                : lic.tier || '授权'
+        const exp = lic.expiresAt ? ` · 有效期 ${lic.expiresAt}` : ''
+        const expired = lic.isExpired ? ' · 已过期' : ''
+        setLicenseTag(`${tier}${exp}${expired}`)
+      })
+    }
+    refreshLicenseTag()
+    window.addEventListener(LICENSE_UPDATED_EVENT, refreshLicenseTag)
+    return () => {
+      ac.abort()
+      window.removeEventListener(LICENSE_UPDATED_EVENT, refreshLicenseTag)
+    }
   }, [])
 
   return (
@@ -2981,35 +3152,35 @@ function AppShell(props: {
     if (props.nav === 'ods_to_dwd_center')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.processingCenter} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.odsToDwd}</b>
         </>
       )
     if (props.nav === 'dwd_data_preview')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.processingCenter} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dwdDataPreview}</b>
         </>
       )
     if (props.nav === 'dwd_to_dim_center')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.processingCenter} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.dwdToDim}</b>
         </>
       )
     if (props.nav === 'processing_derived_dim_tasks')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.processingCenter} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.processingCenter} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.processingDerivedDimTasks}</b>
         </>
       )
     if (props.nav === 'import_history')
       return (
         <>
-          {t.breadcrumb.invoiceData} / <b className="text-text font-medium">{t.breadcrumb.historyBatches}</b>
+          {t.breadcrumb.dataFactory} / <b className="text-text font-medium">{t.breadcrumb.historyBatches}</b>
         </>
       )
     if (props.nav === 'import_mapping_config')
@@ -3029,21 +3200,21 @@ function AppShell(props: {
     if (props.nav === 'import_quality_overview')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.qualityReport} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.qualityOverview}</b>
         </>
       )
     if (props.nav === 'import_quality_detail')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.qualityReport} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.qualityDetail}</b>
         </>
       )
     if (props.nav === 'import_quality_trend')
       return (
         <>
-          {t.breadcrumb.invoiceData} / {t.breadcrumb.qualityReport} /{' '}
+          {t.breadcrumb.dataFactory} / {t.breadcrumb.qualityReport} /{' '}
           <b className="text-text font-medium">{t.breadcrumb.qualityTrend}</b>
         </>
       )
@@ -3083,34 +3254,36 @@ function AppShell(props: {
     if (props.nav === 'goods_category')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          {t.sidebar.sectionAnalysis} / {t.sidebar.taxAnalysis} /{' '}
           <b className="text-text font-medium">{t.sidebar.goodsCategory}</b>
         </>
       )
     if (props.nav === 'red_offset_analysis')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          {t.sidebar.sectionAnalysis} / {t.sidebar.invoiceBehavior} /{' '}
           <b className="text-text font-medium">{t.sidebar.redOffsetAnalysis}</b>
         </>
       )
     if (props.nav === 'invoice_timing')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / {t.sidebar.overview} /{' '}
+          {t.sidebar.sectionAnalysis} / {t.sidebar.invoiceBehavior} /{' '}
           <b className="text-text font-medium">{t.sidebar.invoiceTiming}</b>
         </>
       )
     if (props.nav === 'counterparty_risk')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.sidebar.counterpartyRisk}</b>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.supplier} /{' '}
+          <b className="text-text font-medium">{t.sidebar.counterpartyRisk}</b>
         </>
       )
     if (props.nav === 'year_over_year_compare')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / <b className="text-text font-medium">{t.sidebar.yearOverYearCompare}</b>
+          {t.sidebar.sectionAnalysis} / {t.sidebar.compareAnalysis} /{' '}
+          <b className="text-text font-medium">{t.sidebar.yearOverYearCompare}</b>
         </>
       )
     if (props.nav === 'supplier_cr')
@@ -3207,14 +3380,14 @@ function AppShell(props: {
     if (props.nav === 'compare_rank')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / {t.sidebar.compare} /{' '}
+          {t.sidebar.sectionAnalysis} / {t.sidebar.compareAnalysis} / {t.sidebar.compare} /{' '}
           <b className="text-text font-medium">{t.sidebar.compareRank}</b>
         </>
       )
     if (props.nav === 'compare_charts')
       return (
         <>
-          {t.sidebar.sectionAnalysis} / {t.sidebar.compare} /{' '}
+          {t.sidebar.sectionAnalysis} / {t.sidebar.compareAnalysis} / {t.sidebar.compare} /{' '}
           <b className="text-text font-medium">{t.sidebar.compareCharts}</b>
         </>
       )
@@ -3294,7 +3467,6 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.dimOrgSys}</b>
         </>
       )
-
     if (
       props.nav === 'dim_org_hier_tree' ||
       props.nav === 'dim_org_manage' ||
@@ -3467,7 +3639,7 @@ function AppShell(props: {
           ) : props.nav === 'dim_level1_enterprise_year' ? (
             <Level1EnterpriseYearPage />
           ) : props.nav === 'dim_audited_registry' ? (
-            <AuditedEnterpriseLedgerPage />
+            <AuditedEnterpriseLedgerPage onNav={props.onNav} />
           ) : props.nav === 'dim_enterprise_year_roster' ? (
             <EnterpriseYearRosterPage onNav={(k) => props.onNav(k as NavKey)} />
           ) : props.nav === 'dim_audited_contribution' ? (

@@ -209,3 +209,20 @@ export function IconMiniMap(props: IconProps) {
     </svg>
   )
 }
+
+/** 分步向导：三节点流程，用于导入向导等多级步骤入口 */
+export function IconMiniSteps(props: IconProps) {
+  return (
+    <svg viewBox="0 0 11 11" fill="none" {...props}>
+      <circle cx="2" cy="5.5" r="1.3" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="5.5" cy="5.5" r="1.3" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="9" cy="5.5" r="1.3" stroke="currentColor" strokeWidth="1.1" />
+      <path
+        d="M3.3 5.5h1.4M6.8 5.5h1.4"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
