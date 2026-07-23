@@ -14,8 +14,8 @@ from src.ui.ui_style import apply_business_style
 
 
 apply_business_style()
-st.title("子公司对比（P0 框架占位）")
-st.caption("目标：在集团口径下对比各子公司规模/风险/集中度，形成排名与画像。")
+st.title("主体对比（P0 框架占位）")
+st.caption("目标：在同一口径下对比各分析主体规模/风险/集中度，形成排名与画像。")
 
 
 def _safe_get_conn():

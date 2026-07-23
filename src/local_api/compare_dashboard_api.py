@@ -1,4 +1,4 @@
-"""子公司横向对比（ads_scorecard）只读 API 与刷新入口。"""
+"""主体横向对比（ads_scorecard）只读 API 与刷新入口。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,75 @@ from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_SCORECARD_ENTITY_NORM = "upper(regexp_replace(trim(COALESCE(sc.entity_id, '')), '[\\s-]+', '', 'g'))"
+_ROSTER_ENTITY_NORM = "upper(regexp_replace(trim(COALESCE(ro.enterprise_id, '')), '[\\s-]+', '', 'g'))"
+_GEY_ENTITY_NORM = "upper(regexp_replace(trim(COALESCE(gey.enterprise_id, '')), '[\\s-]+', '', 'g'))"
+
+_SCORECARD_SOE_FROM = f"""
+FROM ads_scorecard sc
+LEFT JOIN dim_group_enterprise_year gey
+    ON gey.stat_year = sc.stat_year
+   AND {_GEY_ENTITY_NORM} = {_SCORECARD_ENTITY_NORM}
+LEFT JOIN dim_enterprise_year_roster ro
+    ON ro.stat_year = sc.stat_year
+   AND {_ROSTER_ENTITY_NORM} = {_SCORECARD_ENTITY_NORM}
+"""
+
+_SOE_ANCHOR_ID_EXPR = """
+COALESCE(
+    NULLIF(trim(gey.level1_group_id), ''),
+    NULLIF(trim(ro.state_investor_unified_credit_code), '')
+)
+"""
+
+_SOE_ANCHOR_NAME_EXPR = """
+COALESCE(
+    NULLIF(trim(gey.level1_group_name), ''),
+    NULLIF(trim(ro.state_investor), '')
+)
+"""
+
+
+def _table_ready(conn: Any, name: str) -> bool:
+    try:
+        conn.execute(f"SELECT 1 FROM {name} LIMIT 1")
+        return True
+    except Exception:
+        return False
+
+
+def _compare_soe_sql(conn: Any) -> tuple[str, str, str]:
+    """返回 (FROM 子句, soe_id 表达式, soe_name 表达式)。"""
+    has_gey = _table_ready(conn, "dim_group_enterprise_year")
+    has_ro = _table_ready(conn, "dim_enterprise_year_roster")
+    if has_gey and has_ro:
+        from_sql = _SCORECARD_SOE_FROM
+        id_expr = _SOE_ANCHOR_ID_EXPR
+        name_expr = _SOE_ANCHOR_NAME_EXPR
+    elif has_ro:
+        from_sql = f"""
+FROM ads_scorecard sc
+LEFT JOIN dim_enterprise_year_roster ro
+    ON ro.stat_year = sc.stat_year
+   AND {_ROSTER_ENTITY_NORM} = {_SCORECARD_ENTITY_NORM}
+"""
+        id_expr = "NULLIF(trim(ro.state_investor_unified_credit_code), '')"
+        name_expr = "NULLIF(trim(ro.state_investor), '')"
+    elif has_gey:
+        from_sql = f"""
+FROM ads_scorecard sc
+LEFT JOIN dim_group_enterprise_year gey
+    ON gey.stat_year = sc.stat_year
+   AND {_GEY_ENTITY_NORM} = {_SCORECARD_ENTITY_NORM}
+"""
+        id_expr = "NULLIF(trim(gey.level1_group_id), '')"
+        name_expr = "NULLIF(trim(gey.level1_group_name), '')"
+    else:
+        from_sql = "FROM ads_scorecard sc"
+        id_expr = "CAST(NULL AS VARCHAR)"
+        name_expr = "CAST(NULL AS VARCHAR)"
+    return from_sql, id_expr, name_expr
 
 
 def _calendar_year() -> int:
@@ -42,7 +111,75 @@ def _distinct_scorecard_years(conn: Any) -> list[str]:
     return [str(y) for y in sorted(years, reverse=True)]
 
 
-def api_compare_meta(conn: Any) -> dict[str, Any]:
+def _norm_kw(v: str | None) -> str:
+    return (v or "").strip().lower()
+
+
+def _compare_soe_options(conn: Any, *, group_id: str, stat_year: int) -> list[dict[str, str]]:
+    from_sql, id_expr, name_expr = _compare_soe_sql(conn)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT
+                {id_expr} AS soe_anchor_enterprise_id,
+                {name_expr} AS soe_anchor_enterprise_name
+            {from_sql}
+            WHERE sc.group_id = ? AND sc.stat_year = ?
+              AND trim(COALESCE({id_expr}, '')) <> ''
+            ORDER BY soe_anchor_enterprise_name NULLS LAST, soe_anchor_enterprise_id
+            """,
+            [group_id, stat_year],
+        ).fetchall()
+    except Exception:
+        return []
+    options: list[dict[str, str]] = []
+    for r in rows or []:
+        if not r:
+            continue
+        eid = str(r[0] or "").strip()
+        if not eid:
+            continue
+        options.append(
+            {
+                "soe_anchor_enterprise_id": eid,
+                "soe_anchor_enterprise_name": str(r[1] or "").strip() or eid,
+            }
+        )
+    return options
+
+
+def _append_compare_soe_filters(
+    clauses: list[str],
+    params: list[Any],
+    *,
+    id_expr: str,
+    name_expr: str,
+    soe_anchor_id: str | None,
+    soe_anchor_kw: str | None,
+    level1_group_kw: str | None,
+) -> None:
+    sid = (soe_anchor_id or "").strip()
+    if sid:
+        clauses.append(f"trim(COALESCE({id_expr}, '')) = ?")
+        params.append(sid)
+    else:
+        sk = _norm_kw(soe_anchor_kw)
+        if sk:
+            clauses.append(
+                f"(lower(COALESCE({name_expr}, '')) LIKE ? OR lower(COALESCE({id_expr}, '')) LIKE ?)"
+            )
+            like = f"%{sk}%"
+            params.extend([like, like])
+    gk = _norm_kw(level1_group_kw)
+    if gk:
+        clauses.append(
+            f"(lower(COALESCE({name_expr}, '')) LIKE ? OR lower(COALESCE({id_expr}, '')) LIKE ?)"
+        )
+        like_g = f"%{gk}%"
+        params.extend([like_g, like_g])
+
+
+def api_compare_meta(conn: Any, *, stat_year: str | None = None) -> dict[str, Any]:
     try:
         from src.local_api.license_gate import check_cross_group_allowed, get_license_config
 
@@ -75,6 +212,20 @@ def api_compare_meta(conn: Any) -> dict[str, Any]:
                 f"当前评分卡含 {entity_cnt} 个主体，超过试用版上限 {max_ent}。"
                 "对比分析结果可能不完整，升级授权后可解除限制。"
             )
+        soe_options: list[dict[str, str]] = []
+        soe_count = 0
+        if stat_year:
+            from src.audit.config_loader import group_id_for_year
+
+            y = _safe_int_year(stat_year)
+            gid = group_id_for_year(y)
+            soe_options = _compare_soe_options(conn, group_id=gid, stat_year=y)
+            soe_count = len(soe_options)
+            if soe_count > 1:
+                hints.append(
+                    f"当前年度评分卡含 {soe_count} 家国家出资企业，跨集团排名仅供参考；"
+                    "建议筛选至单一国家出资企业后再做成员横向对比。"
+                )
         return {
             "ok": True,
             "stat_years": years,
@@ -82,6 +233,8 @@ def api_compare_meta(conn: Any) -> dict[str, Any]:
             "scorecard_ready": cnt > 0,
             "entity_count": entity_cnt,
             "max_entities": max_ent,
+            "soe_options": soe_options,
+            "soe_count": soe_count,
             "hint": " ".join(hints) if hints else None,
         }
     except Exception as exc:
@@ -94,6 +247,9 @@ def api_compare_rank_list(
     stat_year: str | None,
     risk_level: str | None = None,
     keyword: str | None = None,
+    soe_anchor_id: str | None = None,
+    soe_anchor_kw: str | None = None,
+    level1_group_kw: str | None = None,
     limit: int = 500,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -109,11 +265,12 @@ def api_compare_rank_list(
 
         gid = group_id_for_year(y)
         entity_cap = compare_entity_cap()
+        from_sql, id_expr, name_expr = _compare_soe_sql(conn)
         entity_cap_clause = ""
         cap_params: list[Any] = []
         if entity_cap is not None:
             entity_cap_clause = """
-            AND entity_id IN (
+            AND sc.entity_id IN (
                 SELECT entity_id FROM (
                     SELECT entity_id
                     FROM ads_scorecard
@@ -125,51 +282,71 @@ def api_compare_rank_list(
             )
             """
             cap_params = [gid, y, entity_cap]
-        clauses = ["group_id = ?", "stat_year = ?"]
-        params: list[Any] = [gid, y]
+        base_clauses = ["sc.group_id = ?", "sc.stat_year = ?"]
+        base_params: list[Any] = [gid, y]
+        filter_clauses: list[str] = []
+        filter_params: list[Any] = []
         rl = (risk_level or "").strip()
         if rl and rl not in ("all", "全部"):
-            clauses.append("risk_level = ?")
-            params.append(rl)
+            filter_clauses.append("sc.risk_level = ?")
+            filter_params.append(rl)
         kw = (keyword or "").strip()
         if kw:
-            clauses.append("(entity_name ILIKE ? OR entity_id ILIKE ?)")
+            filter_clauses.append("(sc.entity_name ILIKE ? OR sc.entity_id ILIKE ?)")
             like = f"%{kw}%"
-            params.extend([like, like])
-        where = " AND ".join(clauses) + entity_cap_clause
+            filter_params.extend([like, like])
+        _append_compare_soe_filters(
+            filter_clauses,
+            filter_params,
+            id_expr=id_expr,
+            name_expr=name_expr,
+            soe_anchor_id=soe_anchor_id,
+            soe_anchor_kw=soe_anchor_kw,
+            level1_group_kw=level1_group_kw,
+        )
+        base_where = " AND ".join(base_clauses) + entity_cap_clause
+        filter_where = " AND ".join(filter_clauses) if filter_clauses else "TRUE"
         lim = max(1, min(int(limit or 500), 2000))
         off = max(0, int(offset or 0))
-        count_params = [*params, *cap_params]
+        count_params = [*base_params, *cap_params, *filter_params]
         total = int(
-            conn.execute(f"SELECT COUNT(*)::BIGINT FROM ads_scorecard WHERE {where}", count_params).fetchone()[0]
+            conn.execute(
+                f"""
+                SELECT COUNT(*)::BIGINT
+                {from_sql}
+                WHERE {base_where} AND ({filter_where})
+                """,
+                count_params,
+            ).fetchone()[0]
             or 0
         )
         rows = conn.execute(
             f"""
             SELECT
-                scorecard_id, entity_id, entity_name, stat_year,
-                total_amount, total_count, supplier_count,
-                flag_total, flag_high, flag_medium, flag_low,
-                risk_score, risk_level, cr1, cancel_ratio, quality_score,
-                analysis_batch, updated_at
-            FROM ads_scorecard
-            WHERE {where}
-            ORDER BY risk_score ASC, flag_high DESC, total_amount DESC NULLS LAST, entity_id
+                sc.scorecard_id, sc.entity_id, sc.entity_name, sc.stat_year,
+                sc.total_amount, sc.total_count, sc.supplier_count,
+                sc.flag_total, sc.flag_high, sc.flag_medium, sc.flag_low,
+                sc.risk_score, sc.risk_level, sc.cr1, sc.cancel_ratio, sc.quality_score,
+                sc.analysis_batch, sc.updated_at,
+                {id_expr} AS soe_anchor_enterprise_id,
+                {name_expr} AS soe_anchor_enterprise_name
+            {from_sql}
+            WHERE {base_where} AND ({filter_where})
+            ORDER BY sc.risk_score ASC, sc.flag_high DESC, sc.total_amount DESC NULLS LAST, sc.entity_id
             LIMIT ? OFFSET ?
             """,
             [*count_params, lim, off],
         ).fetchall()
 
-        summary_where = "group_id = ? AND stat_year = ?" + entity_cap_clause
         summary_row = conn.execute(
             f"""
             SELECT
                 count(*)::BIGINT,
-                count(*) FILTER (WHERE risk_level = '正常')::BIGINT,
-                count(*) FILTER (WHERE risk_level = '关注')::BIGINT,
-                count(*) FILTER (WHERE risk_level = '重点关注')::BIGINT
-            FROM ads_scorecard
-            WHERE {summary_where}
+                count(*) FILTER (WHERE sc.risk_level = '正常')::BIGINT,
+                count(*) FILTER (WHERE sc.risk_level = '关注')::BIGINT,
+                count(*) FILTER (WHERE sc.risk_level = '重点关注')::BIGINT
+            {from_sql}
+            WHERE {base_where} AND ({filter_where})
             """,
             count_params,
         ).fetchone()
@@ -200,6 +377,8 @@ def api_compare_rank_list(
                 "quality_score": float(r[15]) if r[15] is not None else None,
                 "analysis_batch": str(r[16] or ""),
                 "updated_at": str(r[17] or ""),
+                "soe_anchor_enterprise_id": str(r[18] or "").strip(),
+                "soe_anchor_enterprise_name": str(r[19] or "").strip(),
             }
             for r in rows or []
         ]
@@ -219,11 +398,11 @@ def api_compare_rank_list(
 
 
 _COMPARE_CHART_METRICS: dict[str, tuple[str, str]] = {
-    "amount": ("total_amount DESC NULLS LAST", "total_amount"),
-    "flags": ("flag_high DESC NULLS LAST, flag_total DESC", "flag_high"),
-    "score": ("risk_score ASC NULLS LAST", "risk_score"),
-    "cr1": ("cr1 DESC NULLS LAST", "cr1"),
-    "cancel": ("cancel_ratio DESC NULLS LAST", "cancel_ratio"),
+    "amount": ("sc.total_amount DESC NULLS LAST", "total_amount"),
+    "flags": ("sc.flag_high DESC NULLS LAST, sc.flag_total DESC", "flag_high"),
+    "score": ("sc.risk_score ASC NULLS LAST", "risk_score"),
+    "cr1": ("sc.cr1 DESC NULLS LAST", "cr1"),
+    "cancel": ("sc.cancel_ratio DESC NULLS LAST", "cancel_ratio"),
 }
 
 
@@ -233,8 +412,11 @@ def api_compare_charts_series(
     stat_year: str | None,
     metric: str = "amount",
     limit: int = 15,
+    soe_anchor_id: str | None = None,
+    soe_anchor_kw: str | None = None,
+    level1_group_kw: str | None = None,
 ) -> dict[str, Any]:
-    """返回子公司横向对比图表序列（Top N，基于 ads_scorecard）。"""
+    """返回主体横向对比图表序列（Top N，基于 ads_scorecard）。"""
     try:
         from src.local_api.license_gate import check_cross_group_allowed, compare_entity_cap
 
@@ -251,20 +433,53 @@ def api_compare_charts_series(
             mkey = "amount"
         order_sql, value_col = _COMPARE_CHART_METRICS[mkey]
         lim = max(3, min(int(limit or 15), 30))
+        from_sql, id_expr, name_expr = _compare_soe_sql(conn)
         entity_cap = compare_entity_cap()
         chart_cap = min(lim, entity_cap) if entity_cap is not None else lim
+        base_clauses = ["sc.group_id = ?", "sc.stat_year = ?"]
+        base_params: list[Any] = [gid, y]
+        filter_clauses: list[str] = []
+        filter_params: list[Any] = []
+        _append_compare_soe_filters(
+            filter_clauses,
+            filter_params,
+            id_expr=id_expr,
+            name_expr=name_expr,
+            soe_anchor_id=soe_anchor_id,
+            soe_anchor_kw=soe_anchor_kw,
+            level1_group_kw=level1_group_kw,
+        )
+        cap_clause = ""
+        cap_params: list[Any] = []
+        if entity_cap is not None:
+            cap_clause = """
+            AND sc.entity_id IN (
+                SELECT entity_id FROM (
+                    SELECT entity_id
+                    FROM ads_scorecard
+                    WHERE group_id = ? AND stat_year = ?
+                    GROUP BY entity_id
+                    ORDER BY MIN(risk_score) ASC NULLS LAST, entity_id
+                    LIMIT ?
+                ) capped
+            )
+            """
+            cap_params = [gid, y, entity_cap]
+        base_where = " AND ".join(base_clauses) + cap_clause
+        filter_where = " AND ".join(filter_clauses) if filter_clauses else "TRUE"
+        query_params = [*base_params, *cap_params, *filter_params, chart_cap]
 
         out_rows_raw = conn.execute(
             f"""
             SELECT
-                entity_id, entity_name, risk_level, risk_score,
-                total_amount, flag_high, flag_total, cr1, cancel_ratio, supplier_count
-            FROM ads_scorecard
-            WHERE group_id = ? AND stat_year = ?
-            ORDER BY {order_sql}, entity_id
+                sc.entity_id, sc.entity_name, sc.risk_level, sc.risk_score,
+                sc.total_amount, sc.flag_high, sc.flag_total, sc.cr1, sc.cancel_ratio, sc.supplier_count
+            {from_sql}
+            WHERE {base_where} AND ({filter_where})
+            ORDER BY {order_sql}, sc.entity_id
             LIMIT ?
             """,
-            [gid, y, chart_cap],
+            query_params,
         ).fetchall()
 
         col_idx = {
@@ -296,16 +511,16 @@ def api_compare_charts_series(
             )
 
         dist_row = conn.execute(
-            """
+            f"""
             SELECT
-                count(*) FILTER (WHERE risk_level = '正常')::BIGINT,
-                count(*) FILTER (WHERE risk_level = '关注')::BIGINT,
-                count(*) FILTER (WHERE risk_level = '重点关注')::BIGINT,
+                count(*) FILTER (WHERE sc.risk_level = '正常')::BIGINT,
+                count(*) FILTER (WHERE sc.risk_level = '关注')::BIGINT,
+                count(*) FILTER (WHERE sc.risk_level = '重点关注')::BIGINT,
                 count(*)::BIGINT
-            FROM ads_scorecard
-            WHERE group_id = ? AND stat_year = ?
+            {from_sql}
+            WHERE {base_where} AND ({filter_where})
             """,
-            [gid, y],
+            [*base_params, *cap_params, *filter_params],
         ).fetchone()
         risk_distribution = {
             "normal": int(dist_row[0] or 0) if dist_row else 0,

@@ -53,9 +53,9 @@
     },
     {
       "template_id": "builtin_compare",
-      "name": "子公司对比简报",
-      "title_template": "{year}年度子公司发票数据对比简报",
-      "description": "概览 + 供应商 + 子公司横向对比，适用于集团内部分析。",
+      "name": "主体对比简报",
+      "title_template": "{year}年度主体发票数据对比简报",
+      "description": "概览 + 供应商 + 主体横向对比，适用于多主体分析与集团内对照。",
       "chapters": {
         "overview": true,
         "structure": false,

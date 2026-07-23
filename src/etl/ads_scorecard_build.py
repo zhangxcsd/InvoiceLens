@@ -1,4 +1,4 @@
-"""ADS 子公司综合评分卡构建（dws + dm → ads_scorecard）。"""
+"""ADS 主体综合评分卡构建（dws + dm → ads_scorecard）。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from src.audit.config_loader import group_id_for_year
 logger = logging.getLogger(__name__)
 
 AUTOMATION_TASK_CODE = "ads.scorecard.refresh"
-TASK_DISPLAY_NAME = "子公司评分卡刷新"
+TASK_DISPLAY_NAME = "主体评分卡刷新"
 
 ProgressFn = Callable[[str, str], None] | None
 

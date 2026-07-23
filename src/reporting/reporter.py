@@ -944,7 +944,7 @@ def generate_audit_report_docx(
             doc.add_paragraph("（暂无通道公司识别结果。）")
 
     if _chapter_enabled(chapters, "compare"):
-        _add_heading(doc, "第六章  子公司横向对比", 1)
+        _add_heading(doc, "第六章  主体横向对比", 1)
         score_rows = _query_scorecard(conn, stat_year)
         if score_rows:
             table = doc.add_table(rows=len(score_rows) + 1, cols=8)

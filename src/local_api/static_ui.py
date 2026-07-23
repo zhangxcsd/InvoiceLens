@@ -24,6 +24,9 @@ def dist_dir() -> Path | None:
 
 
 def try_serve_static(path: str) -> tuple[int, str, bytes] | None:
+    # /api/* 由 Local API 路由处理，禁止 SPA index.html 回退误吞 JSON 接口
+    if path.startswith("/api/"):
+        return None
     root = dist_dir()
     if root is None:
         return None

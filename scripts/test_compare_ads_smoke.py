@@ -1,4 +1,4 @@
-"""CI smoke: 子公司横向对比（ads_scorecard / compare API）。"""
+"""CI smoke: 主体横向对比（ads_scorecard / compare API）。"""
 from __future__ import annotations
 
 import sys
@@ -40,7 +40,29 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dim_enterprise_year_roster (
+            stat_year SMALLINT NOT NULL,
+            enterprise_id VARCHAR NOT NULL,
+            enterprise_name VARCHAR,
+            state_investor VARCHAR NOT NULL,
+            state_investor_unified_credit_code VARCHAR,
+            PRIMARY KEY (stat_year, enterprise_id)
+        )
+        """
+    )
     conn.execute("DELETE FROM ads_scorecard")
+    conn.execute("DELETE FROM dim_enterprise_year_roster")
+    conn.execute(
+        """
+        INSERT INTO dim_enterprise_year_roster (
+            stat_year, enterprise_id, enterprise_name, state_investor, state_investor_unified_credit_code
+        ) VALUES
+            (2026, 'ENT-A', '子公司A', '华能示范集团', 'SOE-001'),
+            (2026, 'ENT-B', '子公司B', '国电示范集团', 'SOE-002')
+        """
+    )
     conn.execute(
         """
         INSERT INTO ads_scorecard (
@@ -49,8 +71,8 @@ def _seed(conn: duckdb.DuckDBPyConnection) -> None:
             flag_total, flag_high, risk_score, risk_level, cr1, cancel_ratio,
             analysis_batch
         ) VALUES
-            ('sc1', 'Y2026', 'ENT-A', '子公司A', 2026, 1000, 10, 3, 2, 1, 72.5, '关注', 0.35, 0.02, 'batch_smoke'),
-            ('sc2', 'Y2026', 'ENT-B', '子公司B', 2026, 800, 8, 2, 0, 0, 88.0, '正常', 0.22, 0.01, 'batch_smoke')
+            ('sc1', 'Y2026', 'ENTA', '子公司A', 2026, 1000, 10, 3, 2, 1, 72.5, '关注', 0.35, 0.02, 'batch_smoke'),
+            ('sc2', 'Y2026', 'ENTB', '子公司B', 2026, 800, 8, 2, 0, 0, 88.0, '正常', 0.22, 0.01, 'batch_smoke')
         """
     )
 
@@ -76,16 +98,35 @@ def main() -> int:
             assert meta.get("ok"), meta
             assert meta.get("scorecard_ready") is True, meta
 
+            meta_y = api_compare_meta(conn, stat_year=stat_year)
+            assert meta_y.get("ok"), meta_y
+            assert int(meta_y.get("soe_count") or 0) == 2, meta_y
+
             rank = api_compare_rank_list(conn, stat_year=stat_year, limit=10)
             assert rank.get("ok"), rank
             assert int(rank.get("total") or 0) == 2, rank
             rows = rank.get("rows") or []
             assert len(rows) == 2, rank
-            assert rows[0].get("entity_id") in ("ENT-A", "ENT-B"), rows
+            assert rows[0].get("entity_id") in ("ENTA", "ENTB"), rows
+            assert rows[0].get("soe_anchor_enterprise_name") in ("华能示范集团", "国电示范集团"), rows
+
+            rank_filtered = api_compare_rank_list(
+                conn, stat_year=stat_year, soe_anchor_id="SOE-001", limit=10
+            )
+            assert rank_filtered.get("ok"), rank_filtered
+            assert int(rank_filtered.get("total") or 0) == 1, rank_filtered
+            assert (rank_filtered.get("rows") or [{}])[0].get("entity_id") == "ENTA", rank_filtered
 
             charts = api_compare_charts_series(conn, stat_year=stat_year, metric="amount", limit=5)
             assert charts.get("ok"), charts
             assert len(charts.get("series") or []) >= 1, charts
+
+            charts_filtered = api_compare_charts_series(
+                conn, stat_year=stat_year, metric="amount", limit=5, soe_anchor_id="SOE-002"
+            )
+            assert charts_filtered.get("ok"), charts_filtered
+            assert len(charts_filtered.get("series") or []) == 1, charts_filtered
+            assert (charts_filtered.get("series") or [{}])[0].get("entity_id") == "ENTB", charts_filtered
 
     print("SMOKE PASS: compare ads")
     return 0

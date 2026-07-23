@@ -16,7 +16,8 @@ import {
   type ReportChapter,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
-import { navigateWithQuery, readNavQueryParams } from '../utils/navHelpers'
+import { handleNavAnalysisAction } from '../dm/flagAnalysisNavigate'
+import { readNavQueryParams } from '../utils/navHelpers'
 import { useLicense } from '../settings/useLicense'
 import { reportChapterNavKey } from './reportChapterNav'
 import type { NavKey } from '../types'
@@ -83,6 +84,18 @@ export function ReportConfigPage({ onNav }: Props) {
   const [lastFileName, setLastFileName] = useState<string | null>(null)
   const exportAllowed = license.exportAllowed
   const licenseHint = license.trialHint
+
+  const goAnalysis = useCallback(
+    (nav: NavKey, params: Record<string, string | undefined>) => {
+      if (!onNav) return
+      const compact: Record<string, string> = {}
+      for (const [k, v] of Object.entries(params)) {
+        if (v != null && v !== '') compact[k] = v
+      }
+      handleNavAnalysisAction(nav, compact, onNav, null)
+    },
+    [onNav],
+  )
 
   const effectiveYear = useMemo(() => {
     const y = statYear.trim()
@@ -450,7 +463,7 @@ export function ReportConfigPage({ onNav }: Props) {
                       type="button"
                       className="text-xs text-primary hover:underline"
                       onClick={() =>
-                        navigateWithQuery(onNav, reportChapterNavKey(c.id)!, {
+                        goAnalysis(reportChapterNavKey(c.id)!, {
                           stat_year: effectiveYear,
                         })
                       }
@@ -640,7 +653,7 @@ export function ReportConfigPage({ onNav }: Props) {
             <button
               type="button"
               className="w-fit text-sm text-primary hover:underline"
-              onClick={() => navigateWithQuery(onNav, 'report_archive', { stat_year: effectiveYear })}
+              onClick={() => goAnalysis('report_archive', { stat_year: effectiveYear })}
             >
               {ui.goArchive}
             </button>

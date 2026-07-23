@@ -48,7 +48,7 @@ if st.button("初始化/刷新数据库对象（建表 + 视图）", type="secon
 report_title = st.text_input("报告标题", value="发票数据审计分析报告")
 st.multiselect(
     "选择报告章节（占位）",
-    options=["摘要", "数据概览", "供应商集中度", "审计疑点", "关联交易", "子公司对比", "附录（口径与字段）"],
+    options=["摘要", "数据概览", "供应商集中度", "审计疑点", "关联交易", "主体对比", "附录（口径与字段）"],
     default=["摘要", "数据概览", "审计疑点"],
 )
 st.radio("输出格式（占位）", options=["Word（docx）", "PDF", "两者都要"], index=0)

@@ -21,7 +21,7 @@ _DEFAULT_CHAPTERS = [
     {"id": "audit_flags", "label": "第四章 审计疑点清单", "default": True},
     {"id": "flags_track", "label": "附录 已确认疑点摘要", "default": True},
     {"id": "related", "label": "第五章 关联交易分析", "default": True},
-    {"id": "compare", "label": "第六章 子公司横向对比", "default": True},
+    {"id": "compare", "label": "第六章 主体横向对比", "default": True},
     {"id": "supplier_new", "label": "专题 新增供应商", "default": False},
     {"id": "trade_relationships", "label": "专题 往来关系摘要", "default": False},
     {"id": "tax_in_out_deviation", "label": "专题 进销偏离分析", "default": False},
@@ -61,9 +61,9 @@ _BUILTIN_TEMPLATES: list[dict[str, Any]] = [
     },
     {
         "template_id": "builtin_compare",
-        "name": "子公司对比简报",
-        "title_template": "{year}年度子公司发票数据对比简报",
-        "description": "概览 + 供应商 + 子公司横向对比，适用于集团内部分析。",
+        "name": "主体对比简报",
+        "title_template": "{year}年度主体发票数据对比简报",
+        "description": "概览 + 供应商 + 主体横向对比，适用于多主体分析与集团内对照。",
         "chapters": {
             "overview": True,
             "structure": False,
