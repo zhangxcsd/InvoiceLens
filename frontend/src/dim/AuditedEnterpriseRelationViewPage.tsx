@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { AuditedEnterpriseFilters } from '../components/AuditedEnterpriseFilters'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
-  fetchDimOrgHierRows,
+  fetchAuditedEnterpriseRelationRows,
   type AuditedEnterpriseRelationKpis,
   type AuditedEnterpriseRelationListRow,
 } from '../config/localApi'
 import { zhCN as t } from '../copy/zh-CN'
 import type { NavKey } from '../types'
-import { readNavQueryParams } from '../utils/navHelpers'
+import { navigateToOrgHierTree, readNavQueryParams, writeNavQueryParams } from '../utils/navHelpers'
+import { buildStatYearOptions, defaultPracticeStatYear } from '../utils/statYearOptions'
 import { DimTablePagination } from './DimTablePagination'
+import { relationListRowKey, relationRowOrgTreeParams } from './auditedEnterpriseTreeHelpers'
+import type { OrgTreeSharedFilters } from './orgTreeSharedFilters'
 import { navToSubjectLibrary } from './subjectLibraryNav'
 
 function relationTypeClass(value: string) {
@@ -32,8 +35,10 @@ function exportStamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
 }
 
-const pathCellCls =
-  'max-w-[220px] align-top break-words text-left leading-snug sm:max-w-[260px] md:max-w-[300px] lg:max-w-[340px] line-clamp-3'
+const pathCellBaseCls =
+  'max-w-[220px] align-top break-words text-left leading-snug sm:max-w-[260px] md:max-w-[300px] lg:max-w-[340px]'
+const pathCellCls = `${pathCellBaseCls} line-clamp-3`
+const pathCellExpandedCls = pathCellBaseCls
 
 const thStickyTop = 'sticky top-0 z-20 border-b border-border-light bg-[#fafbfd] shadow-[0_1px_0_0_rgba(15,23,42,0.06)]'
 const thCorner = `${thStickyTop} sticky left-0 z-30 border-r border-border-light pr-2`
@@ -47,7 +52,19 @@ const emptyKpis: AuditedEnterpriseRelationKpis = {
   in_analysis_pool: 0,
 }
 
-export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) => void }) {
+const FILTER_DEBOUNCE_MS = 320
+
+export function AuditedEnterpriseRelationViewPage(props: {
+  onNav?: (k: NavKey) => void
+  embedded?: boolean
+  sharedFilters?: OrgTreeSharedFilters
+  onOpenOrgTree?: (params: {
+    statYear?: string
+    keyword?: string
+    stateInvestor?: string
+    treeMode?: 'management' | 'equity'
+  }) => void
+}) {
   const ui = t.auditedEnterpriseRelationUi
   const dash = t.dwsDashboardUi
   const urlQuery = useMemo(() => readNavQueryParams(), [])
@@ -60,19 +77,47 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
   const [loadError, setLoadError] = useState('')
   const [emptyHint, setEmptyHint] = useState('')
 
-  const [selectedYear, setSelectedYear] = useState<string>(
+  const [localSelectedYear, setLocalSelectedYear] = useState<string>(
     urlQuery.stat_year?.trim() || ui.filterYearAll,
   )
-  const [selectedStateInvestor, setSelectedStateInvestor] = useState<string>(ui.filterStateInvestorAll)
-  const [enterpriseKeyword, setEnterpriseKeyword] = useState(
+  const [localSelectedStateInvestor, setLocalSelectedStateInvestor] = useState<string>(
+    urlQuery.state_investor?.trim() || ui.filterStateInvestorAll,
+  )
+  const [localEnterpriseKeyword, setLocalEnterpriseKeyword] = useState(
     urlQuery.keyword ?? urlQuery.seller_tax_no ?? urlQuery.buyer_tax_no ?? '',
   )
+  const [localDebouncedEnterpriseKeyword, setLocalDebouncedEnterpriseKeyword] = useState(localEnterpriseKeyword)
+  const [localSelectedRelationType, setLocalSelectedRelationType] = useState<string>(() => {
+    const raw = urlQuery.relation_type?.trim()
+    if (raw === ui.filterRelationTypeMatch || raw === ui.filterRelationTypeMismatch) return raw
+    return ui.filterRelationTypeAll
+  })
+  const [localSelectedMatchStatus, setLocalSelectedMatchStatus] = useState<string>(() => {
+    const raw = urlQuery.match_status?.trim()
+    if (raw === ui.filterMatchStatusMapped || raw === ui.filterMatchStatusUnmapped) return raw
+    return ui.filterMatchStatusAll
+  })
+  const [localInAnalysisPoolOnly, setLocalInAnalysisPoolOnly] = useState(
+    () => urlQuery.in_analysis_pool?.trim() === '1',
+  )
+
+  const selectedYear = props.sharedFilters?.selectedYear ?? localSelectedYear
+  const selectedStateInvestor = props.sharedFilters?.selectedStateInvestor ?? localSelectedStateInvestor
+  const enterpriseKeyword = props.sharedFilters?.enterpriseKeyword ?? localEnterpriseKeyword
+  const debouncedEnterpriseKeyword =
+    props.sharedFilters?.debouncedEnterpriseKeyword ?? localDebouncedEnterpriseKeyword
+  const selectedRelationType = props.sharedFilters?.selectedRelationType ?? localSelectedRelationType
+  const selectedMatchStatus = props.sharedFilters?.selectedMatchStatus ?? localSelectedMatchStatus
+  const inAnalysisPoolOnly = props.sharedFilters?.inAnalysisPoolOnly ?? localInAnalysisPoolOnly
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [exportError, setExportError] = useState('')
   const [exported, setExported] = useState(false)
+  const [selectedRowKey, setSelectedRowKey] = useState('')
+  const [expandedPathRowKeys, setExpandedPathRowKeys] = useState<Set<string>>(() => new Set())
+  const tableScrollRef = useRef<HTMLDivElement | null>(null)
 
   const filterRows = useMemo(
     () =>
@@ -84,35 +129,166 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
     [rows],
   )
 
-  const years = useMemo(() => {
-    const fromApi = snapshotYears.length ? snapshotYears : Array.from(new Set(filterRows.map((r) => r.snapshotYear)))
-    return fromApi.sort((a, b) => Number(b) - Number(a))
-  }, [filterRows, snapshotYears])
+  const years = useMemo(
+    () => buildStatYearOptions(snapshotYears.length ? snapshotYears : filterRows.map((r) => r.snapshotYear)),
+    [filterRows, snapshotYears],
+  )
 
   const stateInvestorEnterprises = useMemo(
     () => Array.from(new Set(filterRows.map((r) => r.stateInvestorEnterprise))).sort((a, b) => a.localeCompare(b, 'zh-CN')),
     [filterRows],
   )
 
+  const relationTypeOptions = useMemo(
+    () => [ui.filterRelationTypeMatch, ui.filterRelationTypeMismatch],
+    [ui.filterRelationTypeMatch, ui.filterRelationTypeMismatch],
+  )
+  const matchStatusOptions = useMemo(
+    () => [ui.filterMatchStatusMapped, ui.filterMatchStatusUnmapped],
+    [ui.filterMatchStatusMapped, ui.filterMatchStatusUnmapped],
+  )
+
+  const effectiveRelationType =
+    selectedRelationType === ui.filterRelationTypeAll ? undefined : selectedRelationType
+  const effectiveMatchStatus =
+    selectedMatchStatus === ui.filterMatchStatusAll ? undefined : selectedMatchStatus
+
   const canReset =
-    selectedYear !== ui.filterYearAll ||
-    selectedStateInvestor !== ui.filterStateInvestorAll ||
-    enterpriseKeyword.trim().length > 0
+    props.sharedFilters?.canReset ??
+    (selectedYear !== ui.filterYearAll ||
+      selectedStateInvestor !== ui.filterStateInvestorAll ||
+      enterpriseKeyword.trim().length > 0 ||
+      selectedRelationType !== ui.filterRelationTypeAll ||
+      selectedMatchStatus !== ui.filterMatchStatusAll ||
+      inAnalysisPoolOnly)
 
   const resetFilters = () => {
     if (!canReset) return
-    setSelectedYear(ui.filterYearAll)
-    setSelectedStateInvestor(ui.filterStateInvestorAll)
-    setEnterpriseKeyword('')
+    if (props.sharedFilters) {
+      props.sharedFilters.onReset()
+    } else {
+      setLocalSelectedYear(ui.filterYearAll)
+      setLocalSelectedStateInvestor(ui.filterStateInvestorAll)
+      setLocalEnterpriseKeyword('')
+      setLocalDebouncedEnterpriseKeyword('')
+      setLocalSelectedRelationType(ui.filterRelationTypeAll)
+      setLocalSelectedMatchStatus(ui.filterMatchStatusAll)
+      setLocalInAnalysisPoolOnly(false)
+    }
     setPage(1)
+    setSelectedRowKey('')
+    setExpandedPathRowKeys(new Set())
+  }
+
+  useEffect(() => {
+    if (props.sharedFilters) return
+    const timer = window.setTimeout(() => setLocalDebouncedEnterpriseKeyword(localEnterpriseKeyword), FILTER_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [localEnterpriseKeyword, props.sharedFilters])
+
+  useEffect(() => {
+    if (props.embedded || props.sharedFilters) return
+    writeNavQueryParams({
+      stat_year: selectedYear === ui.filterYearAll ? undefined : selectedYear,
+      state_investor: selectedStateInvestor === ui.filterStateInvestorAll ? undefined : selectedStateInvestor,
+      keyword: debouncedEnterpriseKeyword.trim() || undefined,
+      relation_type: effectiveRelationType,
+      match_status: effectiveMatchStatus,
+      in_analysis_pool: inAnalysisPoolOnly ? '1' : undefined,
+    })
+  }, [
+    debouncedEnterpriseKeyword,
+    effectiveMatchStatus,
+    effectiveRelationType,
+    inAnalysisPoolOnly,
+    props.embedded,
+    props.sharedFilters,
+    selectedStateInvestor,
+    selectedYear,
+    ui.filterStateInvestorAll,
+    ui.filterYearAll,
+  ])
+
+  const onYearChange = (year: string) => {
+    if (props.sharedFilters) props.sharedFilters.onYearChange(year)
+    else setLocalSelectedYear(year)
+    setPage(1)
+  }
+
+  const onStateInvestorChange = (value: string) => {
+    if (props.sharedFilters) props.sharedFilters.onStateInvestorChange(value)
+    else setLocalSelectedStateInvestor(value)
+    setPage(1)
+  }
+
+  const onEnterpriseKeywordChange = (keyword: string) => {
+    if (props.sharedFilters) props.sharedFilters.onEnterpriseKeywordChange(keyword)
+    else setLocalEnterpriseKeyword(keyword)
+    setPage(1)
+  }
+
+  const onRelationTypeChange = (value: string) => {
+    if (props.sharedFilters) props.sharedFilters.onRelationTypeChange(value)
+    else setLocalSelectedRelationType(value)
+    if (value !== ui.filterRelationTypeAll) {
+      if (props.sharedFilters) {
+        props.sharedFilters.onMatchStatusChange(ui.filterMatchStatusAll)
+        props.sharedFilters.onInAnalysisPoolOnlyChange(false)
+      } else {
+        setLocalSelectedMatchStatus(ui.filterMatchStatusAll)
+        setLocalInAnalysisPoolOnly(false)
+      }
+    }
+    setPage(1)
+    setSelectedRowKey('')
+    setExpandedPathRowKeys(new Set())
+  }
+
+  const onMatchStatusChange = (value: string) => {
+    if (props.sharedFilters) props.sharedFilters.onMatchStatusChange(value)
+    else setLocalSelectedMatchStatus(value)
+    if (value !== ui.filterMatchStatusAll) {
+      if (props.sharedFilters) {
+        props.sharedFilters.onRelationTypeChange(ui.filterRelationTypeAll)
+        props.sharedFilters.onInAnalysisPoolOnlyChange(false)
+      } else {
+        setLocalSelectedRelationType(ui.filterRelationTypeAll)
+        setLocalInAnalysisPoolOnly(false)
+      }
+    }
+    setPage(1)
+    setSelectedRowKey('')
+    setExpandedPathRowKeys(new Set())
+  }
+
+  const onInAnalysisPoolOnlyChange = (value: boolean) => {
+    if (props.sharedFilters) props.sharedFilters.onInAnalysisPoolOnlyChange(value)
+    else setLocalInAnalysisPoolOnly(value)
+    if (value) {
+      if (props.sharedFilters) {
+        props.sharedFilters.onRelationTypeChange(ui.filterRelationTypeAll)
+        props.sharedFilters.onMatchStatusChange(ui.filterMatchStatusAll)
+      } else {
+        setLocalSelectedRelationType(ui.filterRelationTypeAll)
+        setLocalSelectedMatchStatus(ui.filterMatchStatusAll)
+      }
+    }
+    setPage(1)
+    setSelectedRowKey('')
+    setExpandedPathRowKeys(new Set())
   }
 
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError('')
-    const res = await fetchDimOrgHierRows({
-      statYear: selectedYear === ui.filterYearAll ? undefined : selectedYear,
-      keyword: enterpriseKeyword.trim() || undefined,
+    const res = await fetchAuditedEnterpriseRelationRows({
+      snapshotYear: selectedYear === ui.filterYearAll ? undefined : selectedYear,
+      stateInvestor:
+        selectedStateInvestor === ui.filterStateInvestorAll ? undefined : selectedStateInvestor,
+      keyword: debouncedEnterpriseKeyword.trim() || undefined,
+      relationType: effectiveRelationType,
+      matchStatus: effectiveMatchStatus,
+      inAnalysisPool: inAnalysisPoolOnly,
       page,
       pageSize,
       sort: sortToApi(sortKey, sortDir),
@@ -125,14 +301,27 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
       setLoading(false)
       return
     }
-    setSnapshotYears(res.stat_years ?? [])
+    setSnapshotYears(res.snapshot_years ?? [])
+    if (res.selected_year && !props.sharedFilters) {
+      const mergedYears = buildStatYearOptions(res.snapshot_years ?? [])
+      setLocalSelectedYear((prev) =>
+        prev === ui.filterYearAll || !mergedYears.includes(prev)
+          ? defaultPracticeStatYear(mergedYears, res.selected_year)
+          : prev,
+      )
+    }
     setRows(res.rows ?? [])
     setTotal(res.total ?? 0)
     setKpis(res.kpis ?? emptyKpis)
-    setEmptyHint('')
+    setEmptyHint(res.empty_hint ?? '')
+    setSelectedRowKey('')
+    setExpandedPathRowKeys(new Set())
     setLoading(false)
   }, [
-    enterpriseKeyword,
+    debouncedEnterpriseKeyword,
+    effectiveMatchStatus,
+    effectiveRelationType,
+    inAnalysisPoolOnly,
     page,
     pageSize,
     selectedStateInvestor,
@@ -142,11 +331,86 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
     ui.filterStateInvestorAll,
     ui.filterYearAll,
     ui.loadFailed,
+    props.sharedFilters,
   ])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!selectedRowKey) return
+    const el = tableScrollRef.current?.querySelector(`[data-relation-row="${CSS.escape(selectedRowKey)}"]`)
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [rows, selectedRowKey])
+
+  const toggleKpiFilter = useCallback(
+    (key: 'total' | 'mismatch' | 'mapped' | 'unmapped' | 'in_pool') => {
+      if (key === 'total') {
+        onRelationTypeChange(ui.filterRelationTypeAll)
+        onMatchStatusChange(ui.filterMatchStatusAll)
+        onInAnalysisPoolOnlyChange(false)
+        return
+      }
+      if (key === 'mismatch') {
+        const active = selectedRelationType === ui.filterRelationTypeMismatch
+        onRelationTypeChange(active ? ui.filterRelationTypeAll : ui.filterRelationTypeMismatch)
+        return
+      }
+      if (key === 'mapped') {
+        const active = selectedMatchStatus === ui.filterMatchStatusMapped
+        onMatchStatusChange(active ? ui.filterMatchStatusAll : ui.filterMatchStatusMapped)
+        return
+      }
+      if (key === 'unmapped') {
+        const active = selectedMatchStatus === ui.filterMatchStatusUnmapped
+        onMatchStatusChange(active ? ui.filterMatchStatusAll : ui.filterMatchStatusUnmapped)
+        return
+      }
+      onInAnalysisPoolOnlyChange(!inAnalysisPoolOnly)
+    },
+    [
+      inAnalysisPoolOnly,
+      onInAnalysisPoolOnlyChange,
+      onMatchStatusChange,
+      onRelationTypeChange,
+      selectedMatchStatus,
+      selectedRelationType,
+      ui.filterMatchStatusAll,
+      ui.filterMatchStatusMapped,
+      ui.filterMatchStatusUnmapped,
+      ui.filterRelationTypeAll,
+      ui.filterRelationTypeMismatch,
+    ],
+  )
+
+  const isKpiActive = useCallback(
+    (key: 'total' | 'mismatch' | 'mapped' | 'unmapped' | 'in_pool') => {
+      if (key === 'total') {
+        return (
+          selectedRelationType === ui.filterRelationTypeAll &&
+          selectedMatchStatus === ui.filterMatchStatusAll &&
+          !inAnalysisPoolOnly
+        )
+      }
+      if (key === 'mismatch') return selectedRelationType === ui.filterRelationTypeMismatch
+      if (key === 'mapped') return selectedMatchStatus === ui.filterMatchStatusMapped
+      if (key === 'unmapped') return selectedMatchStatus === ui.filterMatchStatusUnmapped
+      return inAnalysisPoolOnly
+    },
+    [
+      inAnalysisPoolOnly,
+      selectedMatchStatus,
+      selectedRelationType,
+      ui.filterMatchStatusAll,
+      ui.filterMatchStatusMapped,
+      ui.filterMatchStatusUnmapped,
+      ui.filterRelationTypeAll,
+      ui.filterRelationTypeMismatch,
+    ],
+  )
 
   const toggleSort = (key: SortKey) => {
     setPage(1)
@@ -201,11 +465,11 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
   const emptyMessage = loading ? '…' : loadError || emptyHint || (total === 0 ? ui.loadEmptyHint : ui.filterEmpty)
 
   const kpiCards = [
-    { label: ui.kpiTotal, value: kpis.total },
-    { label: ui.kpiMismatch, value: kpis.relation_mismatch },
-    { label: ui.kpiHierDiff ?? '管产分离', value: (kpis as { hier_diff?: number }).hier_diff ?? kpis.relation_mismatch },
-    { label: ui.kpiMgChange ?? '管理变更', value: (kpis as { mg_change_count?: number }).mg_change_count ?? 0 },
-    { label: ui.kpiEqChange ?? '产权变更', value: (kpis as { eq_change_count?: number }).eq_change_count ?? 0 },
+    { key: 'total' as const, label: ui.kpiTotal, value: kpis.total, clickable: true },
+    { key: 'mismatch' as const, label: ui.kpiMismatch, value: kpis.relation_mismatch, clickable: true },
+    { key: 'mapped' as const, label: ui.kpiMapped, value: kpis.mapped, clickable: true },
+    { key: 'unmapped' as const, label: ui.kpiUnmapped, value: kpis.unmapped, clickable: true },
+    { key: 'in_pool' as const, label: ui.kpiInPool, value: kpis.in_analysis_pool, clickable: true },
   ]
 
   const flagContextHint = useMemo(() => {
@@ -217,16 +481,103 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
       .replace('{seller}', seller || '—')
   }, [dash, urlQuery.buyer_tax_no, urlQuery.seller_tax_no])
 
-  return (
-    <div className="w-full px-5 py-6">
-      <PrototypePageHeader
-        title={ui.pageTitle}
-        description={ui.pageNote}
-        note={ui.pageDesc}
-        noteTone="plain"
-        badgeText={undefined}
-        actions={
-          <div className="flex items-center gap-2">
+  const openOrgTree = (params: {
+    statYear?: string
+    keyword?: string
+    stateInvestor?: string
+    treeMode?: 'management' | 'equity'
+  }) => {
+    if (props.onOpenOrgTree) {
+      props.onOpenOrgTree(params)
+      return
+    }
+    if (props.onNav) navigateToOrgHierTree(props.onNav, params)
+  }
+
+  const openOrgTreeFromRow = useCallback(
+    (row: AuditedEnterpriseRelationListRow) => {
+      openOrgTree(relationRowOrgTreeParams(row, selectedStateInvestor, ui.filterStateInvestorAll))
+    },
+    [openOrgTree, selectedStateInvestor, ui.filterStateInvestorAll],
+  )
+
+  const rowKeys = useMemo(() => rows.map((row) => relationListRowKey(row)), [rows])
+
+  const handleTableKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (rows.length === 0) return
+      const { key } = event
+      if (key === 'Enter') {
+        if (!selectedRowKey) return
+        const row = rows.find((item) => relationListRowKey(item) === selectedRowKey)
+        if (!row || !(props.onNav || props.onOpenOrgTree)) return
+        event.preventDefault()
+        openOrgTreeFromRow(row)
+        return
+      }
+      if (key === ' ') {
+        if (!selectedRowKey) return
+        event.preventDefault()
+        setExpandedPathRowKeys((prev) => {
+          const next = new Set(prev)
+          if (next.has(selectedRowKey)) next.delete(selectedRowKey)
+          else next.add(selectedRowKey)
+          return next
+        })
+        return
+      }
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(key)) return
+      event.preventDefault()
+      const currentIdx = selectedRowKey ? rowKeys.indexOf(selectedRowKey) : -1
+      if (key === 'Home') {
+        setSelectedRowKey(rowKeys[0] ?? '')
+        return
+      }
+      if (key === 'End') {
+        setSelectedRowKey(rowKeys[rowKeys.length - 1] ?? '')
+        return
+      }
+      if (key === 'ArrowDown') {
+        const next = rowKeys[Math.min(currentIdx + 1, rowKeys.length - 1)] ?? rowKeys[0]
+        if (next) setSelectedRowKey(next)
+        return
+      }
+      const prev =
+        currentIdx <= 0 ? rowKeys[0] : rowKeys[Math.max(currentIdx - 1, 0)]
+      if (prev) setSelectedRowKey(prev)
+    },
+    [openOrgTreeFromRow, props.onNav, props.onOpenOrgTree, rowKeys, rows, selectedRowKey],
+  )
+
+  const body = (
+    <>
+      {flagContextHint ? <p className="mb-3 text-il-meta text-amber-800">{flagContextHint}</p> : null}
+      {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
+
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+        {kpiCards.map((item) => {
+          const active = isKpiActive(item.key)
+          return (
+            <button
+              key={item.key}
+              type="button"
+              className={[
+                'rounded-[10px] border px-3 py-3 text-left shadow-sm transition-colors',
+                active ? 'border-accent/40 bg-[#f0f7ff]' : 'border-border-light bg-white',
+                item.clickable ? 'cursor-pointer hover:border-accent/30 hover:bg-[#f8fbff]' : 'cursor-default',
+              ].join(' ')}
+              onClick={() => toggleKpiFilter(item.key)}
+            >
+              <div className="text-il-label text-text-3">{item.label}</div>
+              <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
+            </button>
+          )
+        })}
+      </div>
+
+      <Card title={ui.tableTitle}>
+        {props.embedded ? (
+          <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
             {exported ? <span className="text-il-meta text-[#1b6b3a]">{ui.exportSuccess}</span> : null}
             <button
               type="button"
@@ -242,46 +593,35 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
               {ui.exportCurrentResult}
             </button>
           </div>
-        }
-      />
-
-      {flagContextHint ? <p className="mb-3 text-il-meta text-amber-800">{flagContextHint}</p> : null}
-      {loadError ? <p className="mb-3 text-il-meta text-red-600">{loadError}</p> : null}
-
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-        {kpiCards.map((item) => (
-          <div key={item.label} className="rounded-[10px] border border-border-light bg-white px-3 py-3 shadow-sm">
-            <div className="text-il-label text-text-3">{item.label}</div>
-            <div className="mt-1 text-[20px] font-bold tabular-nums text-text">{item.value}</div>
-          </div>
-        ))}
-      </div>
-
-      <Card title={ui.tableTitle}>
+        ) : null}
         <AuditedEnterpriseFilters
           yearLabel={ui.filterYearLabel}
           yearAllLabel={ui.filterYearAll}
           years={years}
           selectedYear={selectedYear}
-          onYearChange={(y) => {
-            setSelectedYear(y)
-            setPage(1)
-          }}
+          onYearChange={onYearChange}
           stateInvestorLabel={ui.filterStateInvestorLabel}
           stateInvestorAllLabel={ui.filterStateInvestorAll}
           stateInvestorOptions={stateInvestorEnterprises}
           selectedStateInvestor={selectedStateInvestor}
-          onStateInvestorChange={(v) => {
-            setSelectedStateInvestor(v)
-            setPage(1)
-          }}
+          onStateInvestorChange={onStateInvestorChange}
           enterpriseLabel={ui.filterEnterpriseLabel}
           enterprisePlaceholder={ui.filterEnterprisePlaceholder}
           enterpriseKeyword={enterpriseKeyword}
-          onEnterpriseKeywordChange={(kw) => {
-            setEnterpriseKeyword(kw)
-            setPage(1)
-          }}
+          onEnterpriseKeywordChange={onEnterpriseKeywordChange}
+          relationTypeLabel={ui.filterRelationTypeLabel}
+          relationTypeAllLabel={ui.filterRelationTypeAll}
+          relationTypeOptions={relationTypeOptions}
+          selectedRelationType={selectedRelationType}
+          onRelationTypeChange={onRelationTypeChange}
+          matchStatusLabel={ui.filterMatchStatusLabel}
+          matchStatusAllLabel={ui.filterMatchStatusAll}
+          matchStatusOptions={matchStatusOptions}
+          selectedMatchStatus={selectedMatchStatus}
+          onMatchStatusChange={onMatchStatusChange}
+          inAnalysisPoolLabel={ui.filterInAnalysisPoolLabel}
+          inAnalysisPoolOnly={inAnalysisPoolOnly}
+          onInAnalysisPoolOnlyChange={onInAnalysisPoolOnlyChange}
           resetLabel={ui.filterReset}
           canReset={canReset}
           onReset={resetFilters}
@@ -294,7 +634,15 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
           </span>
         </div>
         {exportError ? <div className="mb-2 text-il-meta text-[#c2410c]">{exportError}</div> : null}
-        <div className="overflow-x-auto rounded-sm border border-border-light">
+        <div
+          ref={tableScrollRef}
+          tabIndex={0}
+          role="grid"
+          data-testid="org-relation-table-grid"
+          aria-label={ui.tableTitle}
+          onKeyDown={handleTableKeyDown}
+          className="overflow-x-auto rounded-sm border border-border-light outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        >
           <table className="w-full min-w-[1400px] border-separate border-spacing-0 text-il-page-desc">
             <thead>
               <tr className="text-left text-il-label text-text-3">
@@ -338,32 +686,62 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
                 </th>
                 <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colMatchStatus}</th>
                 <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colInRoster}</th>
-                {props.onNav ? <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colActions}</th> : null}
+                {props.onNav || props.onOpenOrgTree ? <th scope="col" className={`${thStickyTop} whitespace-nowrap px-3 py-2 font-medium`}>{ui.colActions}</th> : null}
               </tr>
             </thead>
             <tbody className="text-text-2">
               {rows.map((row) => {
                 const subjectKw = row.subject_no || row.code || row.name
+                const rowKey = relationListRowKey(row)
+                const activeRow = selectedRowKey === rowKey
+                const pathsExpanded = expandedPathRowKeys.has(rowKey)
+                const pathCls = pathsExpanded ? pathCellExpandedCls : pathCellCls
                 return (
-                  <tr key={`${row.name}-${row.snapshot_year}-${row.code}`} className="group">
-                    <td className={`${tdStickyLeft} px-3 py-2.5 font-medium text-text`}>{row.name}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 tabular-nums group-hover:bg-[#f8fafc]">{row.snapshot_year}</td>
-                    <td className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`} title={row.mgmt_path}>{row.mgmt_path}</td>
-                    <td className={`${pathCellCls} border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]`} title={row.equity_path}>{row.equity_path}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">
+                  <tr
+                    key={rowKey}
+                    data-relation-row={rowKey}
+                    data-relation-path-expanded={pathsExpanded ? 'true' : 'false'}
+                    className={[
+                      'group cursor-pointer',
+                      activeRow ? 'bg-[#f0f7ff]' : 'hover:bg-[#f8fafc]',
+                    ].join(' ')}
+                    onClick={() => setSelectedRowKey(rowKey)}
+                    onDoubleClick={() => {
+                      if (props.onNav || props.onOpenOrgTree) openOrgTreeFromRow(row)
+                    }}
+                  >
+                    <td className={`${tdStickyLeft} px-3 py-2.5 font-medium text-text ${activeRow ? 'bg-[#f0f7ff]' : ''}`}>{row.name}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 tabular-nums ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.snapshot_year}</td>
+                    <td className={`${pathCls} border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`} title={row.mgmt_path}>{row.mgmt_path}</td>
+                    <td className={`${pathCls} border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`} title={row.equity_path}>{row.equity_path}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>
                       <span className={relationTypeClass(row.relation_type)}>{row.relation_type}</span>
                     </td>
-                    <td className="border-b border-border-light px-3 py-2.5 font-mono text-[12px] group-hover:bg-[#f8fafc]">{row.entity_id || row.code || '—'}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.role_label || '—'}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 tabular-nums group-hover:bg-[#f8fafc]">{row.invoice_count ?? '—'}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.match_status || '—'}</td>
-                    <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">{row.in_roster ? ui.rosterYes : ui.rosterNo}</td>
-                    {props.onNav ? (
-                      <td className="border-b border-border-light px-3 py-2.5 group-hover:bg-[#f8fafc]">
+                    <td className={`border-b border-border-light px-3 py-2.5 font-mono text-[12px] ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.entity_id || row.code || '—'}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.role_label || '—'}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 tabular-nums ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.invoice_count ?? '—'}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.match_status || '—'}</td>
+                    <td className={`border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>{row.in_roster ? ui.rosterYes : ui.rosterNo}</td>
+                    {props.onNav || props.onOpenOrgTree ? (
+                      <td className={`border-b border-border-light px-3 py-2.5 ${activeRow ? 'bg-[#f0f7ff]' : 'group-hover:bg-[#f8fafc]'}`}>
                         <div className="flex flex-wrap gap-1.5">
-                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => props.onNav?.('dim_audit_related_library')}>{ui.actionCoverage}</button>
-                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => navToSubjectLibrary(props.onNav!, subjectKw)}>{ui.actionSubjectLibrary}</button>
-                          <button type="button" className="text-il-label text-accent hover:underline" onClick={() => props.onNav?.('dim_enterprise_year_roster')}>{ui.actionYearRoster}</button>
+                          <button
+                            type="button"
+                            className="text-il-label text-accent hover:underline"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              openOrgTreeFromRow(row)
+                            }}
+                          >
+                            {ui.actionOrgTree}
+                          </button>
+                          {props.onNav ? (
+                            <>
+                              <button type="button" className="text-il-label text-accent hover:underline" onClick={(event) => { event.stopPropagation(); props.onNav?.('dim_audit_related_library') }}>{ui.actionCoverage}</button>
+                              <button type="button" className="text-il-label text-accent hover:underline" onClick={(event) => { event.stopPropagation(); navToSubjectLibrary(props.onNav!, subjectKw) }}>{ui.actionSubjectLibrary}</button>
+                              <button type="button" className="text-il-label text-accent hover:underline" onClick={(event) => { event.stopPropagation(); props.onNav?.('dim_enterprise_year_roster') }}>{ui.actionYearRoster}</button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                     ) : null}
@@ -372,7 +750,7 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
               })}
               {rows.length === 0 ? (
                 <tr>
-                  <td className="border-b border-border-light px-3 py-6 text-center text-text-3" colSpan={props.onNav ? 11 : 10}>
+                  <td className="border-b border-border-light px-3 py-6 text-center text-text-3" colSpan={props.onNav || props.onOpenOrgTree ? 11 : 10}>
                     {emptyMessage}
                   </td>
                 </tr>
@@ -393,6 +771,39 @@ export function AuditedEnterpriseRelationViewPage(props: { onNav?: (k: NavKey) =
           }}
         />
       </Card>
+    </>
+  )
+
+  if (props.embedded) return body
+
+  return (
+    <div className="w-full px-5 py-6">
+      <PrototypePageHeader
+        title={ui.pageTitle}
+        description={ui.pageNote}
+        note={ui.pageDesc}
+        noteTone="plain"
+        badgeText={undefined}
+        actions={
+          <div className="flex items-center gap-2">
+            {exported ? <span className="text-il-meta text-[#1b6b3a]">{ui.exportSuccess}</span> : null}
+            <button
+              type="button"
+              className={[
+                'rounded-sm border px-3 py-1.5 text-il-meta transition-colors',
+                rows.length > 0
+                  ? 'border-border-light bg-white text-text hover:bg-[#f8fafc]'
+                  : 'cursor-not-allowed border-border-light bg-[#f5f7fa] text-text-3',
+              ].join(' ')}
+              disabled={rows.length === 0}
+              onClick={() => void exportCurrent()}
+            >
+              {ui.exportCurrentResult}
+            </button>
+          </div>
+        }
+      />
+      {body}
     </div>
   )
 }

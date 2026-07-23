@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from './components/Card'
 import { UploadZone, type PickedExcel } from './components/UploadZone'
 import { zhCN as t } from './copy/zh-CN'
+import { resolveOrgHierInitialMode } from './utils/navHelpers'
 import type { NavKey, User } from './types'
 import { sheetMappingOptionsFallback } from './config/sheetMappingOptions'
 import {
@@ -85,7 +86,6 @@ import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
 import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
-import { AuditedEnterpriseRelationViewPage } from './dim/AuditedEnterpriseRelationViewPage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
 import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
@@ -364,6 +364,7 @@ function Sidebar(props: {
       props.nav !== 'dim_enterprise_year_roster' &&
       props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_audited_invoice_link' &&
+      props.nav !== 'dim_org_hier_tree' &&
       props.nav !== 'dim_org_manage' &&
       props.nav !== 'dim_org_equity' &&
       props.nav !== 'dim_org_diff'
@@ -377,6 +378,7 @@ function Sidebar(props: {
       props.nav === 'dim_audited_contribution' ||
       props.nav === 'dim_audited_invoice_link' ||
       props.nav === 'dim_level1_enterprise_year' ||
+      props.nav === 'dim_org_hier_tree' ||
       props.nav === 'dim_org_manage' ||
       props.nav === 'dim_org_equity' ||
       props.nav === 'dim_org_diff'
@@ -871,16 +873,12 @@ function Sidebar(props: {
                 active: props.nav === 'dim_audited_contribution',
                 tier: 'great',
               })}
-              {navGrand('dim_org_manage', t.sidebar.dimOrgTree, {
-                active: props.nav === 'dim_org_manage',
-                tier: 'great',
-              })}
-              {navGrand('dim_org_equity', t.sidebar.dimEquityTree, {
-                active: props.nav === 'dim_org_equity',
-                tier: 'great',
-              })}
-              {navGrand('dim_org_diff', t.sidebar.dimOrgDiff, {
-                active: props.nav === 'dim_org_diff',
+              {navGrand('dim_org_hier_tree', t.sidebar.dimOrgHierTree, {
+                active:
+                  props.nav === 'dim_org_hier_tree' ||
+                  props.nav === 'dim_org_manage' ||
+                  props.nav === 'dim_org_equity' ||
+                  props.nav === 'dim_org_diff',
                 tier: 'great',
               })}
               {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
@@ -3266,25 +3264,16 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.sidebar.dimInvoiceLink}</b>
         </>
       )
-    if (props.nav === 'dim_org_manage')
+    if (
+      props.nav === 'dim_org_hier_tree' ||
+      props.nav === 'dim_org_manage' ||
+      props.nav === 'dim_org_equity' ||
+      props.nav === 'dim_org_diff'
+    )
       return (
         <>
           {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
-          <b className="text-text font-medium">{t.breadcrumb.dimOrgTree}</b>
-        </>
-      )
-    if (props.nav === 'dim_org_equity')
-      return (
-        <>
-          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
-          <b className="text-text font-medium">{t.breadcrumb.dimEquityTree}</b>
-        </>
-      )
-    if (props.nav === 'dim_org_diff')
-      return (
-        <>
-          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
-          <b className="text-text font-medium">{t.breadcrumb.dimOrgDiff}</b>
+          <b className="text-text font-medium">{t.breadcrumb.dimOrgHierTree}</b>
         </>
       )
     if (props.nav === 'dim_tax_lib')
@@ -3454,12 +3443,14 @@ function AppShell(props: {
             <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_audited_invoice_link' ? (
             <AuditedEnterpriseInvoiceLinkPage onNav={props.onNav} />
-          ) : props.nav === 'dim_org_manage' ? (
-            <AuditedEnterpriseTreePage mode="management" onNav={props.onNav} />
-          ) : props.nav === 'dim_org_equity' ? (
-            <AuditedEnterpriseTreePage mode="equity" onNav={props.onNav} />
-          ) : props.nav === 'dim_org_diff' ? (
-            <AuditedEnterpriseRelationViewPage onNav={props.onNav} />
+          ) : props.nav === 'dim_org_hier_tree' ||
+            props.nav === 'dim_org_manage' ||
+            props.nav === 'dim_org_equity' ||
+            props.nav === 'dim_org_diff' ? (
+            <AuditedEnterpriseTreePage
+              initialMode={resolveOrgHierInitialMode(props.nav)}
+              onNav={props.onNav}
+            />
           ) : props.nav === 'dim_tax_lib' ? (
             <TaxCodeLibraryPage mode="manage" onOpenResult={() => props.onNav('dim_tax_result')} />
           ) : props.nav === 'dim_tax_risk_define' ? (
@@ -3580,9 +3571,17 @@ export default function App() {
 
   const navFromUrl = (): NavKey | null => {
     try {
-      const sp = new URL(window.location.href).searchParams
-      const raw = (sp.get('nav') ?? '').trim()
+      const url = new URL(window.location.href)
+      const raw = (url.searchParams.get('nav') ?? '').trim()
       if (!raw) return null
+      if (raw === 'dim_org_manage' || raw === 'dim_org_equity' || raw === 'dim_org_diff') {
+        const treeMode =
+          raw === 'dim_org_equity' ? 'equity' : raw === 'dim_org_diff' ? 'relation' : 'management'
+        url.searchParams.set('nav', 'dim_org_hier_tree')
+        url.searchParams.set('tree_mode', treeMode)
+        window.history.replaceState({}, '', url.toString())
+        return 'dim_org_hier_tree'
+      }
       return raw as NavKey
     } catch {
       return null

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -385,6 +386,12 @@ def api_org_hier_diff_summary(conn: Any, *, stat_year: str | None = None) -> dic
     }
 
 
+_ORG_HIER_IMPORT_DEPRECATED_MSG = (
+    "组织维度 Excel 直写 dim_org_hier 已停用；请在「管理与产权层级信息」或「组织层级树」"
+    "使用台账 Excel 导入，保存后将自动物化 dim_org_hier。"
+)
+
+
 def api_org_hier_import(
     conn: Any,
     *,
@@ -393,48 +400,17 @@ def api_org_hier_import(
     dry_run: bool = False,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    from src.local_api.dim_org_hier_build import import_org_hierarchy_from_excel
-
-    result = import_org_hierarchy_from_excel(
-        conn,
-        file_bytes=file_bytes,
-        upload_filename=upload_filename,
-        dry_run=dry_run,
-        run_id=run_id,
-    )
-    if result.get("ok") and not dry_run:
-        try:
-            from src.local_api.dwd_to_dim_build import record_dim_task_run
-
-            record_dim_task_run(
-                conn,
-                run_id=str(result.get("run_id") or run_id or ""),
-                task_code="dim.org_hier.build",
-                task_name="组织层级双树 · Excel 导入",
-                status="success",
-                trigger_source="org_hier_import",
-                rows_affected=int(result.get("success") or 0),
-                result=result,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("record org_hier import run failed: %s", exc)
-    elif not result.get("ok"):
-        try:
-            from src.local_api.dwd_to_dim_build import record_dim_task_run
-
-            record_dim_task_run(
-                conn,
-                run_id=str(result.get("run_id") or run_id or ""),
-                task_code="dim.org_hier.build",
-                task_name="组织层级双树 · Excel 导入",
-                status="failed",
-                trigger_source="org_hier_import",
-                error_message="；".join(result.get("errors") or [])[:500] or str((result.get("error") or {}).get("message") or ""),
-                result=result,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-    return result
+    """@deprecated 请改用台账导入（api_registry_import_excel）。"""
+    _ = (conn, file_bytes, upload_filename, dry_run, run_id)
+    return {
+        "ok": False,
+        "deprecated": True,
+        "redirect_nav": "dim_audited_registry",
+        "error": {
+            "message": _ORG_HIER_IMPORT_DEPRECATED_MSG,
+            "exception_type": "DeprecatedAPI",
+        },
+    }
 
 
 def api_org_hier_template_download(conn: Any) -> tuple[int, bytes | dict[str, Any], str, str]:
@@ -456,6 +432,16 @@ def api_org_hier_template_download(conn: Any) -> tuple[int, bytes | dict[str, An
         return 500, {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}, "", ""
 
 
+def _registry_materialize_years(conn: Any, stat_years: list[int] | None) -> list[int]:
+    from src.local_api.group_enterprise_year_build import _registry_years
+
+    available = [int(y) for y in _registry_years(conn)]
+    if stat_years:
+        wanted = {int(y) for y in stat_years}
+        return [y for y in available if y in wanted]
+    return available
+
+
 def api_org_hier_rebuild(
     conn: Any,
     *,
@@ -463,23 +449,60 @@ def api_org_hier_rebuild(
     dry_run: bool = False,
     run_id: str | None = None,
 ) -> dict[str, Any]:
-    from src.local_api.dim_org_hier_build import rebuild_org_hierarchy_paths
+    """从台账物化 dim_org_hier（台账为权威源；不再依赖独立 Excel 导入链路）。"""
+    from src.local_api.dim_org_hier_build import materialize_org_hier_from_registry
 
-    result = rebuild_org_hierarchy_paths(
+    build_run_id = run_id or f"org_hier_rebuild_{uuid.uuid4().hex[:12]}"
+    years = _registry_materialize_years(conn, stat_years)
+    if not years:
+        return {
+            "ok": False,
+            "dry_run": dry_run,
+            "error": {
+                "message": "dim_audited_enterprise_registry 无可用 snapshot_year，请先在「管理与产权层级信息」导入台账",
+                "exception_type": "ValidationError",
+            },
+            "run_id": build_run_id,
+        }
+
+    if dry_run:
+        placeholders = ",".join("?" * len(years))
+        count = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*)::BIGINT
+                FROM dim_audited_enterprise_registry
+                WHERE snapshot_year IN ({placeholders})
+                """,
+                years,
+            ).fetchone()[0]
+            or 0
+        )
+        return {
+            "ok": True,
+            "dry_run": True,
+            "run_id": build_run_id,
+            "rows_affected": count,
+            "stat_years": years,
+        }
+
+    result = materialize_org_hier_from_registry(
         conn,
-        stat_years=stat_years,
-        dry_run=dry_run,
-        run_id=run_id,
+        stat_years=years,
+        replace_years=True,
+        run_id=build_run_id,
+        updated_by="ORG_HIER_REBUILD",
     )
-    if result.get("ok") and not dry_run:
+    if result.get("ok"):
+        result["rows_affected"] = int(result.get("rows_written") or 0)
         try:
             from src.local_api.dwd_to_dim_build import record_dim_task_run
 
             record_dim_task_run(
                 conn,
-                run_id=str(result.get("run_id") or run_id or ""),
+                run_id=str(result.get("run_id") or build_run_id),
                 task_code="dim.org_hier.build",
-                task_name="组织层级双树 · 路径重算",
+                task_name="组织层级双树 · 台账物化",
                 status="success",
                 trigger_source="org_hier_rebuild",
                 rows_affected=int(result.get("rows_affected") or 0),
@@ -630,30 +653,15 @@ def _demo_org_hier_xlsx_bytes() -> bytes:
 
 
 def api_org_hier_bootstrap_demo(conn: Any) -> dict[str, Any]:
-    """写入组织层级演示种子（demo_seed_ 前缀，重复加载会先清除旧演示行）。"""
-    from src.local_api.dim_org_hier_build import import_org_hierarchy_from_excel
+    """写入演示种子；已改为写入台账并自动物化 dim_org_hier。"""
+    from src.local_api.audited_enterprise_dims import api_registry_bootstrap_demo
 
-    try:
-        _seed_demo_org_sys(conn)
-        for eid in _DEMO_ENTITY_IDS:
-            conn.execute("DELETE FROM dim_org_hier WHERE entity_id = ?", [eid])
-            conn.execute("DELETE FROM dim_org_node WHERE entity_id = ?", [eid])
-        result = import_org_hierarchy_from_excel(
-            conn,
-            file_bytes=_demo_org_hier_xlsx_bytes(),
-            upload_filename="org_hier_demo_seed.xlsx",
-            updated_by="DEMO_SEED",
-        )
-        if not result.get("ok"):
-            return result
-        return {
-            "ok": True,
-            "stat_year": result.get("stat_year") or _DEMO_STAT_YEAR,
-            "success": int(result.get("success") or 0),
-            "updated": int(result.get("updated") or 0),
-            "hier_diff_count": int(result.get("hier_diff_count") or 0),
-            "message": f"已写入 {_DEMO_STAT_YEAR} 年组织层级演示数据 {int(result.get('success') or 0)} 条（管产分离 {int(result.get('hier_diff_count') or 0)} 家）",
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("org_hier bootstrap demo")
-        return {"ok": False, "error": {"message": str(exc), "exception_type": type(exc).__name__}}
+    result = api_registry_bootstrap_demo(conn)
+    if not result.get("ok"):
+        return result
+    return {
+        **result,
+        "deprecated_api": True,
+        "message": result.get("message")
+        or "演示数据已写入台账（dim_audited_enterprise_registry），并已同步组织层级物化。",
+    }

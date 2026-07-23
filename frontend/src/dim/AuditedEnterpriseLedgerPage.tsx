@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import { zhCN as t } from '../copy/zh-CN'
+import type { NavKey } from '../types'
+import { navigateToOrgHierTree } from '../utils/navHelpers'
 import { useDimDictDomain } from './useDimDict'
 import {
   fetchAuditedEnterpriseRegistry,
@@ -90,9 +92,10 @@ function renderLedgerRow(
   seqNo: number,
   ui: (typeof t)['auditedEnterpriseLedgerUi'],
   domesticLabel: (code: string) => string,
+  onNav?: (k: NavKey) => void,
 ) {
   return (
-    <tr key={`${row.code}-${row.snapshotYear}-${seqNo}`} className="border-b border-border-light last:border-b-0">
+    <tr key={`${row.code}-${row.snapshotYear}-${seqNo}`} className="group border-b border-border-light last:border-b-0">
       <td className="px-3 py-2.5 tabular-nums text-text-3">{seqNo}</td>
       <td className="px-3 py-2.5 tabular-nums">{row.snapshotYear}</td>
       <td className="px-3 py-2.5 font-mono text-[12px] text-text">{row.code}</td>
@@ -114,11 +117,28 @@ function renderLedgerRow(
       <td className="px-3 py-2.5">{row.mgmtParent.trim() ? row.mgmtParent : '—'}</td>
       <td className="px-3 py-2.5">{row.equityLevel}</td>
       <td className="px-3 py-2.5">{row.shareholders}</td>
+      {onNav ? (
+        <td className="sticky right-0 z-10 border-b border-border-light bg-white px-3 py-2.5 group-hover:bg-[#f8fafc]">
+          <button
+            type="button"
+            className="text-il-label text-accent hover:underline"
+            onClick={() =>
+              navigateToOrgHierTree(onNav, {
+                statYear: row.snapshotYear,
+                keyword: row.name,
+                stateInvestor: row.stateInvestor?.trim() || undefined,
+              })
+            }
+          >
+            {ui.actionOrgTree}
+          </button>
+        </td>
+      ) : null}
     </tr>
   )
 }
 
-export function AuditedEnterpriseLedgerPage() {
+export function AuditedEnterpriseLedgerPage(props: { onNav?: (k: NavKey) => void }) {
   const ui = t.auditedEnterpriseLedgerUi
   const domesticOverseasDict = useDimDictDomain('domestic_overseas')
   const defaultDomesticOverseas = domesticOverseasDict.options[0]?.code ?? '境内'
@@ -372,6 +392,8 @@ export function AuditedEnterpriseLedgerPage() {
     if (file) void runExcelImport(file)
   }
 
+  const tableColCount = props.onNav ? TABLE_COL_COUNT + 1 : TABLE_COL_COUNT
+
   return (
     <div className="w-full px-5 py-6">
       <PrototypePageHeader
@@ -380,6 +402,21 @@ export function AuditedEnterpriseLedgerPage() {
         noteTone="compact"
         actions={
           <div className="flex shrink-0 items-center gap-2">
+            {props.onNav ? (
+              <button
+                type="button"
+                className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
+                onClick={() =>
+                  navigateToOrgHierTree(props.onNav!, {
+                    statYear: selectedYear,
+                    keyword: debouncedEnterprise.trim() || undefined,
+                    stateInvestor: debouncedStateInvestor.trim() || undefined,
+                  })
+                }
+              >
+                {ui.viewOrgTreeBtn}
+              </button>
+            ) : null}
             <button
               type="button"
               className="rounded-[7px] border border-border bg-white px-3 py-1.5 text-il-btn text-text-2 hover:border-accent hover:text-accent"
@@ -492,12 +529,15 @@ export function AuditedEnterpriseLedgerPage() {
                 <th className={thSticky}>{ui.colMgmtParent}</th>
                 <th className={thSticky}>{ui.colEquityLevel}</th>
                 <th className={thSticky}>{ui.colShareholders}</th>
+                {props.onNav ? (
+                  <th className={`${thSticky} sticky right-0 z-20 whitespace-nowrap px-3 py-2`}>{ui.colActions}</th>
+                ) : null}
               </tr>
             </thead>
             <tbody className="text-text-2">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={TABLE_COL_COUNT} className="px-3 py-8 text-center text-il-page-desc text-text-3">
+                  <td colSpan={tableColCount} className="px-3 py-8 text-center text-il-page-desc text-text-3">
                     {ui.tableEmpty}
                   </td>
                 </tr>
@@ -506,13 +546,13 @@ export function AuditedEnterpriseLedgerPage() {
                   if (segment.kind === 'group') {
                     return (
                       <tr key={`group-${segment.key}`} className="border-b border-border-light bg-[#f0f4fa]">
-                        <td colSpan={TABLE_COL_COUNT} className="px-3 py-2 text-il-label font-medium text-text">
+                        <td colSpan={tableColCount} className="px-3 py-2 text-il-label font-medium text-text">
                           {segment.label}
                         </td>
                       </tr>
                     )
                   }
-                  return renderLedgerRow(segment.row, segment.seqNo, ui, domesticOverseasDict.getLabel)
+                  return renderLedgerRow(segment.row, segment.seqNo, ui, domesticOverseasDict.getLabel, props.onNav)
                 })
               )}
             </tbody>

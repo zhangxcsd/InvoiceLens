@@ -17,6 +17,8 @@ export type NavKey =
   | 'import_mapping_templates'
   | 'import_invoice_export'
   // 维度管理（3级）
+  | 'dim_org_hier_tree'
+  /** @deprecated 兼容旧链接，侧栏已合并为 dim_org_hier_tree */
   | 'dim_org_manage'
   | 'dim_audited_registry'
   | 'dim_enterprise_year_roster'
@@ -25,7 +27,9 @@ export type NavKey =
   | 'dim_enterprise_library'
   | 'dim_audit_related_library'
   | 'dim_level1_enterprise_year'
+  /** @deprecated 兼容旧链接，侧栏已合并为 dim_org_hier_tree */
   | 'dim_org_equity'
+  /** @deprecated 兼容旧链接，侧栏已合并为 dim_org_hier_tree（tree_mode=relation） */
   | 'dim_org_diff'
   | 'dim_tax_lib'
   | 'dim_tax_risk_define'

@@ -439,6 +439,9 @@ def api_audited_enterprise_relation_rows(
     snapshot_year: str | None,
     state_investor: str | None = None,
     keyword: str | None = None,
+    relation_type: str | None = None,
+    match_status: str | None = None,
+    in_analysis_pool: bool | None = None,
     page: int = 1,
     page_size: int = 50,
     sort: str | None = None,
@@ -574,9 +577,20 @@ def api_audited_enterprise_relation_rows(
             return item.get("name") or ""
 
         enriched.sort(key=sort_val, reverse=(sort_dir == "desc"))
-        total = len(enriched)
+        kpi_total = len(enriched)
+        rel_filter = (relation_type or "").strip()
+        ms_filter = (match_status or "").strip()
+        pool_only = bool(in_analysis_pool)
+        filtered = enriched
+        if rel_filter in {"一致", "不一致"}:
+            filtered = [item for item in filtered if item.get("relation_type") == rel_filter]
+        if ms_filter in {"已匹配", "待匹配"}:
+            filtered = [item for item in filtered if (item.get("match_status") or "") == ms_filter]
+        if pool_only:
+            filtered = [item for item in filtered if item.get("in_analysis_pool")]
+        total = len(filtered)
         offset = (pg - 1) * ps
-        page_rows = enriched[offset : offset + ps]
+        page_rows = filtered[offset : offset + ps]
 
         return {
             "ok": True,
@@ -587,7 +601,7 @@ def api_audited_enterprise_relation_rows(
             "page_size": ps,
             "rows": page_rows,
             "kpis": {
-                "total": total,
+                "total": kpi_total,
                 "relation_mismatch": kpi_mismatch,
                 "mapped": kpi_mapped,
                 "unmapped": kpi_unmapped,

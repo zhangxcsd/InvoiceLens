@@ -5880,6 +5880,7 @@ export async function fetchDimOrgHierRows(
   }
 }
 
+/** @deprecated 请改用台账导入（postAuditedEnterpriseRegistryImportExcel） */
 export async function fetchDimOrgHierTemplateDownload(): Promise<{
   ok: boolean
   blob?: Blob
@@ -5900,6 +5901,7 @@ export async function fetchDimOrgHierTemplateDownload(): Promise<{
   }
 }
 
+/** @deprecated 请改用台账导入（postAuditedEnterpriseRegistryImportExcel） */
 export async function postDimOrgHierImport(params: {
   file: File
   dryRun?: boolean
@@ -5919,6 +5921,7 @@ export async function postDimOrgHierImport(params: {
   }
 }
 
+/** @deprecated 请改用台账演示种子（postAuditedEnterpriseRegistryBootstrapDemo） */
 export async function postDimOrgHierBootstrapDemo(): Promise<{
   ok: boolean
   stat_year?: number
@@ -6311,6 +6314,9 @@ export async function fetchAuditedEnterpriseRelationRows(
     snapshotYear?: string
     stateInvestor?: string
     keyword?: string
+    relationType?: string
+    matchStatus?: string
+    inAnalysisPool?: boolean
     page?: number
     pageSize?: number
     sort?: string
@@ -6332,6 +6338,9 @@ export async function fetchAuditedEnterpriseRelationRows(
   if (params.snapshotYear?.trim()) sp.set('snapshot_year', params.snapshotYear.trim())
   if (params.stateInvestor?.trim()) sp.set('state_investor', params.stateInvestor.trim())
   if (params.keyword?.trim()) sp.set('keyword', params.keyword.trim())
+  if (params.relationType?.trim()) sp.set('relation_type', params.relationType.trim())
+  if (params.matchStatus?.trim()) sp.set('match_status', params.matchStatus.trim())
+  if (params.inAnalysisPool) sp.set('in_analysis_pool', '1')
   sp.set('page', String(params.page ?? 1))
   sp.set('page_size', String(params.pageSize ?? 50))
   if (params.sort?.trim()) sp.set('sort', params.sort.trim())

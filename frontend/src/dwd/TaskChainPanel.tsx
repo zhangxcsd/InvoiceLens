@@ -18,7 +18,7 @@ const ui = t.taskChainUi
 const STEP_NAV: Record<string, NavKey> = {
   subject_library_pipeline: 'dwd_to_dim_center',
   enterprise_year_roster_build: 'dim_enterprise_year_roster',
-  'dim.org_hier.build': 'dim_org_manage',
+  'dim.org_hier.build': 'dim_org_hier_tree',
   dm_audit_flag_scan: 'flags_list',
   'dm.audit_flag.scan': 'flags_list',
   'ads.scorecard.refresh': 'health_score',

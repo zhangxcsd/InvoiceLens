@@ -2285,6 +2285,10 @@ class Handler(BaseHTTPRequestHandler):
             snapshot_year = (qs.get("snapshot_year", [""])[0] or "").strip() or None
             state_investor = (qs.get("state_investor", [""])[0] or "").strip() or None
             keyword = (qs.get("keyword", [""])[0] or "").strip() or None
+            relation_type = (qs.get("relation_type", [""])[0] or "").strip() or None
+            match_status = (qs.get("match_status", [""])[0] or "").strip() or None
+            in_analysis_pool_raw = (qs.get("in_analysis_pool", [""])[0] or "").strip().lower()
+            in_analysis_pool = in_analysis_pool_raw in {"1", "true", "yes"}
             page_raw = (qs.get("page", ["1"])[0] or "1").strip()
             page_size_raw = (qs.get("page_size", ["50"])[0] or "50").strip()
             sort = (qs.get("sort", [""])[0] or "").strip() or None
@@ -2309,6 +2313,9 @@ class Handler(BaseHTTPRequestHandler):
                     snapshot_year=snapshot_year,
                     state_investor=state_investor,
                     keyword=keyword,
+                    relation_type=relation_type,
+                    match_status=match_status,
+                    in_analysis_pool=in_analysis_pool if in_analysis_pool_raw else None,
                     page=page,
                     page_size=page_size,
                     sort=sort,

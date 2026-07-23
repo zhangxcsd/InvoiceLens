@@ -24,11 +24,11 @@ CHAIN_STEP_DEFS: list[dict[str, str]] = [
     {"step_id": "subject_library_pipeline", "task_code": "subject_library_pipeline", "label": "主体库全流程"},
     {"step_id": "enterprise_year_roster_build", "task_code": "enterprise_year_roster_build", "label": "花名册台账同步"},
     {"step_id": "group_enterprise_year_build", "task_code": "group_enterprise_year_build", "label": "集团成员表"},
-    {"step_id": "dim.org_hier.build", "task_code": "dim.org_hier.build", "label": "组织层级双树重算"},
+    {"step_id": "dim.org_hier.build", "task_code": "dim.org_hier.build", "label": "组织层级双树物化"},
     {"step_id": "dim.enterprise_year_rel.rebuild", "task_code": "dim.enterprise_year_rel.rebuild", "label": "年度购销标志"},
     {"step_id": "dws.rebuild", "task_code": "dws.rebuild", "label": "DWS 汇总重建（含进销偏离）"},
     {"step_id": "dm.audit_flag.scan", "task_code": "dm.audit_flag.scan", "label": "审计疑点扫描"},
-    {"step_id": "ads.scorecard.refresh", "task_code": "ads.scorecard.refresh", "label": "子公司评分卡"},
+    {"step_id": "ads.scorecard.refresh", "task_code": "ads.scorecard.refresh", "label": "主体评分卡"},
 ]
 
 _CHAIN_TASK_CODES = {s["task_code"] for s in CHAIN_STEP_DEFS} | {
@@ -709,31 +709,24 @@ def _execute_chain_step(
         return
 
     if step_id == "dim.org_hier.build":
-        from src.local_api.dim_org_hier_build import rebuild_org_hierarchy_paths
+        from src.local_api.dim_org_hier_api import _registry_materialize_years
+        from src.local_api.dim_org_hier_build import materialize_org_hier_from_registry
 
-        hier_years: list[int] = []
-        try:
-            if years:
-                ph = ",".join("?" * len(years))
-                rows = conn.execute(
-                    f"SELECT DISTINCT stat_year FROM dim_org_hier WHERE stat_year IN ({ph}) ORDER BY stat_year",
-                    years,
-                ).fetchall()
-                hier_years = [int(r[0]) for r in rows or []]
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"读取 dim_org_hier 年度失败：{exc}") from exc
-        if not hier_years:
+        mat_years = _registry_materialize_years(conn, years or None)
+        if not mat_years:
             _mark_step_skipped(
                 steps,
                 step_id,
-                message="dim_org_hier 无数据，请先在「管理关系树」页导入组织维度 Excel",
-                result={"ok": True, "skipped": True, "reason": "no_org_hier_data"},
+                message="台账无可用年度，请先在「管理与产权层级信息」导入台账（将自动物化 dim_org_hier）",
+                result={"ok": True, "skipped": True, "reason": "no_registry_data"},
             )
             return
-        org_result = rebuild_org_hierarchy_paths(
+        org_result = materialize_org_hier_from_registry(
             conn,
-            stat_years=hier_years,
+            stat_years=mat_years,
+            replace_years=True,
             run_id=f"{run_id}_org_hier",
+            updated_by="TASK_CHAIN",
         )
         if not org_result.get("ok"):
             raise RuntimeError(str((org_result.get("error") or {}).get("message") or "组织层级重算失败"))

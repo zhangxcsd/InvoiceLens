@@ -40,6 +40,11 @@ const NAV_QUERY_KEYS = [
   'expected_rate',
   'quarter',
   'keyword',
+  'state_investor',
+  'tree_mode',
+  'relation_type',
+  'match_status',
+  'in_analysis_pool',
   'track_status',
   'track_tab',
   'batch_id',
@@ -119,6 +124,39 @@ export function navigateToReportConfig(
     chapters: params?.chapters?.filter(Boolean).join(','),
     title: params?.title,
   })
+}
+
+
+
+export type OrgHierTreeMode = 'management' | 'equity' | 'relation'
+
+/** 侧栏 nav 与 URL tree_mode 解析组织层级树默认 Tab。 */
+export function resolveOrgHierInitialMode(nav: string): OrgHierTreeMode {
+  if (nav === 'dim_org_equity') return 'equity'
+  if (nav === 'dim_org_diff') return 'relation'
+  const tm = readNavQueryParams().tree_mode
+  if (tm === 'equity' || tm === 'relation') return tm
+  return 'management'
+}
+
+export function navigateToOrgHierTree(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; keyword?: string; stateInvestor?: string; treeMode?: OrgHierTreeMode },
+) {
+  navigateWithQuery(onNav, 'dim_org_hier_tree', {
+    stat_year: params?.statYear,
+    keyword: params?.keyword,
+    state_investor: params?.stateInvestor,
+    tree_mode: params?.treeMode,
+  })
+}
+
+/** @deprecated 请使用 navigateToOrgHierTree(..., { treeMode: 'relation' }) */
+export function navigateToOrgRelationView(
+  onNav: (key: NavKey) => void,
+  params?: { statYear?: string; keyword?: string },
+) {
+  navigateToOrgHierTree(onNav, { ...params, treeMode: 'relation' })
 }
 
 export function navigateToInvoiceExport(

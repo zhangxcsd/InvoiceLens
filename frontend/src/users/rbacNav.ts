@@ -30,13 +30,17 @@ export const NAV_REQUIRED_PERMISSION: Partial<Record<NavKey, RbacPermission>> = 
   report_archive: 'export',
   settings_thresholds: 'write',
   flags_rules: 'write',
+  dim_org_hier_tree: 'write',
+  /** @deprecated 兼容旧 ?nav= 链接 */
   dim_org_manage: 'write',
   dim_audited_registry: 'write',
   dim_enterprise_year_roster: 'write',
   dim_audited_contribution: 'write',
   dim_audited_invoice_link: 'write',
   dim_level1_enterprise_year: 'write',
+  /** @deprecated 兼容旧 ?nav= 链接 */
   dim_org_equity: 'write',
+  /** @deprecated 兼容旧 ?nav= 链接，侧栏已合并为 dim_org_hier_tree（tree_mode=relation） */
   dim_org_diff: 'write',
   dim_enterprise_library: 'write',
   dim_audit_related_library: 'write',
