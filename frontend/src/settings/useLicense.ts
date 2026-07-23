@@ -37,8 +37,8 @@ export function useLicense(): UseLicenseResult {
     ? crossGroupAllowed
       ? null
       : isExpired
-        ? '授权已过期，子公司对比功能不可用，请导入新授权文件。'
-        : '当前授权未开通子公司对比，请升级授权或在「授权管理」导入正式授权。'
+        ? '授权已过期，主体对比功能不可用，请导入新授权文件。'
+        : '当前授权未开通主体对比，请升级授权或在「授权管理」导入正式授权。'
     : null
 
   return {

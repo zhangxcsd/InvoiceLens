@@ -79,6 +79,7 @@ _WRITE_PATHS = frozenset(
         "/api/dim/audited-enterprise/registry/import-excel",
         "/api/dim/audited-enterprise/contribution/import-excel",
         "/api/dim/org-hier/import",
+        "/api/dim/org-hier/bootstrap-demo",
         "/api/dim/org-hier/rebuild",
         "/api/dim-tax-code/import",
         "/api/dim-tax-code/reapply-risk-rules",

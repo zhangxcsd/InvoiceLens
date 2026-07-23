@@ -98,7 +98,7 @@ pyinstaller invoicelens.spec --noconfirm
 
 | 字段 | 行为 |
 |------|------|
-| `max_entities` | 子公司对比列表/图表按上限截断 |
+| `max_entities` | 主体对比列表/图表按上限截断 |
 | `max_invoices` | 库内发票已达上限时拒绝 `start-import` / DWD 加工 |
 | `max_years` | 新增统计年度超限时拒绝 DWD 加工与主体库 pipeline |
 

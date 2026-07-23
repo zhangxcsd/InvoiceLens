@@ -24,6 +24,7 @@ from src.local_api.license_gate import (
     api_settings_license_post,
     check_cross_group_allowed,
     check_export_allowed,
+    check_export_allowed,
     check_invoice_quota,
     check_year_quota_for_build,
     get_license_config,
@@ -221,6 +222,47 @@ def test_invoice_and_year_quota() -> None:
             assert year_denied["error"]["code"] == "license_year_cap_denied"
 
 
+def test_import_professional_with_unlimited_minus_one() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        override = Path(td) / "license_override.json"
+        with patch("src.local_api.license_gate._LICENSE_OVERRIDE_PATH", override):
+            imported = api_settings_license_post(
+                {
+                    "license": {
+                        "tier": "professional",
+                        "max_invoices": -1,
+                        "max_years": -1,
+                        "max_entities": -1,
+                        "export_report": True,
+                        "cross_group": True,
+                        "expires_at": "2099-12-31",
+                    }
+                }
+            )
+            assert imported.get("ok") is True, imported
+            cfg = get_license_config()
+            assert cfg.get("tier") == "professional"
+            assert check_export_allowed() is None
+            assert check_cross_group_allowed() is None
+
+
+def test_do_post_license_route_uses_post_handler() -> None:
+    """回归：do_POST 内不得误挂 GET 版 /api/settings/license，否则保存授权不会写 override 文件。"""
+    src = Path(__file__).resolve().parents[1] / "src" / "local_api" / "sheet_mapping_server.py"
+    text = src.read_text(encoding="utf-8")
+    post_idx = text.index("def do_POST")
+    post_body = text[post_idx:]
+    assert post_body.count('if path == "/api/settings/license"') == 1
+    assert "api_settings_license_post" in post_body
+    bad = (
+        'if path == "/api/settings/license":\n'
+        "            try:\n"
+        "                from src.local_api.license_gate import api_settings_license\n\n"
+        "                self._send(200, api_settings_license())"
+    )
+    assert bad not in post_body
+
+
 def main() -> None:
     test_cross_group_denied_by_default()
     test_compare_apis_blocked_when_trial()
@@ -228,6 +270,8 @@ def main() -> None:
     test_export_and_cross_group_codes_distinct()
     test_signed_lic_file_priority_over_default()
     test_invoice_and_year_quota()
+    test_import_professional_with_unlimited_minus_one()
+    test_do_post_license_route_uses_post_handler()
     print("test_license_gate_smoke: OK")
 
 

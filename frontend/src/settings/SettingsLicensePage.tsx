@@ -3,6 +3,7 @@ import { Card } from '../components/Card'
 import { PrototypePageHeader } from '../components/PrototypePageHeader'
 import {
   fetchLicenseInfo,
+  notifyLicenseUpdated,
   postLicenseImport,
   postLicenseReset,
   type LicenseInfo,
@@ -72,6 +73,7 @@ export function SettingsLicensePage() {
       }
       setMsg(ui.importSuccess)
       setJsonDraft('')
+      notifyLicenseUpdated()
       await load()
     } finally {
       setSaving(false)
@@ -90,6 +92,7 @@ export function SettingsLicensePage() {
         return
       }
       setMsg(ui.resetSuccess)
+      notifyLicenseUpdated()
       await load()
     } finally {
       setSaving(false)
@@ -150,6 +153,10 @@ export function SettingsLicensePage() {
               <span>{info.maxInvoices ?? '—'}</span>
             </div>
             <div>
+              <span className="text-text-2">{ui.colMaxYears}：</span>
+              <span>{info.maxYears ?? '—'}</span>
+            </div>
+            <div>
               <span className="text-text-2">{ui.colExpired}：</span>
               <span className={info.isExpired ? 'text-danger' : 'text-text-1'}>
                 {info.isExpired ? ui.yes : ui.no}
@@ -166,32 +173,42 @@ export function SettingsLicensePage() {
 
       <Card title={ui.importTitle} className="p-4">
         <p className="mb-3 text-sm text-text-2">{ui.importDesc}</p>
-        <textarea
-          className="mb-3 h-40 w-full rounded border border-border px-3 py-2 font-mono text-xs"
-          placeholder={ui.importPlaceholder}
-          value={jsonDraft}
-          onChange={(e) => setJsonDraft(e.target.value)}
-        />
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="rounded-md bg-primary px-4 py-2 text-sm text-white disabled:opacity-50"
-            disabled={saving || !jsonDraft.trim()}
-            onClick={() => void onImportJson()}
-          >
-            {saving ? ui.saveBusy : ui.importBtn}
-          </button>
-          {info?.isOverridden ? (
-            <button
-              type="button"
-              className="rounded-md border border-border px-4 py-2 text-sm text-text-2 disabled:opacity-50"
-              disabled={saving}
-              onClick={() => void onReset()}
-            >
-              {ui.resetBtn}
-            </button>
-          ) : null}
-        </div>
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!saving && jsonDraft.trim()) void onImportJson()
+          }}
+        >
+          <textarea
+            className="h-40 w-full rounded border border-border px-3 py-2 font-mono text-xs"
+            placeholder={ui.importPlaceholder}
+            value={jsonDraft}
+            onChange={(e) => setJsonDraft(e.target.value)}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border-light pt-3">
+            <p className="text-xs text-text-3">{ui.importHint}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="submit"
+                className="rounded-[7px] bg-accent px-4 py-2 text-il-btn font-semibold text-white hover:bg-accent-mid disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={saving || !jsonDraft.trim()}
+              >
+                {saving ? ui.saveBusy : ui.importBtn}
+              </button>
+              {info?.isOverridden ? (
+                <button
+                  type="button"
+                  className="rounded-[7px] border border-border px-4 py-2 text-il-btn text-text-2 hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={saving}
+                  onClick={() => void onReset()}
+                >
+                  {ui.resetBtn}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </form>
       </Card>
     </div>
   )

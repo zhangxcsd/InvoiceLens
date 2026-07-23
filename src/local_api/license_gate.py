@@ -200,14 +200,14 @@ def cross_group_denied_error() -> dict[str, Any]:
             "ok": False,
             "error": {
                 "code": "license_expired",
-                "message": "授权已过期，子公司对比不可用，请更新授权文件。",
+                "message": "授权已过期，主体对比不可用，请更新授权文件。",
             },
         }
     return {
         "ok": False,
         "error": {
             "code": "license_cross_group_denied",
-            "message": "当前授权未开通子公司对比（cross_group），请升级授权或在「授权管理」导入正式授权。",
+            "message": "当前授权未开通主体对比（cross_group），请升级授权或在「授权管理」导入正式授权。",
         },
     }
 
@@ -317,8 +317,9 @@ def _coerce_license_payload(raw: dict[str, Any]) -> tuple[dict[str, Any], list[s
         elif key in {"max_entities", "max_invoices", "max_years"}:
             try:
                 n = int(val)
-                if n < 0:
-                    errors.append(f"{key} 不能为负数")
+                # -1 表示不限制（与门控 check_* 中 <=0 语义一致）；0 同样视为不限制
+                if n < -1:
+                    errors.append(f"{key} 无效（-1 或 0 表示不限制）")
                 else:
                     out[key] = n
             except (TypeError, ValueError):

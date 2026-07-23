@@ -11,7 +11,7 @@ LICENSE = {
     "expires_at": "2099-12-31",
     "max_entities": 3,
     "max_invoices": 50000,
-    "max_years": 1,
+    "max_years": 2,
     "export_report": False,
     "cross_group": False,
 }
