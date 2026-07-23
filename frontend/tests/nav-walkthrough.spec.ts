@@ -22,6 +22,7 @@ const NAV_KEYS = [
   'dim_enterprise_year_roster',
   'dim_audited_contribution',
   'dim_audited_invoice_link',
+  'dim_invoice_to_audited_enterprise',
   'dim_enterprise_library',
   'dim_audit_related_library',
   'dim_level1_enterprise_year',

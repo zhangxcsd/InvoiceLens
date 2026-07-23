@@ -87,6 +87,7 @@ import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContri
 import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
 import { DimOrgSysPage } from './dim/DimOrgSysPage'
+import { InvoiceToAuditedEnterprisePage } from './dim/InvoiceToAuditedEnterprisePage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
 import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
@@ -365,6 +366,7 @@ function Sidebar(props: {
       props.nav !== 'dim_enterprise_year_roster' &&
       props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_audited_invoice_link' &&
+      props.nav !== 'dim_invoice_to_audited_enterprise' &&
       props.nav !== 'dim_org_sys' &&
       props.nav !== 'dim_org_hier_tree' &&
       props.nav !== 'dim_org_manage' &&
@@ -379,6 +381,7 @@ function Sidebar(props: {
       props.nav === 'dim_enterprise_year_roster' ||
       props.nav === 'dim_audited_contribution' ||
       props.nav === 'dim_audited_invoice_link' ||
+      props.nav === 'dim_invoice_to_audited_enterprise' ||
       props.nav === 'dim_level1_enterprise_year' ||
       props.nav === 'dim_org_hier_tree' ||
       props.nav === 'dim_org_manage' ||
@@ -892,6 +895,10 @@ function Sidebar(props: {
               })}
               {navGrand('dim_audited_invoice_link', t.sidebar.dimInvoiceLink, {
                 active: props.nav === 'dim_audited_invoice_link',
+                tier: 'great',
+              })}
+              {navGrand('dim_invoice_to_audited_enterprise', t.sidebar.dimInvoiceToAudited, {
+                active: props.nav === 'dim_invoice_to_audited_enterprise',
                 tier: 'great',
               })}
             </div>
@@ -3273,6 +3280,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.sidebar.dimInvoiceLink}</b>
         </>
       )
+    if (props.nav === 'dim_invoice_to_audited_enterprise')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} / {t.sidebar.dimAuditedEnterprise} /{' '}
+          <b className="text-text font-medium">{t.sidebar.dimInvoiceToAudited}</b>
+        </>
+      )
     if (props.nav === 'dim_org_sys')
       return (
         <>
@@ -3460,6 +3474,8 @@ function AppShell(props: {
             <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_audited_invoice_link' ? (
             <AuditedEnterpriseInvoiceLinkPage onNav={props.onNav} />
+          ) : props.nav === 'dim_invoice_to_audited_enterprise' ? (
+            <InvoiceToAuditedEnterprisePage onNav={props.onNav} />
           ) : props.nav === 'dim_org_sys' ? (
             <DimOrgSysPage onNav={props.onNav} />
           ) : props.nav === 'dim_org_hier_tree' ||

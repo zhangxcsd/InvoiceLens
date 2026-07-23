@@ -38,6 +38,7 @@ export const NAV_REQUIRED_PERMISSION: Partial<Record<NavKey, RbacPermission>> = 
   dim_enterprise_year_roster: 'write',
   dim_audited_contribution: 'write',
   dim_audited_invoice_link: 'write',
+  dim_invoice_to_audited_enterprise: 'write',
   dim_level1_enterprise_year: 'write',
   /** @deprecated 兼容旧 ?nav= 链接 */
   dim_org_equity: 'write',
