@@ -20,6 +20,7 @@ export type NavKey =
   | 'dim_org_hier_tree'
   /** @deprecated 兼容旧链接，侧栏已合并为 dim_org_hier_tree */
   | 'dim_org_manage'
+  | 'dim_org_sys'
   | 'dim_audited_registry'
   | 'dim_enterprise_year_roster'
   | 'dim_audited_contribution'

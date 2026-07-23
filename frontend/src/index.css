@@ -31,3 +31,38 @@ body{
   input, select, textarea, button { font-family: inherit; }
 }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
+
+/*
+ * 固定布局表格的单行省略：须写在全局 CSS。
+ * table-fixed + td max-width:0 才能稳定截断中文长句；仅靠 utility 类在部分环境下会换行。
+ */
+.il-table-ellipsis-cell {
+  max-width: 0;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.il-table-ellipsis-cell > .il-table-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+/* 表头列宽拖拽手柄（th 已是 sticky，本身即可作为绝对定位包含块） */
+.il-col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  touch-action: none;
+}
+.il-col-resize-handle:hover,
+.il-col-resize-handle.is-active {
+  background: rgba(0, 114, 209, 0.22);
+}

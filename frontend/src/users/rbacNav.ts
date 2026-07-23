@@ -31,6 +31,7 @@ export const NAV_REQUIRED_PERMISSION: Partial<Record<NavKey, RbacPermission>> = 
   settings_thresholds: 'write',
   flags_rules: 'write',
   dim_org_hier_tree: 'write',
+  dim_org_sys: 'write',
   /** @deprecated 兼容旧 ?nav= 链接 */
   dim_org_manage: 'write',
   dim_audited_registry: 'write',

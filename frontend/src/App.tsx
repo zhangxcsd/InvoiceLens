@@ -86,6 +86,7 @@ import { AuditedEnterpriseLedgerPage } from './dim/AuditedEnterpriseLedgerPage'
 import { AuditedEnterpriseContributionPage } from './dim/AuditedEnterpriseContributionPage'
 import { AuditedEnterpriseInvoiceLinkPage } from './dim/AuditedEnterpriseInvoiceLinkPage'
 import { AuditedEnterpriseTreePage } from './dim/AuditedEnterpriseTreePage'
+import { DimOrgSysPage } from './dim/DimOrgSysPage'
 import { TaxCodeAnalysisPage } from './dim/TaxCodeAnalysisPage'
 import { TaxCodeEnterpriseAnalysisPage } from './dim/TaxCodeEnterpriseAnalysisPage'
 import { TaxCodeLibraryPage } from './dim/TaxCodeLibraryPage'
@@ -364,6 +365,7 @@ function Sidebar(props: {
       props.nav !== 'dim_enterprise_year_roster' &&
       props.nav !== 'dim_audited_contribution' &&
       props.nav !== 'dim_audited_invoice_link' &&
+      props.nav !== 'dim_org_sys' &&
       props.nav !== 'dim_org_hier_tree' &&
       props.nav !== 'dim_org_manage' &&
       props.nav !== 'dim_org_equity' &&
@@ -852,6 +854,13 @@ function Sidebar(props: {
         <div className={openParents.dim && !collapsed ? 'block' : 'hidden'}>
           {navChild('org', t.sidebar.dimOrg, <IconMiniMap className="h-[11px] w-[11px]" />, { openable: true, open: !!openChildren.org })}
           <div className={openChildren.org ? 'block' : 'hidden'}>
+            {navChildDeepNav(
+              'dim_org_sys',
+              'org_sys',
+              t.sidebar.dimOrgSys,
+              <IconMiniMap className="h-[11px] w-[11px]" />,
+              { active: props.nav === 'dim_org_sys' },
+            )}
             {navChildDeep('audited', t.sidebar.dimAuditedEnterprise, <IconNetwork className="h-[11px] w-[11px]" />, {
               openable: true,
               open: !!openChildren.audited,
@@ -3264,6 +3273,14 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.sidebar.dimInvoiceLink}</b>
         </>
       )
+    if (props.nav === 'dim_org_sys')
+      return (
+        <>
+          {t.sidebar.dimMgmt} / {t.sidebar.dimOrg} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.dimOrgSys}</b>
+        </>
+      )
+
     if (
       props.nav === 'dim_org_hier_tree' ||
       props.nav === 'dim_org_manage' ||
@@ -3443,6 +3460,8 @@ function AppShell(props: {
             <AuditedEnterpriseContributionPage />
           ) : props.nav === 'dim_audited_invoice_link' ? (
             <AuditedEnterpriseInvoiceLinkPage onNav={props.onNav} />
+          ) : props.nav === 'dim_org_sys' ? (
+            <DimOrgSysPage onNav={props.onNav} />
           ) : props.nav === 'dim_org_hier_tree' ||
             props.nav === 'dim_org_manage' ||
             props.nav === 'dim_org_equity' ||
