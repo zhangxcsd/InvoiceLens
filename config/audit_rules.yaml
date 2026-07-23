@@ -1,5 +1,22 @@
-# 审计疑点规则阈值与开关（RULE-01~10 + 通道公司检测）
-# 修改后通过 POST /api/audit/run 重新扫描即可生效，无需重导 DWD。
+# =============================================================================
+# 审计疑点规则配置（config/audit_rules.yaml）
+# =============================================================================
+#
+# 【整体架构】
+# 1. SQL 扫描规则（RULE-01~10）：POST /api/audit/run 按 stat_year 扫描 DWD，
+#    命中结果写入 dm_audit_flag；RULE-09 同时写入 dm_circ_inv。
+# 2. 扫描后规则（RULE-SHELL）：完整扫描结束后自动运行，结果写入 dm_shell_co。
+# 3. 页面同步规则（RULE-FIN-* / RULE-DQ-* / RULE-TAX-*）：由业务页 sync-flags
+#    写入 dm_audit_flag；「保存并扫描当前年」不会重新生成此类疑点。
+#
+# 【字段说明】
+# - enabled: 是否启用（false 时该规则不产生新疑点）
+# - name: 规则显示名称
+# - description: 审计含义（面向复核人员）
+# - logic: 计算/判定逻辑（含阈值参数引用）
+# - 其余键: 阈值参数，可被 Python 规则模块读取
+#
+# 修改后保存 YAML，再对指定年度执行「保存并扫描当前年」或前往对应业务页同步。
 
 defaults:
   group_id_prefix: "Y"  # 落库 group_id = Y{stat_year}，如 Y2024
@@ -8,6 +25,16 @@ rules:
   RULE-01:
     enabled: true
     name: 重复开票
+    description: >
+      检测同一购销方在窗口期内重复开具相同金额发票，以及同月多张小额发票合计超过阈值
+      的化整为零行为，存在重复报销、重复入账或规避审批风险。
+    logic: |
+      数据源：dwd_inv_header，仅正常蓝票（fpzt=正常 且 净额>0）。
+      子规则 A（同窗重复）：按 购方税号+销方税号+净额(保留2位) 分组，组内张数≥2 且
+        首末开票日间隔 ≤ duplicate_window_days → 写入疑点。
+      子规则 B（化整为零）：同购销方同月，单张净额 < split_threshold，当月合计 ≥ split_threshold
+        → 写入疑点。
+      风险等级：risk_level。
     duplicate_window_days: 30
     split_threshold: 500000
     risk_level: 高风险
@@ -15,6 +42,17 @@ rules:
   RULE-02:
     enabled: true
     name: 异常开票日期
+    description: >
+      识别非典型开票时点：大额周末开票、年末集中开票、未来日期开票及法定节假日开票，
+      可能与调节利润、体外循环或数据质量问题相关。
+    logic: |
+      数据源：dwd_inv_header 正常蓝票。
+      子规则 A（周末大额）：开票日为周六/日 且 净额 ≥ weekend_large_amount → risk_level_weekend。
+      子规则 B（年末突击）：开票月=12 且 该供应商12月张数 / 全年张数 ≥ yearend_month_ratio
+        → risk_level_yearend。
+      子规则 C（未来日期）：invoice_date > 当前系统日期 → risk_level_future。
+      子规则 D（法定节假日）：需安装 chinese_calendar；开票日为法定节假日 且 净额≥阈值
+        → risk_level_holiday（未安装库时跳过）。
     weekend_large_amount: 100000
     yearend_month_ratio: 0.5
     risk_level_weekend: 中风险
@@ -25,6 +63,17 @@ rules:
   RULE-03:
     enabled: true
     name: 红冲异常
+    description: >
+      分析红字发票与蓝票的关联关系，识别红冲后再开票、跨年红冲、红冲比例过高及
+      无法关联蓝票的孤立红票等异常模式。
+    logic: |
+      数据源：dwd_inv_header（含红票与蓝票）。
+      子规则 A（红冲后再开）：红票后 reissue_window_days 天内，同购销方同金额出现新蓝票
+        → risk_level_reissue。
+      子规则 B（跨年红冲）：蓝票 stat_year ≠ 红票 stat_year → risk_level_cross_year。
+      子规则 C（红冲比例）：供应商红票金额 / 该供应商开票总额 ≥ red_ratio_threshold
+        → risk_level_ratio。
+      子规则 D（孤立红票）：红票无法匹配任何蓝票 header_uuid → risk_level_orphan。
     reissue_window_days: 30
     red_ratio_threshold: 0.2
     risk_level_reissue: 高风险
@@ -35,6 +84,15 @@ rules:
   RULE-04:
     enabled: true
     name: 发票状态异常
+    description: >
+      统计作废发票占比，识别主体整体作废率过高或特定供应商作废率集中的情况，
+      可能存在无效凭证入账或虚假贸易后作废冲销风险。
+    logic: |
+      数据源：dwd_inv_header 全量发票（含作废）。
+      子规则 A（主体作废率）：被审主体作废张数 / 总张数 ≥ void_rate_warn → risk_level_warn；
+        ≥ void_rate_high → risk_level_high。
+      子规则 B（供应商作废率）：单供应商作废张数 / 该供应商总张数 ≥ supplier_void_rate
+        → risk_level_supplier。
     void_rate_warn: 0.05
     void_rate_high: 0.10
     supplier_void_rate: 0.30
@@ -45,6 +103,16 @@ rules:
   RULE-05:
     enabled: true
     name: 税率品类不匹配
+    description: >
+      根据货物名称关键词对照预置税率表，识别品类与适用税率偏离的情况；
+      同时检测同一供应商同一品类跨月使用不同税率的不一致问题。
+    logic: |
+      数据源：dwd_inv_detail + header。
+      子规则 A（品类税率偏离）：hwlwmc 命中 category_tax_map 中 keywords 时，
+        实际 slv 与 expected_rate 偏差超过容差 → risk_level_mismatch。
+      子规则 B（同品类跨月不一致）：同供应商+同品类关键词，跨月出现 ≥2 种不同 slv
+        → risk_level_inconsistent。
+      category_tax_map 按顺序匹配第一条命中规则。
     risk_level_mismatch: 中风险
     risk_level_inconsistent: 中风险
     category_tax_map:
@@ -62,6 +130,13 @@ rules:
   RULE-06:
     enabled: true
     name: 金额异常值
+    description: >
+      对购方-供应商维度的历史开票金额做 3σ 离群检测，识别显著偏离均值的单张发票，
+      可能存在异常定价或虚假贸易。
+    logic: |
+      数据源：dwd_inv_header 正常蓝票。
+      按 购方税号+销方税号 分组，样本张数 ≥ min_invoice_count 时计算均值 μ 与标准差 σ；
+      若单张净额 > μ + sigma_multiplier × σ → 写入疑点，风险等级 risk_level。
     min_invoice_count: 5
     sigma_multiplier: 3.0
     risk_level: 中风险
@@ -69,6 +144,12 @@ rules:
   RULE-07:
     enabled: true
     name: 开票频率突变
+    description: >
+      检测某月开票张数相对该供应商月均水平的异常跳升，可能存在集中开票或异常贸易频率。
+    logic: |
+      数据源：dwd_inv_header 正常蓝票。
+      按 购方+销方+月份 统计张数；计算该购销对全年月均张数 avg；
+      若 avg ≥ min_monthly_avg 且 当月张数 > avg × monthly_multiplier → 写入疑点。
     monthly_multiplier: 3.0
     min_monthly_avg: 1.0
     risk_level: 中风险
@@ -76,6 +157,12 @@ rules:
   RULE-08:
     enabled: true
     name: 价格一致性
+    description: >
+      同一品类、同一季度内多家供应商的单价离散度过高时触发，可能存在高价采购或价格操纵。
+    logic: |
+      数据源：dwd_inv_detail（单价=je/sl，sl>0）。
+      按 品类关键词+季度 分组，供应商数 ≥ min_suppliers 时计算单价变异系数 CV；
+      若 CV > price_dispersion → 写入疑点，风险等级 risk_level。
     price_dispersion: 0.2
     min_suppliers: 2
     risk_level: 低风险
@@ -83,6 +170,14 @@ rules:
   RULE-09:
     enabled: true
     name: 对开发票
+    description: >
+      识别购销双方互为买卖方且双向金额接近的对开模式，存在虚增贸易或循环开票风险；
+      结果同步写入 dm_circ_inv 供「关联交易 · 对开明细」页展示。
+    logic: |
+      数据源：dwd_inv_header 正常蓝票。
+      对每对税号 (A,B)：计算 A→B 与 B→A 的年度开票净额 in_ab、in_ba；
+      若 min(in_ab,in_ba) ≥ min_amount，ratio = min/max；
+      ratio ≥ ratio_high → risk_level_high；≥ ratio_medium → risk_level_medium；否则 risk_level_low。
     ratio_high: 0.8
     ratio_medium: 0.5
     min_amount: 10000
@@ -93,6 +188,13 @@ rules:
   RULE-10:
     enabled: true
     name: 集团内部互开
+    description: >
+      购销双方均为当年 dim_enterprise_year_roster 花名册成员时的内部交易，
+      需关注是否完整披露与定价公允。
+    logic: |
+      数据源：dwd_inv_header 正常蓝票 + dim_enterprise_year_roster。
+      use_enterprise_year_roster=true 时，购方与销方税号均命中当年花名册 且 净额 ≥ min_amount
+        → 写入疑点，风险等级 risk_level。
     use_enterprise_year_roster: true
     min_amount: 10000
     risk_level: 中风险
@@ -100,63 +202,111 @@ rules:
   RULE-SHELL:
     enabled: true
     name: 疑似通道公司
+    description: >
+      检测集团成员向中间商付款后，该中间商高比例对外转出的疑似通道公司模式，
+      可能存在体外循环或资金过桥风险。
+    logic: |
+      执行时机：完整 audit/run 扫描结束后自动调用 refresh_shell_co。
+      数据源：dwd_inv_header + dim_enterprise_year_roster（花名册为空则跳过）。
+      步骤：① 成员(M)向中间商(I)进项 ≥ min_amount；② I 对外销项总额 out_total；
+        ③ 对同一 I，转出比例 out_to_others / amt_in ≥ passthrough_ratio → 写入 dm_shell_co。
+      风险等级：risk_level。
     min_amount: 500000
     passthrough_ratio: 0.6
     risk_level: 中风险
 
-  # 财务账票核对差异（由「差异分析」页 sync-flags 同步，非 SQL 扫描规则）
-  # 审计含义：比对 dm_finance_ledger 与 DWD 发票净额，按 A/B/C/D 分层写入疑点跟踪
   RULE-FIN-DIFF:
     enabled: true
     name: 账票金额不一致
+    description: >
+      财务账表净额与 DWD 发票净额在同一科目/期间口径下存在差异（差异类型 C），
+      需核对入账、映射或时间性差异。
+    logic: |
+      触发：「财务核对 · 差异分析」页 sync-flags（非 SQL 扫描）。
+      条件：dm_finance_reconcile 差异类型 diff_type=C（账表与发票均有值但不一致）。
+      enabled=false 时 sync 跳过写入；重同步仅删除未确认疑点。
     risk_level: 中风险
 
   RULE-FIN-LEDGER-ONLY:
     enabled: true
     name: 账面有票面无
+    description: >
+      财务账表有记录但 DWD 无对应发票净额（差异类型 B），可能存在无票支出或预提未补票。
+    logic: |
+      触发：「财务核对 · 差异分析」页 sync-flags。
+      条件：diff_type=B（ledger_amount 有值、invoice_net 为空或零）。
     risk_level: 中风险
 
   RULE-FIN-INVOICE-ONLY:
     enabled: true
     name: 票面有账面无
+    description: >
+      DWD 有发票净额但财务账表无对应记录（差异类型 A），可能漏入账或归属其他科目/期间。
+    logic: |
+      触发：「财务核对 · 差异分析」页 sync-flags。
+      条件：diff_type=A（invoice_net 有值、ledger_amount 为空或零）。
     risk_level: 中风险
 
   RULE-FIN-OTHER:
     enabled: true
     name: 账票核对待分类
+    description: >
+      账票核对中暂无法归入 A/B/C 的差异（差异类型 D），需人工复核主体识别与期间口径。
+    logic: |
+      触发：「财务核对 · 差异分析」页 sync-flags。
+      条件：diff_type=D（其他/待分类）。
     risk_level: 低风险
 
-  # 数据质量 · 语义与专项覆盖（由质量域 sync-flags 同步，非 SQL 扫描规则）
-  # 审计含义：明细有正行但专项 sheet 正行为 0，疑似漏导专项表
   RULE-DQ-MISSING-SPC:
     enabled: true
     name: 疑似缺专项 sheet
+    description: >
+      发票明细存在正行但对应专项 sheet 正行为 0，疑似漏导专项表或 sheet 映射错误。
+    logic: |
+      触发：「数据质量」各页 sync-flags（sync_semantic_quality_flags）。
+      条件：cross_table 检查发现 header 在明细表有正行、在专项 sheet 无对应正行。
     risk_level: 中风险
 
-  # 审计含义：logic_line_no=0 汇总参考行，需人工确认是否为「详见销货清单」类占位行
   RULE-DQ-SUMMARY-LINE:
     enabled: true
     name: 汇总参考行异常
+    description: >
+      存在 logic_line_no=0 的汇总参考行，需人工确认是否为「详见销货清单」类占位行。
+    logic: |
+      触发：「数据质量」各页 sync-flags。
+      条件：semantic 检查发现 summary_line（logic_line_no=0）需关注的发票。
     risk_level: 低风险
 
-  # 税收分类编码结构分析（由税码分析页 sync-flags 同步）
-  # 审计含义：分析主体企业票面 ssflbm 无法在 dim_tax_code 命中或格式异常
   RULE-TAX-UNMATCH:
     enabled: true
     name: 税收分类编码未匹配维表
+    description: >
+      分析主体票面 ssflbm 无法在 dim_tax_code 命中或格式异常，影响税码风险分类准确性。
+    logic: |
+      触发：「税收分类结构分析」页 sync_tax_code_flags。
+      条件：企业明细中未匹配维表的行数 ≥ min_line_count → 写入疑点。
     risk_level: 中风险
     min_line_count: 5
 
-  # 审计含义：企业明细中 audit_risk_label=HIGH 的税额集中超过阈值
   RULE-TAX-HIGH-CODE:
     enabled: true
     name: 高风险税收分类编码集中
+    description: >
+      企业明细中 audit_risk_label=HIGH 的税额合计超过阈值，提示高风险税码集中暴露。
+    logic: |
+      触发：「税收分类结构分析」页 sync_tax_code_flags。
+      条件：HIGH 标签行税额合计 ≥ min_high_risk_amount → 写入疑点。
     risk_level: 中风险
     min_high_risk_amount: 10000
 
-  # 进销结构偏离（由「进销偏离分析」页 sync-flags 同步，非 SQL 扫描规则）
-  # 审计含义：进项/销项税率桶占比差超过系统阈值时写入疑点跟踪
   RULE-TAX-DEV:
     enabled: true
     name: 进销结构偏离
+    description: >
+      分析主体进项与销项按税率桶的占比差超过系统阈值时，提示进销结构不匹配风险。
+    logic: |
+      触发：「税务分析 · 进销偏离分析」页或 DWS 任务链 sync_tax_deviation_flags。
+      条件：各税率桶 |销项占比 - 进项占比| 超过 tax_in_out_deviation_threshold_pct（系统设置），
+        且档位金额差超过阈值 → 写入 RULE-TAX-DEV 疑点。
+      「保存并扫描当前年」不会重新生成此类疑点。
     risk_level: 中风险
