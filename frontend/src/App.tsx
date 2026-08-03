@@ -31,6 +31,7 @@ import { filterOutOfficeLockFiles, queueRowKey } from './import/importQueueUtils
 import type { ImportWizardHandoff } from './import/wizardHandoff'
 import { SheetCoveragePanel } from './import/SheetCoveragePanel'
 import { DataPreviewPage } from './import/DataPreviewPage'
+import { OdsOverviewPage } from './import/OdsOverviewPage'
 import { ImportHistoryPage } from './import/ImportHistoryPage'
 import { DwdPreviewPage } from './dwd/DwdPreviewPage'
 import { OdsToDwdCenterPage } from './dwd/OdsToDwdCenterPage'
@@ -601,32 +602,6 @@ function Sidebar(props: {
     )
   }
 
-  const navStandalone = (key: NavKey, label: string, icon: React.ReactNode) => {
-    if (!canAccessNav(props.user.role, key)) return null
-    const active = props.nav === key
-    return (
-      <div
-        className={[
-          'flex items-center gap-2 px-3 py-[7px] text-il-sidebar-parent',
-          'cursor-pointer select-none overflow-hidden whitespace-nowrap',
-          'border-l-2 transition-[background,color,border-color] duration-100',
-          active ? 'border-l-accent bg-[#f0f7ff] font-medium text-text' : 'border-l-transparent font-normal text-text-2',
-          'hover:bg-[#f5f7ff] hover:text-text',
-          collapsed ? 'justify-center px-0' : '',
-        ].join(' ')}
-        onClick={() => props.onNav(key)}
-        title={collapsed ? label : undefined}
-      >
-        <span className={['h-[15px] w-[15px] flex-shrink-0', active ? 'opacity-100' : 'opacity-60'].join(' ')}>
-          {icon}
-        </span>
-        <span className={['flex-1 overflow-hidden text-ellipsis', collapsed ? 'opacity-0 w-0 flex-none' : ''].join(' ')}>
-          {label}
-        </span>
-      </div>
-    )
-  }
-
   const navChildNav = (
     navKey: NavKey,
     slug: string,
@@ -910,6 +885,9 @@ function Sidebar(props: {
                 active: props.nav === 'import_wizard_format_check',
               })}
               {navGrand('import_wizard_upload', t.sidebar.fileUpload, { active: props.nav === 'import_wizard_upload' })}
+              {navGrand('import_wizard_ods_overview', t.sidebar.odsOverview, {
+                active: props.nav === 'import_wizard_ods_overview',
+              })}
               {navGrand('import_wizard_preview', t.sidebar.dataPreview, { active: props.nav === 'import_wizard_preview' })}
             </div>
             {navChildNav('import_invoice_export', 'export', t.sidebar.invoiceExport, <IconReportDoc className="h-[11px] w-[11px]" />)}
@@ -3142,6 +3120,13 @@ function AppShell(props: {
           <b className="text-text font-medium">{t.breadcrumb.formatCheck}</b>
         </>
       )
+    if (props.nav === 'import_wizard_ods_overview')
+      return (
+        <>
+          {t.breadcrumb.invoiceData} / {t.breadcrumb.importWizard} /{' '}
+          <b className="text-text font-medium">{t.breadcrumb.odsOverview}</b>
+        </>
+      )
     if (props.nav === 'import_wizard_preview')
       return (
         <>
@@ -3578,7 +3563,9 @@ function AppShell(props: {
           className={
             props.nav === 'import_wizard_format_check'
               ? 'flex min-h-0 flex-1 flex-col overflow-y-auto'
-              : props.nav === 'import_wizard_upload' || props.nav === 'import_wizard_preview'
+              : props.nav === 'import_wizard_upload' ||
+                  props.nav === 'import_wizard_preview' ||
+                  props.nav === 'import_wizard_ods_overview'
                 ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
                 : props.nav === 'dim_enterprise_library'
                   ? 'flex min-h-0 flex-1 flex-col overflow-hidden'
@@ -3598,6 +3585,8 @@ function AppShell(props: {
               onConsumeHandoff={props.onConsumeImportHandoff}
               onNav={props.onNav}
             />
+          ) : props.nav === 'import_wizard_ods_overview' ? (
+            <OdsOverviewPage onNav={props.onNav} />
           ) : props.nav === 'import_wizard_preview' ? (
             <DataPreviewPage onNav={props.onNav} />
           ) : props.nav === 'ods_to_dwd_center' ? (

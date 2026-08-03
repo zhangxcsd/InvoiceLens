@@ -72,6 +72,7 @@ const NAV_QUERY_KEYS = [
   'diff_type',
   'tax_bucket',
   'session_id',
+  'table_type',
 ] as const
 
 export function readNavQueryParams(): Record<string, string> {

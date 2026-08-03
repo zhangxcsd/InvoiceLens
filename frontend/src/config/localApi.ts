@@ -1580,6 +1580,152 @@ export async function fetchOdsPreviewBatches(
   }
 }
 
+/** ODS 库存总览：跨批次 KPI + 表类型分布 + 批次/会话摘要 */
+export type OdsInventoryKpi = {
+  batch_count: number
+  session_count: number
+  sessions_with_parquet: number
+  table_type_count: number
+  total_rows: number
+  parquet_path_count: number
+  file_count: number
+  latest_load_time: string
+  scanned_sessions: number
+  scan_limit: number
+  truncated: boolean
+}
+
+export type OdsInventoryTableTypeRow = {
+  table_type: string
+  title: string
+  parquet_path_count: number
+  batch_count: number
+  session_count: number
+}
+
+export type OdsInventoryBatchRow = {
+  batch_id: string
+  session_count: number
+  sessions_with_parquet: number
+  file_count: number
+  total_rows: number
+  success_count: number
+  fail_count: number
+  warn_count: number
+  parquet_path_count: number
+  table_type_count: number
+  table_types: string[]
+  latest_load_time: string
+  latest_session_id: string
+}
+
+export type OdsInventorySessionRow = {
+  batch_id: string
+  session_id: string
+  load_time: string
+  file_count: number
+  total_rows: number
+  success_count: number
+  fail_count: number
+  warn_count: number
+  parquet_path_count: number
+  table_types: string[]
+}
+
+export async function fetchOdsInventoryOverview(
+  signal?: AbortSignal,
+  limit = 500,
+): Promise<{
+  ok: boolean
+  kpi?: OdsInventoryKpi
+  table_types: OdsInventoryTableTypeRow[]
+  batches: OdsInventoryBatchRow[]
+  sessions: OdsInventorySessionRow[]
+  ods_dir_hint?: string
+  error?: { message?: string; detail?: string }
+}> {
+  try {
+    const res = await apiFetch(`/api/ods-preview/overview?limit=${limit}`, { signal })
+    const json = (await res.json().catch(() => ({}))) as any
+    if (!res.ok || !json?.ok) {
+      return {
+        ok: false,
+        table_types: [],
+        batches: [],
+        sessions: [],
+        ods_dir_hint: json?.ods_dir_hint != null ? String(json.ods_dir_hint) : undefined,
+        error: json?.error ?? { message: `HTTP ${res.status}` },
+      }
+    }
+    const kpiRaw = json?.kpi && typeof json.kpi === 'object' ? json.kpi : {}
+    const kpi: OdsInventoryKpi = {
+      batch_count: Number(kpiRaw.batch_count ?? 0),
+      session_count: Number(kpiRaw.session_count ?? 0),
+      sessions_with_parquet: Number(kpiRaw.sessions_with_parquet ?? 0),
+      table_type_count: Number(kpiRaw.table_type_count ?? 0),
+      total_rows: Number(kpiRaw.total_rows ?? 0),
+      parquet_path_count: Number(kpiRaw.parquet_path_count ?? 0),
+      file_count: Number(kpiRaw.file_count ?? 0),
+      latest_load_time: String(kpiRaw.latest_load_time ?? ''),
+      scanned_sessions: Number(kpiRaw.scanned_sessions ?? 0),
+      scan_limit: Number(kpiRaw.scan_limit ?? limit),
+      truncated: Boolean(kpiRaw.truncated),
+    }
+    const table_types: OdsInventoryTableTypeRow[] = (Array.isArray(json.table_types) ? json.table_types : []).map(
+      (r: any) => ({
+        table_type: String(r?.table_type ?? ''),
+        title: String(r?.title ?? r?.table_type ?? ''),
+        parquet_path_count: Number(r?.parquet_path_count ?? 0),
+        batch_count: Number(r?.batch_count ?? 0),
+        session_count: Number(r?.session_count ?? 0),
+      }),
+    )
+    const batches: OdsInventoryBatchRow[] = (Array.isArray(json.batches) ? json.batches : []).map((r: any) => ({
+      batch_id: String(r?.batch_id ?? ''),
+      session_count: Number(r?.session_count ?? 0),
+      sessions_with_parquet: Number(r?.sessions_with_parquet ?? 0),
+      file_count: Number(r?.file_count ?? 0),
+      total_rows: Number(r?.total_rows ?? 0),
+      success_count: Number(r?.success_count ?? 0),
+      fail_count: Number(r?.fail_count ?? 0),
+      warn_count: Number(r?.warn_count ?? 0),
+      parquet_path_count: Number(r?.parquet_path_count ?? 0),
+      table_type_count: Number(r?.table_type_count ?? 0),
+      table_types: Array.isArray(r?.table_types) ? r.table_types.map((x: unknown) => String(x)) : [],
+      latest_load_time: String(r?.latest_load_time ?? ''),
+      latest_session_id: String(r?.latest_session_id ?? ''),
+    }))
+    const sessions: OdsInventorySessionRow[] = (Array.isArray(json.sessions) ? json.sessions : []).map((r: any) => ({
+      batch_id: String(r?.batch_id ?? ''),
+      session_id: String(r?.session_id ?? ''),
+      load_time: String(r?.load_time ?? ''),
+      file_count: Number(r?.file_count ?? 0),
+      total_rows: Number(r?.total_rows ?? 0),
+      success_count: Number(r?.success_count ?? 0),
+      fail_count: Number(r?.fail_count ?? 0),
+      warn_count: Number(r?.warn_count ?? 0),
+      parquet_path_count: Number(r?.parquet_path_count ?? 0),
+      table_types: Array.isArray(r?.table_types) ? r.table_types.map((x: unknown) => String(x)) : [],
+    }))
+    return {
+      ok: true,
+      kpi,
+      table_types,
+      batches,
+      sessions,
+      ods_dir_hint: json?.ods_dir_hint != null ? String(json.ods_dir_hint) : undefined,
+    }
+  } catch (e) {
+    return {
+      ok: false,
+      table_types: [],
+      batches: [],
+      sessions: [],
+      error: { message: e instanceof Error ? e.message : '网络错误' },
+    }
+  }
+}
+
 export type OdsImportSessionSummary = {
   ok: boolean
   batch_id?: string

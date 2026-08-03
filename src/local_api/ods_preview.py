@@ -730,6 +730,193 @@ def list_ods_preview_batches(conn: Any, *, limit: int = 80) -> dict[str, Any]:
     return {"ok": True, "batches": batches, "ods_dir_hint": _effective_ods_dir()}
 
 
+def list_ods_inventory_overview(conn: Any, *, limit: int = 500) -> dict[str, Any]:
+    """
+    ODS 库存总览（只读）：跨批次聚合 KPI、按表类型分布、按批次摘要、会话清单。
+    行数口径优先用 ods_load_log.total_rows；表类型分布以 parquet 路径分区为准（不读 Parquet 本体）。
+    返回 sessions 供前端按表类型筛选下钻。
+    """
+    lim = max(1, min(int(limit), 2000))
+    ods_dir = _effective_ods_dir()
+    try:
+        df = conn.execute(
+            f"""
+            SELECT import_batch_id, import_session_id, load_time,
+                   file_count, total_rows, success_count, fail_count, warn_count,
+                   parquet_paths
+            FROM ods_load_log
+            ORDER BY load_time DESC
+            LIMIT {lim}
+            """
+        ).fetchdf()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "ods_dir_hint": ods_dir,
+            "error": {
+                "message": "查询 ods_load_log 失败",
+                "exception_type": type(exc).__name__,
+                "detail": str(exc),
+            },
+        }
+
+    import pandas as pd
+
+    sessions: list[dict[str, Any]] = []
+    by_tt: dict[str, dict[str, Any]] = {}
+    by_batch: dict[str, dict[str, Any]] = {}
+
+    scanned = 0
+    for _, r in df.iterrows():
+        scanned += 1
+        bid = str(r.get("import_batch_id") or "").strip()
+        sid = str(r.get("import_session_id") or "").strip()
+        if not bid:
+            continue
+        raw_paths = r.get("parquet_paths")
+        paths = _parse_parquet_paths(
+            str(raw_paths) if raw_paths is not None and not pd.isna(raw_paths) else None
+        )
+        lt = r.get("load_time")
+        if lt is not None and hasattr(lt, "isoformat"):
+            load_iso = lt.isoformat()
+        else:
+            load_iso = str(lt or "")
+        total_rows = int(r.get("total_rows") or 0)
+        file_count = int(r.get("file_count") or 0)
+        success_count = int(r.get("success_count") or 0)
+        fail_count = int(r.get("fail_count") or 0)
+        warn_count = int(r.get("warn_count") or 0)
+
+        tt_set: set[str] = set()
+        for p in paths:
+            tt = _table_type_from_parquet_path(p)
+            if not tt:
+                continue
+            tt_set.add(tt)
+            st = by_tt.get(tt)
+            if st is None:
+                st = {
+                    "table_type": tt,
+                    "parquet_path_count": 0,
+                    "batch_ids": set(),
+                    "session_keys": set(),
+                }
+                by_tt[tt] = st
+            st["parquet_path_count"] += 1
+            st["batch_ids"].add(bid)
+            st["session_keys"].add(f"{bid}::{sid}")
+
+        sessions.append(
+            {
+                "batch_id": bid,
+                "session_id": sid,
+                "load_time": load_iso,
+                "file_count": file_count,
+                "total_rows": total_rows,
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "warn_count": warn_count,
+                "parquet_path_count": len(paths),
+                "table_types": sorted(tt_set),
+            }
+        )
+
+        b = by_batch.get(bid)
+        if b is None:
+            b = {
+                "batch_id": bid,
+                "session_count": 0,
+                "file_count": 0,
+                "total_rows": 0,
+                "success_count": 0,
+                "fail_count": 0,
+                "warn_count": 0,
+                "parquet_path_count": 0,
+                "table_types": set(),
+                "latest_load_time": load_iso,
+                "latest_session_id": sid,
+                "sessions_with_parquet": 0,
+                "_seen": False,
+            }
+            by_batch[bid] = b
+        b["session_count"] += 1
+        b["file_count"] += file_count
+        b["total_rows"] += total_rows
+        b["success_count"] += success_count
+        b["fail_count"] += fail_count
+        b["warn_count"] += warn_count
+        b["parquet_path_count"] += len(paths)
+        b["table_types"].update(tt_set)
+        if len(paths) > 0:
+            b["sessions_with_parquet"] += 1
+        # load_time DESC：首次见到该 batch 即为最新会话
+        if not b.get("_seen"):
+            b["latest_load_time"] = load_iso
+            b["latest_session_id"] = sid
+            b["_seen"] = True
+
+    used_titles: set[str] = set()
+    table_types_out: list[dict[str, Any]] = []
+    for table_type in _ordered_table_types_present({k: [None] for k in by_tt.keys()}):
+        st = by_tt[table_type]
+        title = _tab_title_for_table_type(table_type, used_titles)
+        table_types_out.append(
+            {
+                "table_type": table_type,
+                "title": title,
+                "parquet_path_count": int(st["parquet_path_count"]),
+                "batch_count": len(st["batch_ids"]),
+                "session_count": len(st["session_keys"]),
+            }
+        )
+
+    batches_out: list[dict[str, Any]] = []
+    for bid, b in by_batch.items():
+        batches_out.append(
+            {
+                "batch_id": bid,
+                "session_count": int(b["session_count"]),
+                "sessions_with_parquet": int(b["sessions_with_parquet"]),
+                "file_count": int(b["file_count"]),
+                "total_rows": int(b["total_rows"]),
+                "success_count": int(b["success_count"]),
+                "fail_count": int(b["fail_count"]),
+                "warn_count": int(b["warn_count"]),
+                "parquet_path_count": int(b["parquet_path_count"]),
+                "table_type_count": len(b["table_types"]),
+                "table_types": sorted(b["table_types"]),
+                "latest_load_time": str(b.get("latest_load_time") or ""),
+                "latest_session_id": str(b.get("latest_session_id") or ""),
+            }
+        )
+    batches_out.sort(key=lambda x: str(x.get("latest_load_time") or ""), reverse=True)
+
+    with_pq = sum(1 for s in sessions if int(s.get("parquet_path_count") or 0) > 0)
+    kpi = {
+        "batch_count": len(by_batch),
+        "session_count": len(sessions),
+        "sessions_with_parquet": with_pq,
+        "table_type_count": len(by_tt),
+        "total_rows": sum(int(s.get("total_rows") or 0) for s in sessions),
+        "parquet_path_count": sum(int(s.get("parquet_path_count") or 0) for s in sessions),
+        "file_count": sum(int(s.get("file_count") or 0) for s in sessions),
+        "latest_load_time": sessions[0]["load_time"] if sessions else "",
+        "scanned_sessions": scanned,
+        "scan_limit": lim,
+        "truncated": scanned >= lim,
+    }
+
+    return {
+        "ok": True,
+        "ods_dir_hint": ods_dir,
+        "kpi": kpi,
+        "table_types": table_types_out,
+        "batches": batches_out,
+        "sessions": sessions,
+    }
+
+
 def load_ods_import_session_summary(
     conn: Any,
     *,
