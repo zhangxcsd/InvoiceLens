@@ -128,7 +128,7 @@ export const zhCN = {
     importWizard: '发票导入向导',
     fileUpload: '文件上传',
     dataPreview: 'ODS数据查看',
-    odsOverview: 'ODS概览',
+    odsOverview: 'ODS数据概览',
     formatCheck: '格式检测',
     processingCenter: '加工中心',
     odsToDwd: 'ODS→DWD',
@@ -227,7 +227,7 @@ export const zhCN = {
     fileUpload: '文件上传',
     formatCheck: '格式检测',
     dataPreview: 'ODS数据查看',
-    odsOverview: 'ODS概览',
+    odsOverview: 'ODS数据概览',
     processingCenter: '加工中心',
     odsToDwd: 'ODS→DWD',
     dwdToDim: 'DWD→DIM',
@@ -644,7 +644,7 @@ export const zhCN = {
 
   /** ODS 库存总览（跨批次宏观；明细预览/删除见 ODS数据查看） */
   odsOverviewUi: {
-    pageTitle: 'ODS概览',
+    pageTitle: 'ODS数据概览',
     pageBody:
       '跨批次查看已进入 ODS 层的库存结构：批次/会话规模、表类型行数与磁盘占用、落盘目录拓扑。可按表类型筛选并下钻到「ODS数据查看」或「历史批次记录」。本页只读。',
     refresh: '刷新',
