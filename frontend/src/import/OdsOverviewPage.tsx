@@ -6,6 +6,7 @@ import {
   type OdsInventoryBatchRow,
   type OdsInventoryKpi,
   type OdsInventorySessionRow,
+  type OdsInventoryStorage,
   type OdsInventoryTableTypeRow,
 } from '../config/localApi'
 import { navigateWithQuery, readNavQueryParams } from '../utils/navHelpers'
@@ -23,9 +24,17 @@ function formatLoadTime(iso: string): string {
   return `${y}-${mo}-${da} ${h}:${mi}`
 }
 
-function formatInt(n: number): string {
-  if (!Number.isFinite(n)) return '—'
+function formatInt(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—'
   return n.toLocaleString('zh-CN')
+}
+
+function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
 function KpiCell(props: { label: string; value: string; hint?: string }) {
@@ -55,6 +64,7 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
   const [tableTypes, setTableTypes] = useState<OdsInventoryTableTypeRow[]>([])
   const [batches, setBatches] = useState<OdsInventoryBatchRow[]>([])
   const [sessions, setSessions] = useState<OdsInventorySessionRow[]>([])
+  const [storage, setStorage] = useState<OdsInventoryStorage | null>(null)
   const [filterTableType, setFilterTableType] = useState<string>(() => readTableTypeFromUrl())
   const abortRef = useRef<AbortController | null>(null)
   const seqRef = useRef(0)
@@ -92,6 +102,7 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
         setTableTypes([])
         setBatches([])
         setSessions([])
+        setStorage(null)
         setError(r.error?.message || r.error?.detail || ui.loadError)
         return
       }
@@ -99,6 +110,7 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
       setTableTypes(r.table_types)
       setBatches(r.batches)
       setSessions(r.sessions)
+      setStorage(r.storage ?? null)
     } catch (e) {
       if ((e as { name?: string })?.name === 'AbortError') return
       if (mySeq !== seqRef.current) return
@@ -202,8 +214,13 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
             />
             <KpiCell label={ui.kpiTableTypes} value={formatInt(kpi.table_type_count)} />
             <KpiCell label={ui.kpiTotalRows} value={formatInt(kpi.total_rows)} />
-            <KpiCell label={ui.kpiParquetPaths} value={formatInt(kpi.parquet_path_count)} />
-            <KpiCell label={ui.kpiFiles} value={formatInt(kpi.file_count)} />
+            <KpiCell label={ui.kpiParquetRows} value={formatInt(kpi.parquet_row_count)} />
+            <KpiCell
+              label={ui.kpiParquetPaths}
+              value={formatInt(kpi.parquet_path_count)}
+              hint={ui.kpiUniquePaths.replace('{n}', formatInt(kpi.unique_path_count))}
+            />
+            <KpiCell label={ui.kpiDisk} value={formatBytes(kpi.size_bytes)} />
             <KpiCell label={ui.kpiLatest} value={formatLoadTime(kpi.latest_load_time)} />
           </div>
         ) : (
@@ -219,6 +236,16 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
               .replace('{limit}', formatInt(kpi.scan_limit))}
           </p>
         ) : null}
+        {kpi && kpi.missing_path_count > 0 ? (
+          <p className="mt-1 text-il-meta text-warn">
+            {ui.missingPathsHint.replace('{n}', formatInt(kpi.missing_path_count))}
+          </p>
+        ) : null}
+        {kpi && kpi.row_count_errors > 0 ? (
+          <p className="mt-1 text-il-meta text-warn">
+            {ui.rowCountErrorsHint.replace('{n}', formatInt(kpi.row_count_errors))}
+          </p>
+        ) : null}
       </Card>
 
       <Card title={ui.tableTypesTitle} compact>
@@ -227,12 +254,14 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
           <p className="text-il-meta text-text-3">{busy ? ui.loading : ui.emptyTableTypes}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[40rem] border-collapse text-il-meta">
+            <table className="w-full min-w-[48rem] border-collapse text-il-meta">
               <thead>
                 <tr className="border-b border-border-light text-left text-text-3">
                   <th className="px-2 py-1.5 font-medium">{ui.colTitle}</th>
                   <th className="px-2 py-1.5 font-medium">{ui.colTableType}</th>
-                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colPaths}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colParquetRows}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colSize}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colUniquePaths}</th>
                   <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colBatches}</th>
                   <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colSessions}</th>
                   <th className="px-2 py-1.5 font-medium">{ui.colAction}</th>
@@ -244,14 +273,15 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
                   return (
                     <tr
                       key={row.table_type}
-                      className={[
-                        'border-b border-border-light/80 text-text-2',
-                        active ? 'bg-accent/5' : '',
-                      ].join(' ')}
+                      className={['border-b border-border-light/80 text-text-2', active ? 'bg-accent/5' : ''].join(
+                        ' ',
+                      )}
                     >
                       <td className="px-2 py-1.5 text-text">{row.title}</td>
                       <td className="px-2 py-1.5 font-mono text-[12px]">{row.table_type}</td>
-                      <td className="px-2 py-1.5 tabular-nums">{formatInt(row.parquet_path_count)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatInt(row.row_count)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatBytes(row.size_bytes)}</td>
+                      <td className="px-2 py-1.5 tabular-nums">{formatInt(row.unique_path_count)}</td>
                       <td className="px-2 py-1.5 tabular-nums">{formatInt(row.batch_count)}</td>
                       <td className="px-2 py-1.5 tabular-nums">{formatInt(row.session_count)}</td>
                       <td className="px-2 py-1.5">
@@ -274,9 +304,7 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
 
       {filterTableType ? (
         <div className="flex flex-wrap items-center gap-2 rounded border border-accent/30 bg-accent/5 px-3 py-2 text-il-meta text-text-2">
-          <span>
-            {ui.filterActive.replace('{title}', filterTitle).replace('{code}', filterTableType)}
-          </span>
+          <span>{ui.filterActive.replace('{title}', filterTitle).replace('{code}', filterTableType)}</span>
           <button type="button" className="text-accent hover:underline" onClick={() => setFilter('')}>
             {ui.clearFilter}
           </button>
@@ -291,14 +319,14 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
           <p className="text-il-meta text-text-3">{busy ? ui.loading : ui.emptyBatches}</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[52rem] border-collapse text-il-meta">
+            <table className="w-full min-w-[56rem] border-collapse text-il-meta">
               <thead>
                 <tr className="border-b border-border-light text-left text-text-3">
                   <th className="px-2 py-1.5 font-medium">{ui.colBatchId}</th>
                   <th className="px-2 py-1.5 font-medium">{ui.colLatest}</th>
                   <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colSessions}</th>
-                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colPaths}</th>
-                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colRows}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colParquetRows}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colSize}</th>
                   <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colTableTypes}</th>
                   <th className="px-2 py-1.5 font-medium">{ui.colAction}</th>
                 </tr>
@@ -316,12 +344,12 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
                         ? ` (${ui.withPqShort.replace('{n}', formatInt(b.sessions_with_parquet))})`
                         : ''}
                     </td>
-                    <td className="px-2 py-1.5 tabular-nums">{formatInt(b.parquet_path_count)}</td>
-                    <td className="px-2 py-1.5 tabular-nums">{formatInt(b.total_rows)}</td>
+                    <td className="px-2 py-1.5 tabular-nums">{formatInt(b.row_count)}</td>
+                    <td className="px-2 py-1.5 tabular-nums">{formatBytes(b.size_bytes)}</td>
                     <td className="px-2 py-1.5 tabular-nums" title={b.table_types.join(', ')}>
                       {formatInt(b.table_type_count)}
                     </td>
-                    <td className="space-x-2 px-2 py-1.5 whitespace-nowrap">
+                    <td className="space-x-2 whitespace-nowrap px-2 py-1.5">
                       <button
                         type="button"
                         className="text-accent hover:underline disabled:cursor-not-allowed disabled:text-text-3 disabled:no-underline"
@@ -385,7 +413,7 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
                       <td className="whitespace-nowrap px-2 py-1.5">{formatLoadTime(s.load_time)}</td>
                       <td className="px-2 py-1.5 tabular-nums">{formatInt(s.parquet_path_count)}</td>
                       <td className="px-2 py-1.5 tabular-nums">{formatInt(s.total_rows)}</td>
-                      <td className="space-x-2 px-2 py-1.5 whitespace-nowrap">
+                      <td className="space-x-2 whitespace-nowrap px-2 py-1.5">
                         <button
                           type="button"
                           className="text-accent hover:underline"
@@ -409,6 +437,61 @@ export function OdsOverviewPage(props: { onNav: (k: NavKey) => void }) {
           )}
         </Card>
       ) : null}
+
+      <Card title={ui.storageTitle} compact>
+        <p className="mb-2 text-il-meta text-text-3">{ui.storageHint}</p>
+        {storage ? (
+          <p className="mb-2 text-il-meta text-text-2">
+            {ui.storageDirsKpi.replace('{n}', formatInt(storage.batch_dir_count))}
+            {' · '}
+            {ui.storageDirsSize.replace('{size}', formatBytes(storage.batch_dirs_size_bytes))}
+          </p>
+        ) : null}
+        {!storage || storage.batch_dirs.length === 0 ? (
+          <p className="text-il-meta text-text-3">{busy ? ui.loading : ui.emptyStorage}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[44rem] border-collapse text-il-meta">
+              <thead>
+                <tr className="border-b border-border-light text-left text-text-3">
+                  <th className="px-2 py-1.5 font-medium">{ui.colBatchId}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colSize}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colParquetFiles}</th>
+                  <th className="px-2 py-1.5 font-medium tabular-nums">{ui.colTableTypes}</th>
+                  <th className="px-2 py-1.5 font-medium">{ui.colDirPath}</th>
+                  <th className="px-2 py-1.5 font-medium">{ui.colAction}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {storage.batch_dirs.map((d) => (
+                  <tr key={d.path} className="border-b border-border-light/80 text-text-2">
+                    <td className="max-w-[12rem] truncate px-2 py-1.5 font-mono text-[12px] text-text" title={d.batch_id}>
+                      {d.batch_id || d.dir_name}
+                    </td>
+                    <td className="px-2 py-1.5 tabular-nums">{formatBytes(d.size_bytes)}</td>
+                    <td className="px-2 py-1.5 tabular-nums">{formatInt(d.parquet_file_count)}</td>
+                    <td className="px-2 py-1.5 tabular-nums" title={d.table_types.join(', ')}>
+                      {formatInt(d.table_type_count)}
+                    </td>
+                    <td className="max-w-[18rem] truncate px-2 py-1.5 font-mono text-[11px]" title={d.path}>
+                      {d.path}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <button
+                        type="button"
+                        className="text-accent hover:underline"
+                        onClick={() => openPreview(d.batch_id)}
+                      >
+                        {ui.openPreview}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

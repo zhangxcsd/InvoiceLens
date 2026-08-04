@@ -1104,6 +1104,15 @@ class Handler(BaseHTTPRequestHandler):
                 lim = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
             except Exception:
                 lim = 500
+
+            def _qs_flag(name: str, default: bool = True) -> bool:
+                raw = (qs.get(name, [""])[0] or "").strip().lower()
+                if not raw:
+                    return default
+                return raw in {"1", "true", "yes", "on"}
+
+            include_row_counts = _qs_flag("include_row_counts", True)
+            include_storage = _qs_flag("include_storage", True)
             try:
                 from db.duckdb_conn import get_conn
                 from db.schema_sqlfiles import init_all_tables
@@ -1111,7 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
 
                 conn = get_conn()
                 init_all_tables(conn)
-                payload = list_ods_inventory_overview(conn, limit=lim)
+                payload = list_ods_inventory_overview(
+                    conn,
+                    limit=lim,
+                    include_row_counts=include_row_counts,
+                    include_storage=include_storage,
+                )
             except Exception as exc:
                 from src.local_api.ods_preview import _effective_ods_dir
 
