@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test'
 const NAV_KEYS = [
   'import_wizard_upload',
   'import_wizard_preview',
+  'import_wizard_ods_overview',
   'import_wizard_format_check',
   'ods_to_dwd_center',
   'dwd_to_dim_center',

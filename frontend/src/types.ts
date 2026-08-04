@@ -2,6 +2,8 @@ export type NavKey =
   // 导入向导（3级）
   | 'import_wizard_upload'
   | 'import_wizard_preview'
+  /** 导入向导：ODS 库存总览（跨批次宏观） */
+  | 'import_wizard_ods_overview'
   | 'import_wizard_format_check'
   // 导入：历史/质量/映射
   | 'ods_to_dwd_center'

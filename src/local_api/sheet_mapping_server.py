@@ -1098,6 +1098,49 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200 if payload.get("ok") else 503, payload)
             return
 
+        if path == "/api/ods-preview/overview":
+            qs = parse_qs(parsed.query or "")
+            try:
+                lim = int((qs.get("limit", ["500"])[0] or "500").strip() or "500")
+            except Exception:
+                lim = 500
+
+            def _qs_flag(name: str, default: bool = True) -> bool:
+                raw = (qs.get(name, [""])[0] or "").strip().lower()
+                if not raw:
+                    return default
+                return raw in {"1", "true", "yes", "on"}
+
+            include_row_counts = _qs_flag("include_row_counts", True)
+            include_storage = _qs_flag("include_storage", True)
+            try:
+                from db.duckdb_conn import get_conn
+                from db.schema_sqlfiles import init_all_tables
+                from src.local_api.ods_preview import list_ods_inventory_overview
+
+                conn = get_conn()
+                init_all_tables(conn)
+                payload = list_ods_inventory_overview(
+                    conn,
+                    limit=lim,
+                    include_row_counts=include_row_counts,
+                    include_storage=include_storage,
+                )
+            except Exception as exc:
+                from src.local_api.ods_preview import _effective_ods_dir
+
+                payload = {
+                    "ok": False,
+                    "ods_dir_hint": _effective_ods_dir(),
+                    "error": {
+                        "message": f"无法连接或查询 DuckDB（ODS 库存总览）：{type(exc).__name__}: {exc}",
+                        "exception_type": type(exc).__name__,
+                        "detail": str(exc),
+                    },
+                }
+            self._send(200 if payload.get("ok") else 503, payload)
+            return
+
         if path == "/api/ods-preview/session-summary":
             qs = parse_qs(parsed.query or "")
             batch_id = (qs.get("batch_id", [""])[0] or "").strip()
